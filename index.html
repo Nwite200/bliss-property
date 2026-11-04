@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00b522" />
+  <meta name="description" content="Discover premium property opportunities with Bliss Legacy Limited. Explore homes, land and investment properties across our locations." />
+  <title>Bliss Legacy Limited | Find Your Place. Build Your Legacy.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root{--green:#00b522;--green-dark:#008f1b;--ink:#414141;--muted:#737b76;--paper:#fff;--soft:#f5f8f5;--line:#e7ece7;--shadow:0 18px 55px rgba(25,55,32,.10)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--ink);font-family:"DM Sans",sans-serif;background:#fff}a{color:inherit;text-decoration:none}button,input,select{font:inherit}.container{width:min(1180px,calc(100% - 44px));margin:auto}
+    .topline{background:#26342a;color:#e8f1e9;font-size:12px;padding:9px 0}.topline .container{display:flex;justify-content:space-between;gap:15px;flex-wrap:wrap}
+    header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.94);backdrop-filter:blur(14px);border-bottom:1px solid rgba(231,236,231,.85)}.nav{height:82px;display:flex;align-items:center;justify-content:space-between;gap:25px}.brand img{width:190px;height:auto;display:block}.links{display:flex;align-items:center;gap:30px;font-size:14px;font-weight:600}.links a:hover{color:var(--green-dark)}.nav-actions{display:flex;align-items:center;gap:12px}.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:14px 21px;border-radius:7px;font-weight:700;font-size:13px;border:1px solid transparent;transition:.2s;cursor:pointer}.btn-green{background:var(--green);color:white;box-shadow:0 8px 20px rgba(0,181,34,.18)}.btn-green:hover{background:var(--green-dark);transform:translateY(-2px)}.btn-outline{border-color:#d7e1d8;color:#344238;background:#fff}.btn-outline:hover{border-color:var(--green);color:var(--green-dark)}.menu-btn{display:none;background:none;border:0;font-size:25px}
+    .hero{position:relative;min-height:610px;display:flex;align-items:center;overflow:hidden;background:#1d2b21}.hero:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(12,25,16,.84) 0%,rgba(15,31,20,.67) 47%,rgba(12,25,16,.12) 100%),url('https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=2200&q=88') center/cover}.hero:after{content:"";position:absolute;width:520px;height:520px;border:1px solid rgba(255,255,255,.18);border-radius:50%;right:-180px;bottom:-300px;box-shadow:0 0 0 55px rgba(255,255,255,.035),0 0 0 110px rgba(255,255,255,.025)}.hero-content{position:relative;z-index:1;color:white;padding:95px 0;max-width:690px}.eyebrow{display:inline-flex;align-items:center;gap:10px;color:#b8f2c3;text-transform:uppercase;letter-spacing:2.5px;font-size:11px;font-weight:700}.eyebrow:before{content:"";height:2px;width:28px;background:var(--green)}h1,h2,h3{font-family:Manrope,sans-serif}h1{font-size:clamp(42px,6vw,72px);line-height:1.08;letter-spacing:-3px;margin:22px 0 20px;font-weight:800}h1 span{color:#70e184}.hero p{font-size:17px;line-height:1.8;color:rgba(255,255,255,.82);max-width:560px;margin:0 0 32px}.hero-buttons{display:flex;gap:13px;flex-wrap:wrap}.hero .btn-outline{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.55);color:white}.hero-note{display:flex;gap:25px;flex-wrap:wrap;margin-top:48px;color:#e9f2eb;font-size:12px}.hero-note span{display:flex;align-items:center;gap:8px}.dot{width:7px;height:7px;border-radius:50%;background:#6be27f}
+    .trustbar{background:#fff;position:relative;z-index:2;margin-top:-1px;border-bottom:1px solid var(--line)}.trustgrid{display:grid;grid-template-columns:repeat(3,1fr);padding:24px 0}.trustitem{display:flex;align-items:center;justify-content:center;gap:13px;border-right:1px solid var(--line)}.trustitem:last-child{border:0}.trusticon{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:#eaf9ed;color:var(--green-dark);font-size:19px}.trustitem strong{display:block;font-size:13px;color:#303a32}.trustitem small{color:var(--muted);font-size:11px}
+    section{padding:90px 0}.section-head{display:flex;justify-content:space-between;align-items:end;gap:25px;margin-bottom:35px}.kicker{color:var(--green-dark);font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:800}.section-head h2{font-size:clamp(30px,4vw,43px);letter-spacing:-1.8px;margin:10px 0 0;color:#303a32}.section-head p{max-width:430px;color:var(--muted);line-height:1.7;font-size:14px;margin:0}
+    .filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:25px}.filters input,.filters select{height:46px;border:1px solid var(--line);border-radius:6px;padding:0 14px;background:#fff;color:#455047;outline:none}.filters input{flex:1;min-width:220px}.filters input:focus,.filters select:focus{border-color:var(--green)}.property-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:23px}.property-card{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff;transition:.25s}.property-card:hover{transform:translateY(-5px);box-shadow:var(--shadow)}.property-image{height:230px;position:relative;overflow:hidden;background:#e9eee9}.property-image img{width:100%;height:100%;object-fit:cover;transition:.5s}.property-card:hover .property-image img{transform:scale(1.05)}.tag{position:absolute;top:15px;left:15px;background:#fff;padding:7px 10px;border-radius:4px;color:#2e753b;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.7px}.property-body{padding:20px}.location{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}.property-body h3{font-size:19px;margin:10px 0 8px;color:#303a32}.price{font-family:Manrope,sans-serif;color:var(--green-dark);font-size:21px;font-weight:800;margin:12px 0}.features{display:flex;gap:15px;border-top:1px solid var(--line);padding-top:14px;margin-top:15px;color:#69736b;font-size:11px}.card-bottom{display:flex;justify-content:space-between;align-items:center;margin-top:19px}.details-link{font-size:12px;font-weight:800;color:#344238}.details-link span{color:var(--green);font-size:17px;margin-left:5px}.empty{grid-column:1/-1;padding:45px;text-align:center;background:var(--soft);border-radius:8px;color:var(--muted)}
+    .about{background:var(--soft)}.about-grid{display:grid;grid-template-columns:1fr 1fr;gap:70px;align-items:center}.about-visual{position:relative;padding:0 35px 35px 0}.about-visual img{width:100%;height:470px;object-fit:cover;border-radius:8px}.about-stamp{position:absolute;right:0;bottom:0;background:var(--green);color:white;padding:25px 28px;border-radius:7px;box-shadow:var(--shadow)}.about-stamp strong{display:block;font:800 31px Manrope}.about-stamp small{font-size:11px;letter-spacing:1px}.about-copy h2{font-size:clamp(32px,4vw,45px);line-height:1.15;letter-spacing:-1.8px;margin:12px 0 18px;color:#303a32}.about-copy p{color:var(--muted);font-size:14px;line-height:1.9}.checks{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin:25px 0 30px}.check{font-size:13px;font-weight:700;display:flex;gap:9px;align-items:center}.check b{color:var(--green);font-size:18px}
+    .branches-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-top:30px}.branch{border:1px solid var(--line);padding:22px 12px;border-radius:7px;text-align:center;transition:.2s}.branch:hover{border-color:var(--green);background:#f7fff8}.branch .pin{font-size:21px;color:var(--green)}.branch strong{display:block;margin-top:10px;font-size:13px}.branch small{font-size:10px;color:var(--muted)}
+    .cta{padding:0 0 90px}.cta-panel{background:#26342a;border-radius:12px;padding:55px 60px;color:white;display:flex;align-items:center;justify-content:space-between;gap:30px;position:relative;overflow:hidden}.cta-panel:after{content:"B";position:absolute;right:250px;top:-100px;font:800 330px Manrope;color:rgba(255,255,255,.035)}.cta-panel h2{font-size:clamp(27px,4vw,40px);margin:0 0 12px;letter-spacing:-1px}.cta-panel p{color:#c5d1c7;margin:0;font-size:14px;line-height:1.7}.cta-panel .btn{position:relative;z-index:1;white-space:nowrap}
+    footer{background:#17231a;color:#d8e1d9;padding:55px 0 20px}.footer-grid{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:45px;padding-bottom:40px}.footer-logo{width:185px;background:white;border-radius:4px;padding:7px}.footer-about p{font-size:12px;line-height:1.8;color:#aebbb0;max-width:290px}.footer-col strong{display:block;color:white;font-size:13px;margin-bottom:18px}.footer-col a,.footer-col span{display:block;color:#aebbb0;font-size:12px;margin:12px 0}.footer-col a:hover{color:#7ee58c}.copyright{border-top:1px solid rgba(255,255,255,.12);padding-top:18px;display:flex;justify-content:space-between;gap:15px;color:#91a095;font-size:11px}
+    .wa-float{position:fixed;right:22px;bottom:22px;z-index:30;width:57px;height:57px;border-radius:50%;display:grid;place-items:center;background:#19c65a;color:#fff;font-size:25px;box-shadow:0 8px 25px rgba(0,0,0,.2)}.wa-float:hover{transform:translateY(-3px)}
+    @media(max-width:900px){.links{gap:16px}.property-grid{grid-template-columns:repeat(2,1fr)}.branches-grid{grid-template-columns:repeat(3,1fr)}.about-grid{gap:35px}.footer-grid{grid-template-columns:1.5fr 1fr 1fr}.footer-col:last-child{display:none}}
+    @media(max-width:680px){.container{width:min(100% - 32px,1180px)}.topline .container{justify-content:center}.nav{height:70px}.brand img{width:155px}.menu-btn{display:block}.links{display:none;position:absolute;top:70px;left:0;right:0;background:white;padding:20px 24px 25px;box-shadow:0 15px 25px rgba(0,0,0,.08);flex-direction:column;align-items:flex-start}.links.open{display:flex}.nav-actions .btn{padding:11px 12px;font-size:11px}.hero{min-height:590px}.hero-content{padding:75px 0}.hero:before{background:linear-gradient(90deg,rgba(12,25,16,.88),rgba(15,31,20,.55)),url('https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1200&q=85') center/cover}h1{letter-spacing:-2px}.hero p{font-size:15px}.hero-note{gap:14px;margin-top:35px}.trustgrid{grid-template-columns:1fr;gap:15px;padding:20px 0}.trustitem{justify-content:flex-start;border:0}.section-head{display:block}.section-head p{margin-top:15px}.property-grid{grid-template-columns:1fr}.property-image{height:235px}section{padding:65px 0}.about-grid{grid-template-columns:1fr}.about-visual img{height:350px}.about-copy{order:-1}.branches-grid{grid-template-columns:repeat(2,1fr)}.cta{padding-bottom:65px}.cta-panel{padding:35px 25px;display:block}.cta-panel .btn{margin-top:23px}.footer-grid{grid-template-columns:1fr 1fr;gap:30px}.footer-about{grid-column:1/-1}.footer-col:last-child{display:block}.copyright{display:block;line-height:1.8}.filters input{min-width:100%}.filters select{flex:1}.wa-float{right:15px;bottom:15px}}
+  </style>
+</head>
+<body>
+  <div class="topline"><div class="container"><span>Thoughtful property. Lasting value.</span><span>Serving you across six locations in Nigeria</span></div></div>
+  <header>
+    <div class="container nav">
+      <a class="brand" href="#home" aria-label="Bliss Legacy home"><img src="bliss-legacy-logo.png" alt="Bliss Legacy Limited logo"></a>
+      <button class="menu-btn" id="menuBtn" aria-label="Open navigation">☰</button>
+      <nav class="links" id="navLinks"><a href="#home">Home</a><a href="#properties">Properties</a><a href="#about">About Us</a><a href="#branches">Our Branches</a><a href="#contact">Contact</a></nav>
+      <div class="nav-actions"><a class="btn btn-green wa-link" href="#" data-message="Hello Bliss Legacy, I would like to make a property enquiry.">Talk to an Agent ↗</a></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" id="home"><div class="container"><div class="hero-content">
+      <div class="eyebrow">A better way to own property</div>
+      <h1>Your future begins with the <span>right property.</span></h1>
+      <p>Discover exceptional property opportunities with Bliss Legacy Limited. We make finding your place, planning your investment and taking your next step feel clear and confident.</p>
+      <div class="hero-buttons"><a class="btn btn-green" href="#properties">Explore Properties <span>→</span></a><a class="btn btn-outline wa-link" href="#" data-message="Hello Bliss Legacy, I would like to speak with a property consultant.">Speak to an Agent ↗</a></div>
+      <div class="hero-note"><span><i class="dot"></i> Property opportunities</span><span><i class="dot"></i> Professional guidance</span><span><i class="dot"></i> Customer-first service</span></div>
+    </div></div></section>
+
+    <div class="trustbar"><div class="container trustgrid">
+      <div class="trustitem"><div class="trusticon">⌂</div><div><strong>Find a place to call yours</strong><small>Explore property opportunities</small></div></div>
+      <div class="trustitem"><div class="trusticon">◇</div><div><strong>Make informed decisions</strong><small>Clear property information</small></div></div>
+      <div class="trustitem"><div class="trusticon">✓</div><div><strong>Guidance at every step</strong><small>A team ready to assist</small></div></div>
+    </div></div>
+
+    <section id="properties"><div class="container">
+      <div class="section-head"><div><div class="kicker">Explore opportunities</div><h2>Find a property that feels right.</h2></div><p>Browse a selection of property opportunities and discover the details that matter to your next move.</p></div>
+      <div class="filters"><input id="searchInput" type="search" placeholder="Search property or location..." aria-label="Search properties"><select id="locationFilter" aria-label="Filter by location"><option value="">All locations</option><option>Ikeja</option><option>Ajah</option><option>Asaba</option><option>Ihama</option><option>Obakhavba</option></select><select id="typeFilter" aria-label="Filter by property type"><option value="">All property types</option><option>Residential</option><option>Land</option><option>Commercial</option></select></div>
+      <div class="property-grid" id="propertyGrid"></div>
+      <p style="font-size:11px;color:#8a948c;margin-top:18px">Property names, photographs and prices shown here are sample demonstration content. Replace with verified Bliss Legacy listings before publishing.</p>
+    </div></section>
+
+    <section class="about" id="about"><div class="container about-grid">
+      <div class="about-visual"><img src="https://images.unsplash.com/photo-1600566753086-00f18fb6b3ea?auto=format&fit=crop&w=1100&q=85" alt="Contemporary luxury home exterior"><div class="about-stamp"><strong>BLISS</strong><small>BUILDING YOUR LEGACY</small></div></div>
+      <div class="about-copy"><div class="kicker">About Bliss Legacy</div><h2>Property decisions deserve clarity and confidence.</h2><p>At Bliss Legacy Limited, we believe that finding the right property is about more than a transaction. It is about the people, plans and possibilities connected to every decision.</p><p>Our goal is to make property discovery straightforward through clear information, responsive support and professional guidance from enquiry to the next step.</p><div class="checks"><div class="check"><b>✓</b> Customer-focused service</div><div class="check"><b>✓</b> Clear property information</div><div class="check"><b>✓</b> Dedicated consultants</div><div class="check"><b>✓</b> Multiple branch locations</div></div><a class="btn btn-green wa-link" href="#" data-message="Hello Bliss Legacy, please tell me more about your company and property opportunities.">Get to know us ↗</a></div>
+    </div></section>
+
+    <section id="branches"><div class="container"><div class="section-head"><div><div class="kicker">Closer to you</div><h2>Our branch network.</h2></div><p>Connect with the Bliss Legacy team through one of our branch locations.</p></div><div class="branches-grid">
+      <div class="branch"><div class="pin">⌖</div><strong>Ikeja</strong><small>Lagos</small></div><div class="branch"><div class="pin">⌖</div><strong>Ajah</strong><small>Lagos</small></div><div class="branch"><div class="pin">⌖</div><strong>Asaba</strong><small>Delta</small></div><div class="branch"><div class="pin">⌖</div><strong>Ihama</strong><small>Branch</small></div><div class="branch"><div class="pin">⌖</div><strong>Obakhavba</strong><small>Branch</small></div><div class="branch"><div class="pin">⌖</div><strong>Head Office</strong><small>Corporate office</small></div>
+    </div></div></section>
+
+    <div class="cta" id="contact"><div class="container"><div class="cta-panel"><div><div class="eyebrow">Let's take the next step</div><h2>Ready to find your place?</h2><p>Tell us what you are looking for. Our team will be happy to help you explore available opportunities.</p></div><a class="btn btn-green wa-link" href="#" data-message="Hello Bliss Legacy, I am interested in finding a property. Please assist me.">Chat with us on WhatsApp ↗</a></div></div></div>
+  </main>
+
+  <footer><div class="container"><div class="footer-grid">
+    <div class="footer-about"><img class="footer-logo" src="bliss-legacy-logo.png" alt="Bliss Legacy Limited"><p>Discover property opportunities with confidence. Bliss Legacy Limited is here to help you take your next step.</p></div>
+    <div class="footer-col"><strong>Explore</strong><a href="#home">Home</a><a href="#properties">Properties</a><a href="#about">About Us</a><a href="#branches">Our Branches</a></div>
+    <div class="footer-col"><strong>Our Locations</strong><span>Ikeja</span><span>Ajah</span><span>Asaba</span><span>Ihama · Obakhavba</span></div>
+    <div class="footer-col"><strong>Get in touch</strong><a class="wa-link" href="#" data-message="Hello Bliss Legacy, I have an enquiry.">WhatsApp enquiries ↗</a><span>Contact details to be added</span></div>
+  </div><div class="copyright"><span>© <span id="year"></span> Bliss Legacy Limited. All rights reserved.</span><span>Find your place. Build your legacy.</span></div></div></footer>
+  <a class="wa-float wa-link" href="#" aria-label="Chat on WhatsApp" data-message="Hello Bliss Legacy, I would like to make an enquiry.">✆</a>
+
+  <script>
+    // Replace the sample listings and prices with approved Bliss Legacy property data.
+    const properties = [
+      {name:"The Greenview Residence",location:"Ajah",type:"Residential",price:48500000,beds:"4 Bedrooms",detail:"Contemporary family home",image:"https://images.unsplash.com/photo-1600607687920-4e2a09cf159d?auto=format&fit=crop&w=900&q=85",tag:"Featured"},
+      {name:"Legacy Gardens Estate",location:"Ikeja",type:"Residential",price:62500000,beds:"3 Bedrooms",detail:"Modern estate living",image:"https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=900&q=85",tag:"Popular"},
+      {name:"Serene Acres Plot",location:"Asaba",type:"Land",price:12500000,beds:"Residential plot",detail:"A place to build your plans",image:"https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=900&q=85",tag:"Land"},
+      {name:"The Signature Apartments",location:"Ihama",type:"Residential",price:38500000,beds:"2 Bedrooms",detail:"Comfortable city living",image:"https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=900&q=85",tag:"New"},
+      {name:"Business Point",location:"Obakhavba",type:"Commercial",price:55000000,beds:"Commercial space",detail:"A space for your next venture",image:"https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=900&q=85",tag:"Commercial"},
+      {name:"Palm Court Homes",location:"Ajah",type:"Residential",price:72000000,beds:"5 Bedrooms",detail:"Space for a growing family",image:"https://images.unsplash.com/photo-1600607687644-c7171b42498f?auto=format&fit=crop&w=900&q=85",tag:"Premium"}
+    ];
+    const money = n => "₦" + n.toLocaleString("en-NG");
+    const grid = document.getElementById("propertyGrid");
+    function render(){
+      const q=document.getElementById("searchInput").value.toLowerCase();
+      const loc=document.getElementById("locationFilter").value;
+      const type=document.getElementById("typeFilter").value;
+      const items=properties.filter(p=>(p.name+" "+p.location).toLowerCase().includes(q)&&(!loc||p.location===loc)&&(!type||p.type===type));
+      grid.innerHTML=items.length?items.map(p=>`<article class="property-card"><div class="property-image"><img src="${p.image}" alt="${p.name}" loading="lazy"><span class="tag">${p.tag}</span></div><div class="property-body"><div class="location">⌖ ${p.location} · ${p.type}</div><h3>${p.name}</h3><div style="font-size:12px;color:#7a847c">${p.detail}</div><div class="price">${money(p.price)}</div><div class="features"><span>⌂ ${p.beds}</span><span>✓ Enquiry available</span></div><div class="card-bottom"><span class="details-link">${p.location}</span><a class="details-link wa-link" href="#" data-message="Hello Bliss Legacy, I am interested in ${p.name} in ${p.location}, listed at ${money(p.price)}. Please share more details.">Enquire <span>→</span></a></div></div></article>`).join(""):'<div class="empty">No properties match your search. Try another location or property type.</div>';
+      bindWhatsApp();
+    }
+    // Configure the official WhatsApp number in international format without + or spaces.
+    // Example Nigeria: 2348012345678. Do not publish until the company confirms its number.
+    const WHATSAPP_NUMBER = "";
+    function bindWhatsApp(){document.querySelectorAll(".wa-link").forEach(a=>{a.onclick=e=>{e.preventDefault();const msg=a.dataset.message||"Hello Bliss Legacy.";if(!WHATSAPP_NUMBER){alert("WhatsApp number is not configured yet. Add the official company number in the WHATSAPP_NUMBER setting in index.html.");return;}window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(msg)}`,"_blank","noopener");};});}
+    ["searchInput","locationFilter","typeFilter"].forEach(id=>document.getElementById(id).addEventListener(id==="searchInput"?"input":"change",render));
+    document.getElementById("menuBtn").addEventListener("click",()=>document.getElementById("navLinks").classList.toggle("open"));
+    document.querySelectorAll("#navLinks a").forEach(a=>a.addEventListener("click",()=>document.getElementById("navLinks").classList.remove("open")));
+    document.getElementById("year").textContent=new Date().getFullYear();
+    render();
+  </script>
+</body>
+</html>
