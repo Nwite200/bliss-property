@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <div class="container" style="max-width:420px;padding:80px 0">
+    <div style="text-align:center;margin-bottom:24px">
+      <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy Limited" style="width:180px;margin:0 auto 12px">
+      <h2>Sign in</h2>
+      <p>Access your Bliss Legacy dashboard.</p>
+    </div>
+    <form class="card" id="loginForm" style="display:grid;gap:12px">
+      <input type="email" id="email" placeholder="Email" required>
+      <input type="password" id="password" placeholder="Password" required>
+      <button class="btn btn-green" type="submit">Sign in</button>
+      <div id="msg" style="color:#c0392b;font-size:13px"></div>
+      <a href="forgot-password.html" style="font-size:13px;color:var(--green-dark)">Forgot password?</a>
+    </form>
+  </div>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('msg');
+      msg.textContent = '';
+      const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email: document.getElementById('email').value, password: document.getElementById('password').value }) });
+      const data = await res.json();
+      if (!res.ok) { msg.textContent = data.error || 'Login failed'; return; }
+      const me = await fetch('/api/me').then(r=>r.json());
+      const role = (me.role||'').toLowerCase().replace(/\s+/g,'-');
+      window.location.href = `/dashboard.html?role=${encodeURIComponent(me.role)}`;
+    });
+  </script>
+</body>
+</html>

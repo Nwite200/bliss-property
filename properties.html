@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Properties | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy"></div>
+      <div class="section-label">Properties</div>
+      <a href="#" class="active">Listings</a>
+      <a href="#">Add Property</a>
+      <a href="#">Categories</a>
+      <div class="section-label">Account</div>
+      <a href="#" id="logoutBtn">Logout</a>
+    </aside>
+    <main class="dash-main">
+      <div class="dash-top">
+        <div>
+          <h1>Property Listings</h1>
+          <p style="color:var(--muted);font-size:13px">Manage property inventory across all branches.</p>
+        </div>
+        <a class="btn btn-green" href="property-create.html">Add Property</a>
+      </div>
+      <div class="kpi-grid">
+        <div class="kpi"><div class="label">Total Properties</div><div class="value" id="kpiTotal">-</div></div>
+        <div class="kpi"><div class="label">Published</div><div class="value" id="kpiPublished">-</div></div>
+        <div class="kpi"><div class="label">Featured</div><div class="value" id="kpiFeatured">-</div></div>
+        <div class="kpi"><div class="label">Available</div><div class="value" id="kpiAvailable">-</div></div>
+      </div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+          <div class="filters" style="gap:8px">
+            <input id="searchInput" type="search" placeholder="Search title, city, state...">
+            <select id="categoryFilter"><option value="">All Categories</option></select>
+            <select id="statusFilter"><option value="">All Statuses</option><option>Available</option><option>Reserved</option><option>Sold</option><option>Unavailable</option></select>
+            <select id="branchFilter"><option value="">All Branches</option></select>
+          </div>
+          <div style="display:flex;gap:8px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="featuredFilter"> Featured</label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="publishedFilter"> Published</label>
+          </div>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Reference</th><th>Title</th><th>Category</th><th>Price (₦)</th><th>Branch</th><th>Status</th><th>Featured</th><th>Published</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="propertyTableBody"></tbody>
+        </table>
+        <div id="pagination" style="display:flex;justify-content:center;gap:6px;margin-top:12px"></div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/properties.js"></script>
+</body>
+</html>

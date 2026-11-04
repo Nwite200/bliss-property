@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy"></div>
+      <div class="section-label">Menu</div>
+      <a href="#" class="active">Overview</a>
+      <a href="#" id="logoutBtn">Logout</a>
+    </aside>
+    <main class="dash-main">
+      <div class="dash-top"><h1 id="title">Dashboard</h1><span id="who" style="color:var(--muted);font-size:13px"></span></div>
+      <div class="kpi-grid">
+        <div class="kpi"><div class="label">Status</div><div class="value">Authenticated</div><div class="delta">Phase 2</div></div>
+      </div>
+      <div class="card"><h3>Welcome</h3><p id="welcome">Loading...</p></div>
+    </main>
+  </div>
+  <script>
+    (async () => {
+      const res = await fetch('/api/me');
+      if (!res.ok) { window.location.href = '/login.html'; return; }
+      const me = await res.json();
+      document.getElementById('title').textContent = me.role + ' Dashboard';
+      document.getElementById('who').textContent = me.email;
+      document.getElementById('welcome').textContent = 'Welcome, ' + me.full_name + '. Phase 2 authentication is active.';
+    })();
+    document.getElementById('logoutBtn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await fetch('/api/logout', { method:'POST' });
+      window.location.href = '/login.html';
+    });
+  </script>
+</body>
+</html>

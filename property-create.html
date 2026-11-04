@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Add Property | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy"></div>
+      <div class="section-label">Properties</div>
+      <a href="properties.html">Listings</a>
+      <a href="#" class="active">Add Property</a>
+      <div class="section-label">Account</div>
+      <a href="#" id="logoutBtn">Logout</a>
+    </aside>
+    <main class="dash-main">
+      <div class="dash-top"><h1>Add Property</h1></div>
+      <div class="card" style="max-width:720px">
+        <form id="propertyForm" style="display:grid;gap:14px">
+          <div class="filters" style="grid:1fr/1fr;gap:14px">
+            <input id="title" type="text" placeholder="Property title" required>
+            <select id="category_id" required><option value="">Category</option></select>
+            <input id="property_type" type="text" placeholder="Property type (e.g. Apartment)" required>
+            <input id="sale_price" type="number" placeholder="Sale price (₦)" required>
+            <input id="promotional_price" type="number" placeholder="Promotional price (₦)">
+            <input id="state" type="text" placeholder="State" required>
+            <input id="city" type="text" placeholder="City" required>
+            <input id="address" type="text" placeholder="Full address" required>
+            <select id="branch_id" required><option value="">Branch</option></select>
+            <input id="land_size" type="text" placeholder="Land/building size">
+            <input id="bedrooms" type="number" placeholder="Bedrooms">
+            <input id="bathrooms" type="number" placeholder="Bathrooms">
+            <input id="toilets" type="number" placeholder="Toilets">
+            <input id="parking_spaces" type="number" placeholder="Parking spaces">
+            <input id="features" type="text" placeholder="Features (comma separated)">
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+            <input type="checkbox" id="is_featured"> Featured property
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+            <input type="checkbox" id="is_published"> Publish immediately
+          </label>
+          <button class="btn btn-green" type="submit">Create Property</button>
+          <div id="formMsg" style="color:#c0392b;font-size:13px"></div>
+        </form>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/property-create.js"></script>
+</body>
+</html>
