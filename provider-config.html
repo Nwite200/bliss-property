@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Payment Provider Configuration | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <style>
+    .provider-hero {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 24px;
+      margin-bottom: 22px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+    .provider-hero h2 { font-size: 20px; font-weight: 800; margin: 0 0 4px; color: var(--charcoal); }
+    .provider-hero p { font-size: 13px; color: var(--muted); margin: 0; max-width: 680px; line-height: 1.6; }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+      background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A;
+      white-space: nowrap;
+    }
+    .status-pill.active { background: #DCFCE7; color: #166534; border-color: #BBF7D0; }
+    .status-pill.ready { background: #DCFCE7; color: #166534; border-color: #BBF7D0; }
+    .status-pill.pending { background: #FEF3C7; color: #92400E; border-color: #FDE68A; }
+    .status-pill.off { background: #FEE2E2; color: #991B1B; border-color: #FECACA; }
+
+    .provider-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 20px; margin-bottom: 22px; }
+    @media (max-width: 980px) { .provider-grid { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: #FFFFFF; border: 1px solid var(--line);
+      border-radius: var(--radius-md); overflow: hidden;
+    }
+    .panel-head {
+      padding: 16px 20px; border-bottom: 1px solid var(--line);
+      display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .panel-head h3 { font-size: 15px; font-weight: 800; margin: 0; color: var(--charcoal); }
+    .panel-head p { font-size: 12px; color: var(--muted); margin: 2px 0 0; }
+    .panel-body { padding: 20px; }
+
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 12px; font-weight: 700; color: var(--charcoal); margin-bottom: 6px; }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--line);
+      border-radius: var(--radius-sm); font-size: 13px; box-sizing: border-box; background: #FFFFFF;
+      font-family: inherit;
+    }
+    .form-hint { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.5; }
+
+    .interface-list { display: flex; flex-direction: column; gap: 12px; }
+    .interface-row {
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+      background: #FAFCFA;
+    }
+    .interface-row strong { font-size: 13px; color: var(--charcoal); display: block; }
+    .interface-row span { font-size: 11px; color: var(--muted); }
+
+    .notice-box {
+      background: #FFFBEB; border: 1px solid #FDE68A; border-radius: var(--radius-sm);
+      padding: 12px 14px; font-size: 12px; color: #92400E; line-height: 1.6;
+    }
+    .notice-box strong { display: block; margin-bottom: 3px; }
+
+    .empty-row { text-align: center; padding: 26px 16px; color: var(--muted); font-size: 13px; }
+    .code-inline {
+      font-family: 'Space Mono', monospace; font-size: 11px;
+      background: #F3F6F3; border: 1px solid var(--line); border-radius: 4px;
+      padding: 2px 6px; color: var(--charcoal);
+    }
+    .recon-result { margin-top: 14px; font-size: 13px; }
+    .recon-result ul { margin: 8px 0 0 18px; padding: 0; }
+    .recon-result li { margin-bottom: 3px; font-family: 'Space Mono', monospace; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <a href="index.html">
+          <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" onerror="this.src='bliss-legacy-logo.png'">
+        </a>
+      </div>
+      <div class="section-label">Management</div>
+      <a href="dashboard.html">📊 Overview</a>
+      <a href="properties.html">🏡 Properties</a>
+      <a href="clients.html">👥 Clients</a>
+      <a href="finance-dashboard.html">💳 Finance & Ledger</a>
+      <a href="provider-config.html" class="active">🏦 Payment Provider</a>
+
+      <div class="section-label" style="margin-top:auto">Session</div>
+      <a href="index.html">🌐 Public Website</a>
+      <a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Logout</a>
+    </aside>
+
+    <main class="dash-main">
+      <div class="dash-top">
+        <div>
+          <h1 style="font-size:26px;font-weight:800;margin-bottom:4px">Payment Provider</h1>
+          <p style="font-size:13px;color:var(--muted);margin:0">ALAT by Wema Bank integration status, webhook interface and virtual account register.</p>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <a href="finance-dashboard.html" class="btn btn-outline btn-sm">← Back to Ledger</a>
+          <button type="button" class="btn btn-green btn-sm" id="refreshProviderBtn">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div class="provider-hero">
+        <div style="display:flex;align-items:flex-start;gap:16px">
+          <div style="font-size:38px;line-height:1">🏦</div>
+          <div>
+            <h2>ALAT by Wema Bank</h2>
+            <p>Virtual account issuance, payment verification, webhook processing and reconciliation. No credentials or account numbers are generated by this application — they must be supplied by the bank after onboarding.</p>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+          <span class="status-pill pending" id="providerStatusPill">Loading…</span>
+          <span style="font-size:11px;color:var(--muted)" id="providerEnvLabel">Environment: —</span>
+        </div>
+      </div>
+
+      <div class="provider-grid">
+        <!-- Integration settings -->
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Integration Settings</h3>
+              <p>Only a Managing Director or Finance Officer may change these values.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <form id="providerForm">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div class="form-group">
+                  <label for="providerStatusSelect">Provider Status</label>
+                  <select id="providerStatusSelect">
+                    <option value="Not configured">Not configured</option>
+                    <option value="Awaiting onboarding">Awaiting onboarding</option>
+                    <option value="Awaiting credentials">Awaiting credentials</option>
+                    <option value="Configured">Configured</option>
+                    <option value="Active">Active</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="providerEnvSelect">Environment</label>
+                  <select id="providerEnvSelect">
+                    <option value="sandbox">Sandbox</option>
+                    <option value="production">Production</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="webhookSecretInput">Webhook Shared Secret</label>
+                <input type="password" id="webhookSecretInput" autocomplete="new-password" placeholder="Leave blank to keep the existing secret">
+                <div class="form-hint">
+                  Sent by the provider in the <span class="code-inline">X-Webhook-Secret</span> header. Stored server-side only and never returned by the API.
+                  <span id="secretStateLabel">No secret stored.</span>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="providerConfigJson">Non-secret Provider Metadata (JSON)</label>
+                <textarea id="providerConfigJson" rows="4" placeholder='{"merchant_reference":"", "collection_account_note":"Supplied by Wema after onboarding"}'></textarea>
+                <div class="form-hint">Do not store passwords, API keys, private keys or account numbers here.</div>
+              </div>
+
+              <div class="notice-box" style="margin-bottom:16px">
+                <strong>Integration is intentionally inactive.</strong>
+                Endpoints, credentials and virtual account numbers are never invented. Until Wema issues real credentials and account numbers, clients see the approved "integration pending" message.
+              </div>
+
+              <div style="display:flex;justify-content:flex-end;gap:10px">
+                <button type="submit" class="btn btn-green" id="saveProviderBtn">Save Configuration</button>
+              </div>
+              <p id="providerFormMsg" style="font-size:12px;font-weight:600;margin:10px 0 0"></p>
+            </form>
+          </div>
+        </section>
+
+        <!-- Interface status -->
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Integration Interfaces</h3>
+              <p>What is wired in the Worker, and what is waiting on the bank.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="interface-list" id="interfaceList">
+              <div class="empty-row">Loading interfaces…</div>
+            </div>
+
+            <div class="form-group" style="margin-top:18px;margin-bottom:0">
+              <label>Webhook Endpoint</label>
+              <div class="code-inline" style="display:block;padding:10px">POST /api/webhooks/wema-alat</div>
+              <div class="form-hint">Provisioned and idempotent. Requests are rejected until the provider status is Configured or Active.</div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Virtual accounts -->
+      <section class="panel" style="margin-bottom:22px">
+        <div class="panel-head">
+          <div>
+            <h3>Virtual Account Register</h3>
+            <p>Provider-issued accounts only. No account numbers are created locally.</p>
+          </div>
+          <span class="status-pill pending" id="vaCountPill">0 accounts</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="table" style="margin:0">
+            <thead>
+              <tr style="background:#F9FBF9">
+                <th>Client</th>
+                <th>Client Reference</th>
+                <th>Bank</th>
+                <th>Account Name</th>
+                <th>Account Number</th>
+                <th>Status</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="virtualAccountsBody">
+              <tr><td colspan="7" class="empty-row">Loading virtual accounts…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Webhook events -->
+      <section class="panel" style="margin-bottom:22px">
+        <div class="panel-head">
+          <div>
+            <h3>Recent Webhook Events</h3>
+            <p>Every provider event is recorded once. Replays are rejected.</p>
+          </div>
+          <span class="status-pill pending" id="webhookCountPill">0 events</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="table" style="margin:0">
+            <thead>
+              <tr style="background:#F9FBF9">
+                <th>Event ID</th>
+                <th>Type</th>
+                <th>Transaction Ref</th>
+                <th>Result</th>
+                <th>Received</th>
+                <th>Processed</th>
+              </tr>
+            </thead>
+            <tbody id="webhookEventsBody">
+              <tr><td colspan="6" class="empty-row">Loading webhook events…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Reconciliation -->
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h3>Bank Reconciliation</h3>
+            <p>Paste a JSON array of bank statement rows to match them against D1 payment references. This is read-only.</p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="form-group">
+            <label for="reconInput">Statement Rows (JSON)</label>
+            <textarea id="reconInput" rows="5" style="font-family:'Space Mono', monospace;font-size:12px" placeholder='[{"reference":"TX-VERIFIED-ADA-01","amount":5000000}]'></textarea>
+            <div class="form-hint">Each row must include a <span class="code-inline">reference</span> matching a recorded transaction reference. Nothing is modified.</div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <button type="button" class="btn btn-green btn-sm" id="runReconBtn">Run Reconciliation</button>
+            <button type="button" class="btn btn-outline btn-sm" id="clearReconBtn">Clear</button>
+          </div>
+          <div class="recon-result" id="reconResult"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="assets/js/components.js"></script>
+  <script>
+    let providerData = null;
+    let canEdit = false;
+
+    function esc(value) {
+      return String(value === undefined || value === null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function statusClass(status) {
+      if (status === "Active") return "active";
+      if (status === "Configured") return "ready";
+      if (status === "Not configured") return "off";
+      return "pending";
+    }
+
+    function renderInterfaces(interfaces) {
+      const list = document.getElementById("interfaceList");
+      const entries = Object.entries(interfaces || {});
+      if (!entries.length) {
+        list.innerHTML = `<div class="empty-row">No interfaces reported.</div>`;
+        return;
+      }
+      list.innerHTML = entries.map(([key, value]) => {
+        const label = key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        const status = value && value.status ? value.status : "Unknown";
+        const mode = value && value.mode ? value.mode : "";
+        const pill = status === "Active" || status === "Ready" ? "ready" : (status === "Awaiting provider" ? "pending" : "pending");
+        return `
+          <div class="interface-row">
+            <div>
+              <strong>${esc(label)}</strong>
+              <span>${esc(mode || "Configured in Worker")}</span>
+            </div>
+            <span class="status-pill ${pill}">${esc(status)}</span>
+          </div>`;
+      }).join("");
+    }
+
+    function renderVirtualAccounts(accounts) {
+      const body = document.getElementById("virtualAccountsBody");
+      document.getElementById("vaCountPill").textContent = `${(accounts || []).length} account${(accounts || []).length === 1 ? "" : "s"}`;
+      if (!accounts || !accounts.length) {
+        body.innerHTML = `<tr><td colspan="7" class="empty-row">No provider-issued virtual accounts yet. Accounts appear here only after the bank issues them.</td></tr>`;
+        return;
+      }
+      body.innerHTML = accounts.map(a => `
+        <tr>
+          <td><strong>${esc(a.client_name || "—")}</strong></td>
+          <td><span class="code-inline">${esc(a.client_reference || "—")}</span></td>
+          <td>${esc(a.bank_name || "Wema Bank")}</td>
+          <td>${esc(a.account_name || "—")}</td>
+          <td><span class="code-inline">${esc(a.account_number || "—")}</span></td>
+          <td><span class="status-pill ${a.account_status === "active" ? "active" : "pending"}">${esc(a.account_status || "pending")}</span></td>
+          <td style="font-size:12px;color:var(--muted)">${esc((a.created_at || "").slice(0, 16))}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderWebhookEvents(events) {
+      const body = document.getElementById("webhookEventsBody");
+      document.getElementById("webhookCountPill").textContent = `${(events || []).length} event${(events || []).length === 1 ? "" : "s"}`;
+      if (!events || !events.length) {
+        body.innerHTML = `<tr><td colspan="6" class="empty-row">No webhook events recorded yet.</td></tr>`;
+        return;
+      }
+      body.innerHTML = events.map(e => {
+        const resultClass = e.result === "verified" ? "active" : (["rejected", "amount_mismatch"].includes(e.result) ? "off" : "pending");
+        return `
+          <tr>
+            <td><span class="code-inline">${esc(e.event_id || "—")}</span></td>
+            <td>${esc(e.event_type || "—")}</td>
+            <td><span class="code-inline">${esc(e.transaction_ref || "—")}</span></td>
+            <td><span class="status-pill ${resultClass}">${esc(e.result || "received")}</span></td>
+            <td style="font-size:12px;color:var(--muted)">${esc((e.created_at || "").slice(0, 16))}</td>
+            <td style="font-size:12px;color:var(--muted)">${esc((e.processed_at || "").slice(0, 16) || "—")}</td>
+          </tr>`;
+      }).join("");
+    }
+
+    async function loadProvider() {
+      const res = await fetch("/api/finance/provider-config");
+      if (res.status === 401) { window.location.href = "login.html"; return; }
+      if (res.status === 403) {
+        alert("Access restricted to Finance Officers, Branch Managers and the Managing Director.");
+        window.location.href = "dashboard.html";
+        return;
+      }
+      if (!res.ok) { alert("Unable to load provider configuration."); return; }
+      providerData = await res.json();
+      const cfg = providerData.config || {};
+
+      const pill = document.getElementById("providerStatusPill");
+      pill.textContent = cfg.status || "Not configured";
+      pill.className = "status-pill " + statusClass(cfg.status);
+
+      document.getElementById("providerEnvLabel").textContent = `Environment: ${cfg.environment || "sandbox"}`;
+      document.getElementById("providerStatusSelect").value = cfg.status || "Not configured";
+      document.getElementById("providerEnvSelect").value = cfg.environment || "sandbox";
+      document.getElementById("secretStateLabel").textContent = cfg.has_webhook_secret
+        ? "A secret is stored (not displayed)."
+        : "No secret stored.";
+      if (cfg.config_json) {
+        try {
+          const parsed = typeof cfg.config_json === "string" ? JSON.parse(cfg.config_json) : cfg.config_json;
+          document.getElementById("providerConfigJson").value = JSON.stringify(parsed, null, 2);
+        } catch {
+          document.getElementById("providerConfigJson").value = "";
+        }
+      }
+
+      renderInterfaces(providerData.integration_interfaces);
+      renderVirtualAccounts(providerData.virtual_accounts);
+      renderWebhookEvents(providerData.webhook_events);
+
+      if (!canEdit) {
+        ["providerStatusSelect", "providerEnvSelect", "webhookSecretInput", "providerConfigJson", "saveProviderBtn"].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.disabled = true;
+        });
+        document.getElementById("runReconBtn").disabled = true;
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", async () => {
+      try {
+        const meRes = await fetch("/api/me");
+        if (!meRes.ok) { window.location.href = "login.html"; return; }
+        const me = await meRes.json();
+        canEdit = ["Managing Director", "Finance Officer"].includes(me.role);
+        if (!["Managing Director", "Finance Officer", "Branch Manager"].includes(me.role)) {
+          alert("Access restricted.");
+          window.location.href = "dashboard.html";
+          return;
+        }
+        await loadProvider();
+      } catch {
+        window.location.href = "login.html";
+        return;
+      }
+
+      document.getElementById("refreshProviderBtn").addEventListener("click", loadProvider);
+
+      document.getElementById("logoutBtn").addEventListener("click", async (e) => {
+        e.preventDefault();
+        await fetch("/api/logout", { method: "POST" });
+        window.location.href = "login.html";
+      });
+
+      document.getElementById("providerForm").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const msg = document.getElementById("providerFormMsg");
+        msg.textContent = "";
+        msg.style.color = "var(--muted)";
+
+        const payload = {
+          status: document.getElementById("providerStatusSelect").value,
+          environment: document.getElementById("providerEnvSelect").value
+        };
+        const secret = document.getElementById("webhookSecretInput").value.trim();
+        if (secret) payload.webhook_secret = secret;
+
+        const rawJson = document.getElementById("providerConfigJson").value.trim();
+        if (rawJson) {
+          try {
+            payload.config_json = JSON.parse(rawJson);
+          } catch {
+            msg.style.color = "#DC2626";
+            msg.textContent = "Provider metadata must be valid JSON.";
+            return;
+          }
+        }
+
+        const btn = document.getElementById("saveProviderBtn");
+        btn.disabled = true;
+        try {
+          const res = await fetch("/api/finance/provider-config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            msg.style.color = "#DC2626";
+            msg.textContent = data.error || "Unable to save configuration.";
+            return;
+          }
+          msg.style.color = "#008F1B";
+          msg.textContent = "Configuration saved and audited.";
+          document.getElementById("webhookSecretInput").value = "";
+          await loadProvider();
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      document.getElementById("runReconBtn").addEventListener("click", async () => {
+        const out = document.getElementById("reconResult");
+        out.innerHTML = "";
+        let parsed;
+        try {
+          parsed = JSON.parse(document.getElementById("reconInput").value || "[]");
+        } catch {
+          out.innerHTML = `<span style="color:#DC2626">Statement rows must be valid JSON.</span>`;
+          return;
+        }
+        if (!Array.isArray(parsed)) {
+          out.innerHTML = `<span style="color:#DC2626">Statement rows must be a JSON array.</span>`;
+          return;
+        }
+        const res = await fetch("/api/finance/reconciliation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transactions: parsed })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          out.innerHTML = `<span style="color:#DC2626">${esc(data.error || "Reconciliation failed.")}</span>`;
+          return;
+        }
+        out.innerHTML = `
+          <strong>${data.matched_count} matched</strong> of ${data.total_submitted} submitted ·
+          <span style="color:${data.missing_count ? "#92400E" : "var(--muted)"}">${data.missing_count} unmatched</span>
+          ${data.missing_count ? `<ul>${data.missing.map(m => `<li>${esc(m.reference || JSON.stringify(m))}</li>`).join("")}</ul>` : ""}
+        `;
+      });
+
+      document.getElementById("clearReconBtn").addEventListener("click", () => {
+        document.getElementById("reconInput").value = "";
+        document.getElementById("reconResult").innerHTML = "";
+      });
+    });
+  </script>
+</body>
+</html>

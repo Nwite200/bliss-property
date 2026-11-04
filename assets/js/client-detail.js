@@ -30,9 +30,10 @@ async function load() {
   };
 
   // Assignment history
-  if (data.history) {
+  const assignmentHistory = data.assignment_history || data.history;
+  if (assignmentHistory) {
     const el = document.getElementById("assignHistoryList");
-    el.innerHTML = data.history.map(h => `
+    el.innerHTML = assignmentHistory.map(h => `
       <div style="padding:6px 0;border-bottom:1px solid var(--line)">
         <div style="font-size:11px;color:var(--muted)">${new Date(h.changed_at).toLocaleString()}</div>
         <div><span style="color:var(--green-dark)">→</span> ${h.new_manager_name || "-"} · ${h.new_branch_id ? h.new_branch_id : "-"}</div>

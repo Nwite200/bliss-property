@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <title>My Virtual Account | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <style>
+    .portal-layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      min-height: 100vh;
+      background-color: var(--soft);
+    }
+    .portal-sidebar {
+      background-color: #17231A;
+      color: #D3DED5;
+      padding: 28px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .portal-sidebar .brand-logo {
+      width: 165px;
+      height: auto;
+      background-color: #FFFFFF;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      margin-bottom: 24px;
+      display: block;
+    }
+    .portal-sidebar .nav-section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #7E9383;
+      margin: 16px 8px 6px;
+      font-weight: 700;
+    }
+    .portal-sidebar a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      color: #A3B5A7;
+      font-size: 13px;
+      font-weight: 600;
+      transition: var(--transition);
+    }
+    .portal-sidebar a:hover,
+    .portal-sidebar a.active {
+      background-color: rgba(0, 181, 34, 0.15);
+      color: #7FE58D;
+    }
+    .portal-main {
+      padding: 32px 40px;
+      max-width: 900px;
+    }
+    .va-status-card {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 36px 32px;
+      box-shadow: var(--shadow-sm);
+    }
+    .bank-logo-strip {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+    .bank-brand-pill {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      background: #800080;
+      color: #FFFFFF;
+      padding: 6px 12px;
+      border-radius: 4px;
+    }
+    .pending-callout-box {
+      background: #F8F9FA;
+      border: 1px dashed var(--line);
+      border-left: 4px solid var(--green);
+      padding: 24px;
+      border-radius: var(--radius-sm);
+      margin-top: 18px;
+    }
+    .pending-callout-box p {
+      font-size: 14px;
+      color: var(--charcoal);
+      line-height: 1.7;
+    }
+  </style>
+</head>
+<body>
+  <div class="portal-layout">
+    <aside class="portal-sidebar">
+      <a href="index.html">
+        <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" class="brand-logo" onerror="this.src='bliss-legacy-logo.png'">
+      </a>
+      <span class="nav-section-title">Client Workspace</span>
+      <a href="client-dashboard.html">📊 Overview</a>
+      <a href="client-property.html">🏡 My Property</a>
+      <a href="client-payments.html">💳 Payment History</a>
+      <a href="client-virtual-account.html" class="active">🏦 My Virtual Account</a>
+      <a href="client-receipts.html">📄 Receipts</a>
+      <a href="client-notifications.html">🔔 Notifications</a>
+      <a href="client-profile.html">👤 Profile & Security</a>
+      <span class="nav-section-title" style="margin-top:auto">Actions</span>
+      <a href="index.html">🌐 Public Website</a>
+      <a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Sign Out</a>
+    </aside>
+
+    <main class="portal-main">
+      <div style="margin-bottom:28px">
+        <h1 style="font-size:26px;font-weight:800;margin-bottom:6px">Dedicated Virtual Payment Account</h1>
+        <p style="font-size:14px;color:var(--muted)">Instant bank transfer accounts powered by our official banking integration.</p>
+      </div>
+
+      <div class="va-status-card" id="vaCard">
+        <div class="bank-logo-strip">
+          <span class="bank-brand-pill">ALAT by Wema</span>
+          <span style="font-size:12px;color:var(--muted)">Official Banking Partner</span>
+        </div>
+
+        <h2 style="font-size:20px;margin-bottom:8px">Dedicated Account Status</h2>
+
+        <div id="vaContainer">
+          <p style="color:var(--muted);font-size:13px">Checking banking integration status...</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="assets/js/components.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async () => {
+      try {
+        const res = await fetch('/api/client/virtual-account');
+        if (!res.ok) { window.location.href = '/client-login.html'; return; }
+        const data = await res.json();
+        const box = document.getElementById('vaContainer');
+
+        if (data.is_active) {
+          box.innerHTML = `
+            <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:24px;margin-top:16px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+                <div>
+                  <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Bank Name</span>
+                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.bank_name || 'Wema Bank'}</div>
+                </div>
+                <div>
+                  <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Account Name</span>
+                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.account_name}</div>
+                </div>
+                <div>
+                  <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Dedicated Account Number</span>
+                  <div style="font-family:monospace;font-size:22px;font-weight:800;color:var(--green-dark);margin-top:4px">${data.account_number}</div>
+                </div>
+                <div>
+                  <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Associated Client Reference</span>
+                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.client_reference}</div>
+                </div>
+              </div>
+              <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:12px;font-size:12px;color:#2E7D32">
+                ✓ Payments transferred to this dedicated virtual account are verified and receipted automatically.
+              </div>
+            </div>
+          `;
+        } else {
+          // Display the exact required prompt message
+          box.innerHTML = `
+            <div class="pending-callout-box">
+              <strong style="color:var(--ink);font-size:14px;display:block;margin-bottom:6px">Integration Pending:</strong>
+              <p>${data.message || 'Your dedicated payment account will be available once our Wema Bank payment integration is activated. Please contact our finance team for payment assistance.'}</p>
+              <div style="margin-top:16px;display:flex;gap:10px">
+                <button class="btn btn-green btn-sm" id="waFinanceBtn">Contact Finance Team on WhatsApp ↗</button>
+              </div>
+            </div>
+          `;
+
+          const waBtn = document.getElementById('waFinanceBtn');
+          if (waBtn) {
+            waBtn.addEventListener('click', () => {
+              Bliss.enquireWhatsApp("Hello Bliss Legacy Finance Team, I would like payment assistance for my property account.");
+            });
+          }
+        }
+      } catch (err) {
+        window.location.href = '/client-login.html';
+      }
+
+      document.getElementById('logoutBtn').addEventListener('click', async (e) => {
+        e.preventDefault();
+        await fetch('/api/logout', { method: 'POST' });
+        window.location.href = '/client-login.html';
+      });
+    });
+  </script>
+</body>
+</html>

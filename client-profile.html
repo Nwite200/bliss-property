@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <title>Client Profile & Security | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <style>
+    .portal-layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      min-height: 100vh;
+      background-color: var(--soft);
+    }
+    .portal-sidebar {
+      background-color: #17231A;
+      color: #D3DED5;
+      padding: 28px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .portal-sidebar .brand-logo {
+      width: 165px;
+      height: auto;
+      background-color: #FFFFFF;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      margin-bottom: 24px;
+      display: block;
+    }
+    .portal-sidebar .nav-section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #7E9383;
+      margin: 16px 8px 6px;
+      font-weight: 700;
+    }
+    .portal-sidebar a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      color: #A3B5A7;
+      font-size: 13px;
+      font-weight: 600;
+      transition: var(--transition);
+    }
+    .portal-sidebar a:hover,
+    .portal-sidebar a.active {
+      background-color: rgba(0, 181, 34, 0.15);
+      color: #7FE58D;
+    }
+    .portal-main {
+      padding: 32px 40px;
+      max-width: 900px;
+    }
+    .profile-card {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 32px;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 28px;
+    }
+    .card-title {
+      font-size: 18px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+    .card-desc {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 22px;
+    }
+    .immutable-badge {
+      font-size: 11px;
+      color: #8D6B17;
+      background: #FEF8E7;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid #F5E5B8;
+      display: inline-block;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="portal-layout">
+    <aside class="portal-sidebar">
+      <a href="index.html">
+        <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" class="brand-logo" onerror="this.src='bliss-legacy-logo.png'">
+      </a>
+      <span class="nav-section-title">Client Workspace</span>
+      <a href="client-dashboard.html">📊 Overview</a>
+      <a href="client-property.html">🏡 My Property</a>
+      <a href="client-payments.html">💳 Payment History</a>
+      <a href="client-virtual-account.html">🏦 My Virtual Account</a>
+      <a href="client-receipts.html">📄 Receipts</a>
+      <a href="client-notifications.html">🔔 Notifications</a>
+      <a href="client-profile.html" class="active">👤 Profile & Security</a>
+      <span class="nav-section-title" style="margin-top:auto">Actions</span>
+      <a href="index.html">🌐 Public Website</a>
+      <a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Sign Out</a>
+    </aside>
+
+    <main class="portal-main">
+      <h1 style="font-size:26px;font-weight:800;margin-bottom:8px">Client Profile & Account Security</h1>
+      <p style="font-size:14px;color:var(--muted);margin-bottom:28px">View and update your personal contact details, residential address, next of kin, and manage your account password.</p>
+
+      <!-- Permitted Profile Information Form -->
+      <div class="profile-card">
+        <h2 class="card-title">Personal Contact Information</h2>
+        <p class="card-desc">Keep your details up to date so your property documentation and allocation notices reach you safely.</p>
+
+        <form id="profileForm" class="contact-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="profName">Full Name *</label>
+              <input type="text" id="profName" required>
+            </div>
+            <div class="form-group">
+              <label for="profPhone">Phone Number *</label>
+              <input type="tel" id="profPhone" required>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="profEmail">Email Address *</label>
+            <input type="email" id="profEmail" required>
+          </div>
+
+          <div class="form-group">
+            <label for="profAddress">Residential Address</label>
+            <input type="text" id="profAddress" placeholder="Street name and house number">
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="profState">State of Residence</label>
+              <input type="text" id="profState" placeholder="e.g. Lagos State">
+            </div>
+            <div class="form-group">
+              <label for="profCity">City</label>
+              <input type="text" id="profCity" placeholder="e.g. Ikeja">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="profNok">Next of Kin (Name, Relationship & Phone)</label>
+            <input type="text" id="profNok" placeholder="e.g. Chinedu Nwosu (Brother) - 08030000000">
+          </div>
+
+          <div class="form-group">
+            <span class="immutable-badge">🔒 Note: Property ownership, agreed purchase price, assigned branch, and marketer attribution are strictly immutable from this portal.</span>
+          </div>
+
+          <button type="submit" class="btn btn-green" id="saveProfileBtn" style="max-width:200px">
+            Save Profile Changes
+          </button>
+          <span id="profileMsg" style="font-size:13px;font-weight:600"></span>
+        </form>
+      </div>
+
+      <!-- Change Password Card -->
+      <div class="profile-card">
+        <h2 class="card-title">Change Account Password</h2>
+        <p class="card-desc">Ensure your account uses a strong, unique password to safeguard your real estate investment records.</p>
+
+        <form id="passwordForm" class="contact-form" style="max-width:440px">
+          <div class="form-group">
+            <label for="curPass">Current Password *</label>
+            <input type="password" id="curPass" required placeholder="••••••••">
+          </div>
+
+          <div class="form-group">
+            <label for="newPass">New Password *</label>
+            <input type="password" id="newPass" required placeholder="••••••••">
+          </div>
+
+          <div class="form-group">
+            <label for="confirmPass">Confirm New Password *</label>
+            <input type="password" id="confirmPass" required placeholder="••••••••">
+          </div>
+
+          <button type="submit" class="btn btn-green" id="changePassBtn">
+            Update Password
+          </button>
+          <span id="passMsg" style="font-size:13px;font-weight:600"></span>
+        </form>
+      </div>
+    </main>
+  </div>
+
+  <script src="assets/js/components.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async () => {
+      try {
+        const res = await fetch('/api/client/profile');
+        if (!res.ok) { window.location.href = '/client-login.html'; return; }
+        const data = await res.json();
+        const p = data.profile || {};
+
+        document.getElementById('profName').value = p.full_name || '';
+        document.getElementById('profPhone').value = p.phone_number || '';
+        document.getElementById('profEmail').value = p.email_address || '';
+        document.getElementById('profAddress').value = p.residential_address || '';
+        document.getElementById('profState').value = p.state || '';
+        document.getElementById('profCity').value = p.city || '';
+        document.getElementById('profNok').value = p.next_of_kin || '';
+      } catch (err) {
+        window.location.href = '/client-login.html';
+      }
+
+      // Profile update
+      document.getElementById('profileForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const msg = document.getElementById('profileMsg');
+        const btn = document.getElementById('saveProfileBtn');
+        msg.textContent = '';
+        btn.disabled = true;
+
+        const body = {
+          full_name: document.getElementById('profName').value,
+          phone_number: document.getElementById('profPhone').value,
+          email_address: document.getElementById('profEmail').value,
+          residential_address: document.getElementById('profAddress').value,
+          state: document.getElementById('profState').value,
+          city: document.getElementById('profCity').value,
+          next_of_kin: document.getElementById('profNok').value
+        };
+
+        const res = await fetch('/api/client/profile', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        btn.disabled = false;
+        if (res.ok) {
+          msg.style.color = '#00B522';
+          msg.textContent = '✓ Profile updated successfully.';
+        } else {
+          const err = await res.json();
+          msg.style.color = '#C0392B';
+          msg.textContent = err.error || 'Failed to update profile.';
+        }
+      });
+
+      // Password update
+      document.getElementById('passwordForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const msg = document.getElementById('passMsg');
+        const cur = document.getElementById('curPass').value;
+        const n1 = document.getElementById('newPass').value;
+        const n2 = document.getElementById('confirmPass').value;
+        msg.textContent = '';
+
+        if (n1 !== n2) {
+          msg.style.color = '#C0392B';
+          msg.textContent = 'Passwords do not match.';
+          return;
+        }
+
+        const res = await fetch('/api/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ current_password: cur, new_password: n1 })
+        });
+
+        if (res.ok) {
+          msg.style.color = '#00B522';
+          msg.textContent = '✓ Password changed successfully.';
+          document.getElementById('passwordForm').reset();
+        } else {
+          const err = await res.json();
+          msg.style.color = '#C0392B';
+          msg.textContent = err.error || 'Password update failed.';
+        }
+      });
+
+      document.getElementById('logoutBtn').addEventListener('click', async (e) => {
+        e.preventDefault();
+        await fetch('/api/logout', { method: 'POST' });
+        window.location.href = '/client-login.html';
+      });
+    });
+  </script>
+</body>
+</html>

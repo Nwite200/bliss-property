@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <title>Client Portal Dashboard | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <style>
+    .portal-layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      min-height: 100vh;
+      background-color: var(--soft);
+    }
+    .portal-sidebar {
+      background-color: #17231A;
+      color: #D3DED5;
+      padding: 28px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border-right: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .portal-sidebar .brand-logo {
+      width: 165px;
+      height: auto;
+      background-color: #FFFFFF;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      margin-bottom: 24px;
+      display: block;
+    }
+    .portal-sidebar .nav-section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #7E9383;
+      margin: 16px 8px 6px;
+      font-weight: 700;
+    }
+    .portal-sidebar a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      color: #A3B5A7;
+      font-size: 13px;
+      font-weight: 600;
+      transition: var(--transition);
+    }
+    .portal-sidebar a:hover,
+    .portal-sidebar a.active {
+      background-color: rgba(0, 181, 34, 0.15);
+      color: #7FE58D;
+    }
+    .portal-main {
+      padding: 32px 40px;
+      overflow-y: auto;
+    }
+    .portal-topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 28px;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .client-welcome-box h1 {
+      font-size: 26px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+    .client-ref-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .client-ref-badge strong {
+      color: var(--green-dark);
+      background-color: var(--green-light);
+      padding: 2px 8px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+    }
+    .portal-top-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn-notif {
+      position: relative;
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    .notif-badge-count {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      background-color: #E74C3C;
+      color: #FFFFFF;
+      font-size: 10px;
+      font-weight: 800;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    /* Financial Cards & Progress Bar */
+    .financial-kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+    .finance-kpi-card {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      box-shadow: var(--shadow-sm);
+    }
+    .kpi-lbl {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+    .kpi-amt {
+      font-family: var(--font-display);
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--ink);
+      margin: 6px 0 2px;
+    }
+    .kpi-green {
+      color: var(--green-dark);
+    }
+    .kpi-sub {
+      font-size: 11px;
+      color: var(--muted-light);
+    }
+    .progress-card {
+      grid-column: 1 / -1;
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 22px 24px;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 26px;
+    }
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .progress-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .progress-pct {
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--green-dark);
+    }
+    .progress-bar-track {
+      width: 100%;
+      height: 12px;
+      background-color: var(--soft);
+      border-radius: 100px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #00B522 0%, #7FE58D 100%);
+      border-radius: 100px;
+      transition: width 0.8s ease;
+    }
+    .progress-legend {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    /* Dashboard Split Content */
+    .dashboard-split-grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      gap: 24px;
+    }
+    .dash-box {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 24px;
+      box-shadow: var(--shadow-sm);
+    }
+    .dash-box-title {
+      font-size: 17px;
+      font-weight: 800;
+      color: var(--ink);
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .dash-box-title a {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--green-dark);
+    }
+    /* Property Preview Mini Card */
+    .mini-prop-card {
+      display: flex;
+      gap: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 14px;
+      background-color: var(--soft);
+    }
+    .mini-prop-img {
+      width: 120px;
+      height: 90px;
+      object-fit: cover;
+      border-radius: var(--radius-sm);
+      background: #E2E8E2;
+    }
+    .mini-prop-info h3 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    .mini-prop-info p {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .mini-prop-price {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--green-dark);
+      margin-top: 6px;
+    }
+    /* Next Payment Box */
+    .next-payment-banner {
+      background: linear-gradient(135deg, #F0FAF2 0%, #FFFFFF 100%);
+      border: 1px solid #BCE9C7;
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      margin-top: 14px;
+    }
+    .next-pay-amount {
+      font-family: var(--font-display);
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--green-dark);
+      margin: 4px 0;
+    }
+    .next-pay-meta {
+      font-size: 12px;
+      color: #38704A;
+      line-height: 1.5;
+    }
+    .no-schedule-msg {
+      background-color: var(--soft);
+      border: 1px dashed var(--line);
+      padding: 18px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Notifications modal/dropdown */
+    .notif-item {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .notif-item:last-child {
+      border-bottom: none;
+    }
+    .notif-item.unread {
+      background-color: #F5FAF6;
+      border-left: 3px solid var(--green);
+    }
+    .notif-title {
+      font-weight: 700;
+      color: var(--ink);
+      display: block;
+      margin-bottom: 2px;
+    }
+    .notif-time {
+      font-size: 11px;
+      color: var(--muted-light);
+    }
+    @media (max-width: 900px) {
+      .portal-layout {
+        grid-template-columns: 1fr;
+      }
+      .portal-sidebar {
+        display: none;
+      }
+      .financial-kpi-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .dashboard-split-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="portal-layout">
+    <!-- Sidebar Navigation -->
+    <aside class="portal-sidebar">
+      <a href="index.html">
+        <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" class="brand-logo" onerror="this.src='bliss-legacy-logo.png'">
+      </a>
+      <span class="nav-section-title">Client Workspace</span>
+      <a href="client-dashboard.html" class="active">📊 Overview</a>
+      <a href="client-property.html">🏡 My Property</a>
+      <a href="client-payments.html">💳 Payment History</a>
+      <a href="client-virtual-account.html">🏦 My Virtual Account</a>
+      <a href="client-receipts.html">📄 Receipts</a>
+      <a href="client-notifications.html">🔔 Notifications</a>
+      <a href="client-profile.html">👤 Profile & Security</a>
+
+      <span class="nav-section-title" style="margin-top:auto">Actions</span>
+      <a href="index.html">🌐 Public Website</a>
+      <a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Sign Out</a>
+    </aside>
+
+    <!-- Main Workspace Content -->
+    <main class="portal-main">
+      <div class="portal-topbar">
+        <div class="client-welcome-box">
+          <h1 id="welcomeTitle">Loading Account...</h1>
+          <div class="client-ref-badge">
+            Client Reference: <strong id="clientRef">...</strong>
+            <span style="margin:0 4px">•</span>
+            <span id="clientStatus" class="status-badge" style="padding:2px 8px;font-size:10px">Active</span>
+          </div>
+        </div>
+
+        <div class="portal-top-actions">
+          <button class="btn-notif" id="notifToggleBtn" title="In-App Notifications" aria-label="Notifications">
+            🔔
+            <span class="notif-badge-count" id="notifBadge" style="display:none">0</span>
+          </button>
+          <a href="client-profile.html" class="btn btn-outline btn-sm">Edit Profile</a>
+          <button class="btn btn-green btn-sm" id="waSupportBtn">Support on WhatsApp ↗</button>
+        </div>
+      </div>
+
+      <!-- Financial KPI Summary Cards -->
+      <div class="financial-kpi-grid">
+        <div class="finance-kpi-card">
+          <span class="kpi-lbl">Agreed Purchase Price</span>
+          <div class="kpi-amt" id="agreedPrice">₦0.00</div>
+          <span class="kpi-sub">Authoritative Purchase Record</span>
+        </div>
+
+        <div class="finance-kpi-card">
+          <span class="kpi-lbl">Total Verified Payments</span>
+          <div class="kpi-amt kpi-green" id="totalVerified">₦0.00</div>
+          <span class="kpi-sub" id="verifiedCount">0 verified payments</span>
+        </div>
+
+        <div class="finance-kpi-card">
+          <span class="kpi-lbl">Outstanding Balance</span>
+          <div class="kpi-amt" id="outstandingBalance">₦0.00</div>
+          <span class="kpi-sub">Remaining to completion</span>
+        </div>
+
+        <div class="finance-kpi-card">
+          <span class="kpi-lbl">Payment Status</span>
+          <div class="kpi-amt kpi-green" id="paymentPctText">0%</div>
+          <span class="kpi-sub">Overall progress</span>
+        </div>
+      </div>
+
+      <!-- Payment Progress Bar -->
+      <div class="progress-card">
+        <div class="progress-header">
+          <span class="progress-title">Property Payment Progress</span>
+          <span class="progress-pct" id="progressPctLabel">0%</span>
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="progressBarFill" style="width: 0%"></div>
+        </div>
+        <div class="progress-legend">
+          <span>₦0 Paid</span>
+          <span id="progressTarget">Target: ₦0.00</span>
+        </div>
+      </div>
+
+      <!-- Split Layout: Property on Left, Next Payment & Notifications on Right -->
+      <div class="dashboard-split-grid">
+        <!-- Left: Assigned / Reserved Property -->
+        <div class="dash-box">
+          <div class="dash-box-title">
+            <span>My Property Allocation</span>
+            <a href="client-property.html">View Property Details →</a>
+          </div>
+          <div id="propertyContainer">
+            <p style="color:var(--muted);font-size:13px">Loading property record...</p>
+          </div>
+        </div>
+
+        <!-- Right: Next Payment & Installments -->
+        <div class="dash-box">
+          <div class="dash-box-title">
+            <span>Next Payment Information</span>
+            <a href="client-payments.html">Payment History →</a>
+          </div>
+          <div id="nextPaymentContainer">
+            <p style="color:var(--muted);font-size:13px">Checking schedule...</p>
+          </div>
+
+          <div style="margin-top:24px">
+            <div class="dash-box-title">
+              <span>Recent In-App Notifications</span>
+              <a href="client-notifications.html">View all →</a>
+            </div>
+            <a href="client-notifications.html" id="notificationsContainer" style="display:block;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;text-decoration:none;color:inherit">
+              <p style="padding:14px;color:var(--muted);font-size:13px">No recent notifications.</p>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Profile Summary -->
+      <div class="dash-box" style="margin-top:20px">
+        <div class="dash-box-title">
+          <span>My Profile</span>
+          <a href="client-profile.html">Manage Profile →</a>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px 24px;padding:4px 0">
+          <div>
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Phone Number</span>
+            <div id="profilePhone" style="font-size:13px;font-weight:600;color:var(--charcoal);margin-top:3px">—</div>
+          </div>
+          <div>
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Email Address</span>
+            <div id="profileEmail" style="font-size:13px;font-weight:600;color:var(--charcoal);margin-top:3px;word-break:break-word">—</div>
+          </div>
+          <div>
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Residential Address</span>
+            <div id="profileAddress" style="font-size:13px;font-weight:600;color:var(--charcoal);margin-top:3px">—</div>
+          </div>
+          <div>
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Branch</span>
+            <div id="profileBranch" style="font-size:13px;font-weight:600;color:var(--charcoal);margin-top:3px">—</div>
+          </div>
+          <div>
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Next of Kin</span>
+            <div id="profileNok" style="font-size:13px;font-weight:600;color:var(--charcoal);margin-top:3px">—</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="assets/js/data/properties.js"></script>
+  <script src="assets/js/components.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async () => {
+      try {
+        const res = await fetch('/api/client/dashboard');
+        if (res.status === 401 || res.status === 403) {
+          window.location.href = '/client-login.html';
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || 'Unable to load dashboard.');
+          return;
+        }
+
+        const client = data.client || {};
+        const property = data.property;
+        const financials = data.financials || {};
+        const nextPay = data.next_payment || {};
+        const notifs = data.recent_notifications || [];
+
+        // Fill Header & Welcome
+        document.getElementById('welcomeTitle').textContent = `Welcome back, ${client.full_name || 'Client'}`;
+        document.getElementById('clientRef').textContent = client.client_reference || 'N/A';
+        document.getElementById('clientStatus').textContent = client.status || 'Active';
+
+        // Profile summary
+        document.getElementById('profilePhone').textContent = client.phone_number || '—';
+        document.getElementById('profileEmail').textContent = client.email_address || '—';
+        document.getElementById('profileAddress').textContent =
+          [client.residential_address, client.city, client.state].filter(Boolean).join(', ') || '—';
+        document.getElementById('profileBranch').textContent = client.branch_name || '—';
+        document.getElementById('profileNok').textContent = client.next_of_kin || '—';
+
+        // Fill Financial KPIs (derived strictly from integer kobo)
+        document.getElementById('agreedPrice').textContent = Bliss.money(financials.agreed_price_ngn);
+        document.getElementById('totalVerified').textContent = Bliss.money(financials.total_verified_ngn);
+        document.getElementById('outstandingBalance').textContent = Bliss.money(financials.outstanding_balance_ngn);
+        document.getElementById('verifiedCount').textContent = `${financials.verified_payments_count || 0} verified payment(s)`;
+
+        const pct = financials.payment_percentage || 0;
+        document.getElementById('paymentPctText').textContent = `${pct}%`;
+        document.getElementById('progressPctLabel').textContent = `${pct}% Completed`;
+        document.getElementById('progressBarFill').style.width = `${pct}%`;
+        document.getElementById('progressTarget').textContent = `Agreed Price: ${Bliss.money(financials.agreed_price_ngn)}`;
+
+        // Render Property Section
+        const propBox = document.getElementById('propertyContainer');
+        if (property) {
+          const imgUrl = (property.images && property.images[0]) || 'https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=400&q=80';
+          propBox.innerHTML = `
+            <div class="mini-prop-card">
+              <img src="${imgUrl}" alt="${property.title}" class="mini-prop-img">
+              <div class="mini-prop-info">
+                <h3>${property.title}</h3>
+                <p>📍 Location: ${property.location || 'Prime Estate'}</p>
+                <p>Ref: <strong>${property.reference || 'N/A'}</strong></p>
+                <div class="mini-prop-price">${Bliss.money(property.agreed_purchase_price)}</div>
+              </div>
+            </div>
+            <p style="font-size:13px;color:var(--muted);margin-top:12px;line-height:1.6">
+              ${(property.description || '').slice(0, 140)}...
+            </p>
+          `;
+        } else {
+          propBox.innerHTML = `
+            <div class="no-schedule-msg">
+              <p>No property has been linked to this client account yet. Please contact your dedicated relationship manager to finalize your property reservation.</p>
+            </div>
+          `;
+        }
+
+        // Render Next Payment Box
+        const nextBox = document.getElementById('nextPaymentContainer');
+        if (nextPay.has_schedule) {
+          nextBox.innerHTML = `
+            <div class="next-payment-banner">
+              <span class="kpi-lbl">Scheduled Installment</span>
+              <div class="next-pay-amount">${Bliss.money(nextPay.installment_amount)}</div>
+              <p class="next-pay-meta">
+                Due Date: <strong>${nextPay.next_due_date.slice(0, 10)}</strong> (${nextPay.status})
+              </p>
+              <p class="next-pay-meta" style="margin-top:6px">
+                ${nextPay.payment_instruction || ''}
+              </p>
+            </div>
+          `;
+        } else {
+          nextBox.innerHTML = `
+            <div class="no-schedule-msg">
+              <p>${nextPay.message || 'Your next payment information will appear here once your payment schedule has been configured.'}</p>
+            </div>
+          `;
+        }
+
+        // Render Notifications
+        const notifBox = document.getElementById('notificationsContainer');
+        if (notifs.length) {
+          const unreadCount = notifs.filter(n => !n.is_read).length;
+          const badge = document.getElementById('notifBadge');
+          if (unreadCount > 0) {
+            badge.style.display = 'flex';
+            badge.textContent = unreadCount;
+          }
+          notifBox.innerHTML = notifs.map(n => `
+            <div class="notif-item ${n.is_read ? '' : 'unread'}">
+              <span class="notif-title">${n.title}</span>
+              <p style="font-size:12px;color:var(--muted);line-height:1.4">${n.message}</p>
+              <span class="notif-time">${(n.created_at || '').slice(0, 16)}</span>
+            </div>
+          `).join('');
+        }
+
+        // WhatsApp Action
+        document.getElementById('waSupportBtn').addEventListener('click', () => {
+          Bliss.enquireWhatsApp(`Hello Bliss Legacy, my name is ${client.full_name} (Ref: ${client.client_reference}). I need assistance with my account.`);
+        });
+
+        document.getElementById('notifToggleBtn').addEventListener('click', () => {
+          window.location.href = 'client-notifications.html';
+        });
+
+      } catch (err) {
+        window.location.href = '/client-login.html';
+      }
+
+      // Logout handler
+      document.getElementById('logoutBtn').addEventListener('click', async (e) => {
+        e.preventDefault();
+        await fetch('/api/logout', { method: 'POST' });
+        window.location.href = '/client-login.html';
+      });
+    });
+  </script>
+</body>
+</html>

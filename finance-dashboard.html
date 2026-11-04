@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Finance & Ledger Management | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <style>
+    .finance-kpis {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .fin-kpi-card {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 18px 20px;
+      box-shadow: var(--shadow-sm);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .fin-kpi-card .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .fin-kpi-card .amount {
+      font-family: var(--font-display);
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--charcoal);
+    }
+    .fin-kpi-card .meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .demo-mode-active {
+      border: 2px dashed #DC2626 !important;
+      background: #FFF5F5 !important;
+    }
+    .demo-banner-top {
+      background: #DC2626;
+      color: #FFFFFF;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      text-align: center;
+      letter-spacing: 0.5px;
+      display: none;
+    }
+
+    /* Modals */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 17, 0.7);
+      backdrop-filter: blur(4px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+    .modal-box {
+      background: #FFFFFF;
+      width: 100%;
+      max-width: 560px;
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-lg);
+      padding: 28px;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+    }
+    .modal-header h3 {
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--charcoal);
+      margin-bottom: 6px;
+    }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      box-sizing: border-box;
+      background: #FFFFFF;
+    }
+
+    .wema-widget {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div id="demoBanner" class="demo-banner-top">
+    ⚠️ DEMO MODE ACTIVE: Displaying simulated non-live test transactions. Live accounting books are unaffected.
+  </div>
+
+  <div class="dash">
+    <!-- Staff Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <a href="index.html">
+          <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" onerror="this.src='bliss-legacy-logo.png'">
+        </a>
+      </div>
+      <div class="section-label">Management</div>
+      <a href="dashboard.html">📊 Overview</a>
+      <a href="properties.html">🏡 Properties</a>
+      <a href="clients.html">👥 Clients</a>
+      <a href="finance-dashboard.html" class="active">💳 Finance & Ledger</a>
+      <a href="provider-config.html">🏦 Payment Provider</a>
+
+      <div class="section-label">Mode & Environment</div>
+      <div style="padding:10px 14px">
+        <label style="font-size:12px;color:#A3B5A7;display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="toggleDemoMode">
+          <span>Demo Test Mode</span>
+        </label>
+      </div>
+
+      <div class="section-label" style="margin-top:auto">Session</div>
+      <a href="index.html">🌐 Public Website</a>
+      <a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Logout</a>
+    </aside>
+
+    <!-- Main Workspace -->
+    <main class="dash-main">
+      <div class="dash-top">
+        <div>
+          <h1 style="font-size:26px;font-weight:800;margin-bottom:4px">Financial Operations & Ledger</h1>
+          <p style="font-size:13px;color:var(--muted);margin:0">Verified collections, payment reconciliations, ALAT Wema integration & integer kobo audit.</p>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button type="button" class="btn btn-green btn-sm" id="openRecordPaymentBtn">+ Record Manual Payment</button>
+          <button type="button" class="btn btn-outline btn-sm" id="exportCsvBtn">📥 Export CSV</button>
+        </div>
+      </div>
+
+      <!-- ALAT by Wema Bank Status Widget -->
+      <div class="wema-widget" id="wemaWidgetBox">
+        <div style="display:flex;align-items:center;gap:14px">
+          <div style="font-size:32px">🏦</div>
+          <div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:15px;font-weight:700;color:var(--charcoal)">ALAT by Wema Bank Virtual Accounts</span>
+              <span id="wemaStatusBadge" class="status-badge" style="background:#FEF3C7;color:#92400E">Awaiting onboarding</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted);margin-top:3px" id="wemaSubtext">
+              Direct automated virtual account issuance and webhook payment notifications.
+            </div>
+          </div>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" id="openWemaConfigBtn">⚙️ Integration Settings</button>
+      </div>
+
+      <!-- Financial KPI Cards -->
+      <div class="finance-kpis">
+        <div class="fin-kpi-card" style="border-left:4px solid #00B522">
+          <span class="label">Total Verified Collections</span>
+          <div class="amount" id="kpiTotalVerified">₦0.00</div>
+          <span class="meta" id="kpiVerifiedCount">0 verified payments</span>
+        </div>
+        <div class="fin-kpi-card">
+          <span class="label">Today's Collections</span>
+          <div class="amount" id="kpiTodayVerified">₦0.00</div>
+          <span class="meta">Reconciled today</span>
+        </div>
+        <div class="fin-kpi-card">
+          <span class="label">This Month's Collections</span>
+          <div class="amount" id="kpiMonthVerified">₦0.00</div>
+          <span class="meta">Current calendar month</span>
+        </div>
+        <div class="fin-kpi-card" style="border-left:4px solid #D97706">
+          <span class="label">Pending Verification</span>
+          <div class="amount" id="kpiPendingAmount" style="color:#D97706">₦0.00</div>
+          <span class="meta" id="kpiPendingCount">0 pending review</span>
+        </div>
+        <div class="fin-kpi-card" style="border-left:4px solid #DC2626">
+          <span class="label">Reversals & Refunds</span>
+          <div class="amount" id="kpiRefundsAmount" style="color:#DC2626">₦0.00</div>
+          <span class="meta" id="kpiRefundsCount">0 adjustments</span>
+        </div>
+        <div class="fin-kpi-card" style="border-left:4px solid #2563EB">
+          <span class="label">Outstanding Client Balances</span>
+          <div class="amount" id="kpiOutstandingAmount" style="color:#2563EB">₦0.00</div>
+          <span class="meta">Across all active contracts</span>
+        </div>
+      </div>
+
+      <!-- Transaction Ledger Table -->
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+          <div class="filters" style="gap:10px;flex-wrap:wrap">
+            <input id="txSearchInput" type="search" placeholder="Search reference, client..." style="width:240px;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:4px;font-size:13px">
+            <select id="txStatusFilter" style="height:38px;padding:0 12px;border:1px solid var(--line);border-radius:4px;font-size:13px">
+              <option value="">All Statuses</option>
+              <option value="verified">Verified</option>
+              <option value="pending">Pending</option>
+              <option value="failed">Failed</option>
+              <option value="reversed">Reversed</option>
+              <option value="refunded">Refunded</option>
+            </select>
+            <select id="txBranchFilter" style="height:38px;padding:0 12px;border:1px solid var(--line);border-radius:4px;font-size:13px">
+              <option value="">All Branches</option>
+            </select>
+            <select id="txMarketerFilter" style="height:38px;padding:0 12px;border:1px solid var(--line);border-radius:4px;font-size:13px">
+              <option value="">All Marketers</option>
+            </select>
+            <select id="txPropertyFilter" style="height:38px;padding:0 12px;border:1px solid var(--line);border-radius:4px;font-size:13px">
+              <option value="">All Properties</option>
+            </select>
+            <input type="date" id="txDateFrom" title="From date" style="height:38px;padding:0 10px;border:1px solid var(--line);border-radius:4px;font-size:12px">
+            <input type="date" id="txDateTo" title="To date" style="height:38px;padding:0 10px;border:1px solid var(--line);border-radius:4px;font-size:12px">
+            <button type="button" class="btn btn-outline btn-sm" id="clearTxFiltersBtn">Clear</button>
+          </div>
+          <div id="txCountLabel" style="font-size:12px;color:var(--muted)">Loading transactions...</div>
+        </div>
+
+        <div style="overflow-x:auto">
+          <table class="table" style="margin:0">
+            <thead>
+              <tr style="background:#F9FBF9">
+                <th>Reference</th>
+                <th>Client Name & Ref</th>
+                <th>Branch</th>
+                <th>Amount (NGN)</th>
+                <th>Method</th>
+                <th>Status</th>
+                <th>Date</th>
+                <th>Receipt</th>
+                <th style="text-align:right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="txTableBody">
+              <tr>
+                <td colspan="9" style="text-align:center;padding:40px;color:var(--muted)">Loading transaction ledger...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <!-- Installment Plans -->
+      <div class="card" style="padding:0;overflow:hidden;margin-top:24px">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+          <div>
+            <h3 style="font-size:16px;font-weight:800;margin:0">Installment Plans</h3>
+            <p style="font-size:12px;color:var(--muted);margin:2px 0 0">Weekly, monthly, quarterly and custom schedules. Every change is audited.</p>
+          </div>
+          <button type="button" class="btn btn-green btn-sm" id="openScheduleBtn">+ Create Installment Plan</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="table" style="margin:0">
+            <thead>
+              <tr style="background:#F9FBF9">
+                <th>Client</th>
+                <th>Property</th>
+                <th>Agreed Total</th>
+                <th>Installment</th>
+                <th>Frequency</th>
+                <th>Next Due</th>
+                <th>Status</th>
+                <th style="text-align:right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="scheduleTableBody">
+              <tr><td colspan="8" style="text-align:center;padding:28px;color:var(--muted)">Loading installment plans...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Record Manual Payment Modal -->
+  <div class="modal-backdrop" id="recordPaymentModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Record Client Payment</h3>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('recordPaymentModal')">✕</button>
+      </div>
+      <form id="recordPaymentForm">
+        <div class="form-group">
+          <label>Select Client *</label>
+          <select id="recordClientId" required>
+            <option value="">-- Choose Client --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Payment Amount in NGN *</label>
+          <input type="number" step="0.01" min="100" id="recordAmount" placeholder="e.g. 500000" required>
+        </div>
+        <div class="form-group">
+          <label>Payment Method *</label>
+          <select id="recordMethod" required>
+            <option value="Bank Transfer">Bank Transfer (Direct NGN)</option>
+            <option value="Virtual Account">ALAT by Wema Virtual Account</option>
+            <option value="POS">POS Terminal</option>
+            <option value="Bank Draft">Certified Bank Draft</option>
+            <option value="Cash Deposit">Bank Branch Cash Deposit</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Bank Transaction Reference (Optional)</label>
+          <input type="text" id="recordTxRef" placeholder="Leave blank to auto-generate">
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="recordIsDemo">
+            <span style="font-weight:400;color:var(--charcoal)">Mark as Demo / Test Transaction</span>
+          </label>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px">
+          <button type="button" class="btn btn-outline" onclick="closeModal('recordPaymentModal')">Cancel</button>
+          <button type="submit" class="btn btn-green" id="submitRecordBtn">Record Payment</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Verify Payment Confirmation Modal -->
+  <div class="modal-backdrop" id="verifyPaymentModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Verify & Authorize Payment</h3>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('verifyPaymentModal')">✕</button>
+      </div>
+      <div style="font-size:13px;color:var(--charcoal);line-height:1.5;margin-bottom:18px">
+        You are about to verify the following payment into the company's ledger. This action is <strong>authoritative</strong>, computes remaining balances in integer kobo, and generates an official receipt for the client.
+      </div>
+      <div style="background:#F9FAF9;border:1px solid var(--line);border-radius:6px;padding:16px;margin-bottom:20px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px">
+          <span style="color:var(--muted)">Reference:</span>
+          <strong id="verifyModalTxRef" style="font-family:'Space Mono', monospace">--</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px">
+          <span style="color:var(--muted)">Client:</span>
+          <strong id="verifyModalClient">--</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:14px;border-top:1px dashed var(--line);padding-top:8px">
+          <span style="color:var(--muted)">Verified Amount:</span>
+          <strong id="verifyModalAmount" style="color:#008F1B;font-size:16px">₦0.00</strong>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:10px">
+        <button type="button" class="btn btn-outline" onclick="closeModal('verifyPaymentModal')">Cancel</button>
+        <button type="button" class="btn btn-green" id="confirmVerifyBtn">Confirm & Issue Receipt</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Financial Adjustment Modal (Reversal / Refund) -->
+  <div class="modal-backdrop" id="adjustPaymentModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Financial Adjustment</h3>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('adjustPaymentModal')">✕</button>
+      </div>
+      <form id="adjustPaymentForm">
+        <input type="hidden" id="adjustPaymentId">
+        <div class="form-group">
+          <label>Adjustment Type *</label>
+          <select id="adjustType" required>
+            <option value="reversal">Reversal (Erronous / Chargeback / Bounced)</option>
+            <option value="refund">Refund (Processed payment returned to client)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Reason for Adjustment (Immutable Audit Trail) *</label>
+          <textarea id="adjustReason" rows="3" placeholder="Provide full justification and bank reversal reference..." required></textarea>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px">
+          <button type="button" class="btn btn-outline" onclick="closeModal('adjustPaymentModal')">Cancel</button>
+          <button type="submit" class="btn btn-sm" style="background:#DC2626;color:#FFF" id="submitAdjustBtn">Apply Adjustment</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ALAT by Wema Bank Provider Config Modal -->
+  <div class="modal-backdrop" id="wemaConfigModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>ALAT by Wema Bank Integration Settings</h3>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('wemaConfigModal')">✕</button>
+      </div>
+      <form id="wemaConfigForm">
+        <div class="form-group">
+          <label>Integration Lifecycle Status *</label>
+          <select id="wemaStatusSelect" required>
+            <option value="Not configured">Not configured</option>
+            <option value="Awaiting onboarding">Awaiting onboarding</option>
+            <option value="Awaiting credentials">Awaiting credentials</option>
+            <option value="Configured">Configured</option>
+            <option value="Active">Active (Live Account Generation)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Environment *</label>
+          <select id="wemaEnvSelect" required>
+            <option value="sandbox">Sandbox / Test</option>
+            <option value="production">Production / Live</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Webhook Secret Key</label>
+          <input type="password" id="wemaSecretInput" placeholder="Enter bank webhook HMAC secret">
+        </div>
+        <div style="font-size:12px;color:var(--muted);background:#F9FAF9;padding:12px;border-radius:6px;border:1px solid var(--line);margin-bottom:16px">
+          📌 <em>Architecture Notice:</em> Until status is set to <strong>Active</strong>, the client portal displays the official message: <em>"Your dedicated payment account will be available once our Wema Bank payment integration is activated. Please contact our finance team for payment assistance."</em>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px">
+          <button type="button" class="btn btn-outline" onclick="closeModal('wemaConfigModal')">Cancel</button>
+          <button type="submit" class="btn btn-green" id="saveWemaBtn">Save Configuration</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Installment Plan Modal -->
+  <div class="modal-backdrop" id="scheduleModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="scheduleModalTitle">Create Installment Plan</h3>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('scheduleModal')">✕</button>
+      </div>
+      <form id="scheduleForm">
+        <input type="hidden" id="scheduleId">
+        <div class="form-group">
+          <label>Client *</label>
+          <select id="scheduleClientId" required>
+            <option value="">-- Choose Client --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Property</label>
+          <select id="schedulePropertyId">
+            <option value="">-- None --</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group">
+            <label>Total Agreed Price (NGN) *</label>
+            <input type="number" step="0.01" min="1" id="scheduleTotal" required>
+          </div>
+          <div class="form-group">
+            <label>Deposit Required (NGN)</label>
+            <input type="number" step="0.01" min="0" id="scheduleDeposit" value="0">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group">
+            <label>Installment Amount (NGN) *</label>
+            <input type="number" step="0.01" min="1" id="scheduleInstallment" required>
+          </div>
+          <div class="form-group">
+            <label>Frequency *</label>
+            <select id="scheduleFrequency">
+              <option value="weekly">Weekly (7 days)</option>
+              <option value="monthly" selected>Monthly (30 days)</option>
+              <option value="quarterly">Quarterly (90 days)</option>
+              <option value="custom">Custom (days)</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group" id="customDaysGroup" style="display:none">
+            <label>Custom Frequency (days) *</label>
+            <input type="number" min="1" max="365" id="scheduleCustomDays" value="14">
+          </div>
+          <div class="form-group">
+            <label>Next Due Date *</label>
+            <input type="date" id="scheduleNextDue" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Notes / Reason for Change</label>
+          <textarea id="scheduleNotes" rows="2" placeholder="Optional note stored in the immutable schedule history"></textarea>
+        </div>
+        <div style="font-size:12px;color:var(--muted);background:#F9FAF9;padding:10px;border-radius:6px;border:1px solid var(--line);margin-bottom:14px">
+          Overdue installments are flagged for the client. No penalties or interest are applied automatically.
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px">
+          <button type="button" class="btn btn-outline" onclick="closeModal('scheduleModal')">Cancel</button>
+          <button type="submit" class="btn btn-green" id="saveScheduleBtn">Save Plan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Schedule History Modal -->
+  <div class="modal-backdrop" id="scheduleHistoryModal">
+    <div class="modal-box" style="max-width:640px">
+      <div class="modal-header">
+        <h3>Schedule Audit History</h3>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('scheduleHistoryModal')">✕</button>
+      </div>
+      <div id="scheduleHistoryBody" style="max-height:400px;overflow:auto;font-size:12px"></div>
+    </div>
+  </div>
+
+  <script>
+    let currentUser = null;
+    let isDemoMode = false;
+    let currentTransactions = [];
+    let pendingVerifyId = null;
+
+    function formatNGN(amount) {
+      const num = Number(amount) || 0;
+      return "₦" + num.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function closeModal(id) {
+      document.getElementById(id).classList.remove("open");
+    }
+
+    function openModal(id) {
+      document.getElementById(id).classList.add("open");
+    }
+
+    async function init() {
+      try {
+        const meRes = await fetch("/api/me");
+        if (!meRes.ok) { window.location.href = "login.html"; return; }
+        currentUser = await meRes.json();
+
+        // RBAC Check: MD, Finance Officer, BM allowed
+        const allowed = ["Managing Director", "Finance Officer", "Branch Manager"];
+        if (!allowed.includes(currentUser.role)) {
+          alert("Access restricted: Only Finance Officers and Directors may access this dashboard.");
+          window.location.href = "dashboard.html";
+          return;
+        }
+
+        // Branch filter load
+        const branchRes = await fetch("/api/branches");
+        if (branchRes.ok) {
+          const bData = await branchRes.json();
+          const sel = document.getElementById("txBranchFilter");
+          (bData.branches || []).forEach(b => {
+            const opt = document.createElement("option");
+            opt.value = b.id;
+            opt.textContent = b.name;
+            sel.appendChild(opt);
+          });
+        }
+
+        // Marketers & properties for filtering and schedule creation
+        const usersRes = await fetch("/api/users?role=Marketer");
+        if (usersRes.ok) {
+          const uData = await usersRes.json();
+          const mSel = document.getElementById("txMarketerFilter");
+          (uData.users || []).forEach(u => {
+            const opt = document.createElement("option");
+            opt.value = u.id;
+            opt.textContent = u.full_name;
+            mSel.appendChild(opt);
+          });
+        }
+
+        const propRes = await fetch("/api/properties?limit=50");
+        if (propRes.ok) {
+          const pData = await propRes.json();
+          const pSel = document.getElementById("txPropertyFilter");
+          const spSel = document.getElementById("schedulePropertyId");
+          (pData.properties || []).forEach(p => {
+            const opt = document.createElement("option");
+            opt.value = p.id;
+            opt.textContent = `${p.title} (${p.reference})`;
+            pSel.appendChild(opt);
+            spSel.appendChild(opt.cloneNode(true));
+          });
+        }
+
+        // Clients list load for manual payment modal
+        const clRes = await fetch("/api/clients?limit=100");
+        if (clRes.ok) {
+          const cData = await clRes.json();
+          const cSel = document.getElementById("recordClientId");
+          const sSel = document.getElementById("scheduleClientId");
+          (cData.clients || []).forEach(c => {
+            const opt = document.createElement("option");
+            opt.value = c.id;
+            opt.textContent = `${c.full_name} (${c.client_reference})`;
+            cSel.appendChild(opt);
+            sSel.appendChild(opt.cloneNode(true));
+          });
+        }
+
+        await refreshDashboard();
+        await loadInstallments();
+      } catch (err) {
+        console.error("Init failed:", err);
+      }
+    }
+
+    async function refreshDashboard() {
+      const demoParam = isDemoMode ? "?demo=1" : "";
+
+      // 1. Load Overview KPIs
+      const ovRes = await fetch("/api/finance/overview" + demoParam);
+      if (ovRes.ok) {
+        const ov = await ovRes.json();
+        const s = ov.summary;
+        document.getElementById("kpiTotalVerified").textContent = formatNGN(s.total_verified_ngn);
+        document.getElementById("kpiVerifiedCount").textContent = `${s.verified_count} verified payments`;
+        document.getElementById("kpiTodayVerified").textContent = formatNGN(s.today_verified_ngn);
+        document.getElementById("kpiMonthVerified").textContent = formatNGN(s.month_verified_ngn);
+        document.getElementById("kpiPendingAmount").textContent = formatNGN(s.pending_ngn);
+        document.getElementById("kpiPendingCount").textContent = `${s.pending_count} pending review`;
+        document.getElementById("kpiRefundsAmount").textContent = formatNGN(s.refunds_ngn);
+        document.getElementById("kpiRefundsCount").textContent = `${s.refunds_count} adjustments`;
+        document.getElementById("kpiOutstandingAmount").textContent = formatNGN(s.outstanding_client_balances_ngn);
+
+        // Update Wema Integration status
+        const w = ov.wema_integration;
+        const wBadge = document.getElementById("wemaStatusBadge");
+        wBadge.textContent = w.status;
+        if (w.status === "Active") {
+          wBadge.style.background = "#E8F9EB";
+          wBadge.style.color = "#008F1B";
+        } else {
+          wBadge.style.background = "#FEF3C7";
+          wBadge.style.color = "#92400E";
+        }
+        document.getElementById("wemaSubtext").textContent = `Environment: ${w.environment.toUpperCase()} | Status: ${w.status}`;
+      }
+
+      // 2. Load Transactions Table
+      await loadTransactions();
+    }
+
+    async function loadTransactions() {
+      const q = document.getElementById("txSearchInput").value.trim();
+      const status = document.getElementById("txStatusFilter").value;
+      const branchId = document.getElementById("txBranchFilter").value;
+      const marketerId = document.getElementById("txMarketerFilter").value;
+      const propertyId = document.getElementById("txPropertyFilter").value;
+      const dateFrom = document.getElementById("txDateFrom").value;
+      const dateTo = document.getElementById("txDateTo").value;
+
+      let url = `/api/finance/transactions?limit=50&demo=${isDemoMode ? 1 : 0}`;
+      if (q) url += `&q=${encodeURIComponent(q)}`;
+      if (status) url += `&status=${encodeURIComponent(status)}`;
+      if (branchId) url += `&branch_id=${encodeURIComponent(branchId)}`;
+      if (marketerId) url += `&marketer_id=${encodeURIComponent(marketerId)}`;
+      if (propertyId) url += `&property_id=${encodeURIComponent(propertyId)}`;
+      if (dateFrom) url += `&date_from=${encodeURIComponent(dateFrom)}`;
+      if (dateTo) url += `&date_to=${encodeURIComponent(dateTo)}`;
+
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json();
+      currentTransactions = data.transactions || [];
+
+      document.getElementById("txCountLabel").textContent = `Showing ${currentTransactions.length} of ${data.pagination?.total || currentTransactions.length} records`;
+
+      const tbody = document.getElementById("txTableBody");
+      tbody.innerHTML = "";
+
+      if (currentTransactions.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--muted)">No transactions match the selected criteria.</td></tr>`;
+        return;
+      }
+
+      currentTransactions.forEach(t => {
+        const tr = document.createElement("tr");
+
+        let statusClass = "status-pending";
+        if (t.status === "verified") statusClass = "status-verified";
+        else if (t.status === "failed") statusClass = "status-failed";
+        else if (t.status === "reversed" || t.status === "refunded") statusClass = "status-reversed";
+
+        const isPending = t.status === "pending";
+        const canVerify = isPending && (currentUser.role === "Managing Director" || currentUser.role === "Finance Officer");
+        const canAdjust = (t.status === "verified" || t.status === "pending") && (currentUser.role === "Managing Director" || currentUser.role === "Finance Officer");
+
+        tr.innerHTML = `
+          <td style="font-family:'Space Mono', monospace;font-size:12px;font-weight:700">
+            ${t.transaction_ref}
+            ${t.is_demo ? '<div style="color:#DC2626;font-size:10px">DEMO</div>' : ''}
+          </td>
+          <td>
+            <div style="font-weight:700">${t.client_name || "Unknown"}</div>
+            <div style="font-size:11px;color:var(--muted);font-family:'Space Mono', monospace">${t.client_reference}</div>
+          </td>
+          <td style="font-size:12px">${t.branch_name || "Head Office"}</td>
+          <td style="font-family:var(--font-display);font-weight:700;font-size:14px;color:${t.status === 'verified' ? '#008F1B' : 'var(--charcoal)'}">
+            ${formatNGN(t.amount)}
+          </td>
+          <td style="font-size:12px">${t.method || "Transfer"}</td>
+          <td><span class="status-badge ${statusClass}">${t.status}</span></td>
+          <td style="font-size:12px">${t.created_at ? new Date(t.created_at).toLocaleDateString("en-NG", { dateStyle: "short" }) : "--"}</td>
+          <td style="font-size:12px">
+            ${t.receipt_ref ? `<span style="font-family:'Space Mono', monospace;color:#008F1B;font-size:11px;font-weight:700">${t.receipt_ref}</span>` : '<span style="color:#9CA3AF">-</span>'}
+          </td>
+          <td style="text-align:right">
+            <div style="display:inline-flex;gap:6px">
+              ${canVerify ? `<button type="button" class="btn btn-green btn-sm" onclick="promptVerify(${t.id}, '${t.transaction_ref}', '${t.client_name}', ${t.amount})" style="padding:4px 8px;font-size:11px">Verify</button>` : ''}
+              ${canAdjust ? `<button type="button" class="btn btn-outline btn-sm" onclick="promptAdjust(${t.id})" style="padding:4px 8px;font-size:11px">Adjust</button>` : ''}
+            </div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Demo Mode Toggle
+    document.getElementById("toggleDemoMode").addEventListener("change", (e) => {
+      isDemoMode = e.target.checked;
+      const banner = document.getElementById("demoBanner");
+      banner.style.display = isDemoMode ? "block" : "none";
+      refreshDashboard();
+    });
+
+    // Filtering listeners
+    document.getElementById("txSearchInput").addEventListener("input", () => loadTransactions());
+    document.getElementById("txStatusFilter").addEventListener("change", () => loadTransactions());
+    document.getElementById("txBranchFilter").addEventListener("change", () => loadTransactions());
+    document.getElementById("txMarketerFilter").addEventListener("change", () => loadTransactions());
+    document.getElementById("txPropertyFilter").addEventListener("change", () => loadTransactions());
+    document.getElementById("txDateFrom").addEventListener("change", () => loadTransactions());
+    document.getElementById("txDateTo").addEventListener("change", () => loadTransactions());
+    document.getElementById("clearTxFiltersBtn").addEventListener("click", () => {
+      ["txSearchInput", "txStatusFilter", "txBranchFilter", "txMarketerFilter", "txPropertyFilter", "txDateFrom", "txDateTo"].forEach(id => {
+        document.getElementById(id).value = "";
+      });
+      loadTransactions();
+    });
+
+    // Record Payment
+    document.getElementById("openRecordPaymentBtn").addEventListener("click", () => {
+      document.getElementById("recordIsDemo").checked = isDemoMode;
+      openModal("recordPaymentModal");
+    });
+
+    document.getElementById("recordPaymentForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const clientId = document.getElementById("recordClientId").value;
+      const amount = parseFloat(document.getElementById("recordAmount").value);
+      const method = document.getElementById("recordMethod").value;
+      const txRef = document.getElementById("recordTxRef").value.trim();
+      const isDemo = document.getElementById("recordIsDemo").checked;
+
+      const btn = document.getElementById("submitRecordBtn");
+      btn.disabled = true;
+      btn.textContent = "Recording...";
+
+      try {
+        const res = await fetch("/api/finance/payments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            client_id: clientId,
+            amount: amount,
+            method: method,
+            transaction_ref: txRef || undefined,
+            is_demo: isDemo
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          alert("Error: " + (data.error || "Failed to record payment"));
+          return;
+        }
+
+        closeModal("recordPaymentModal");
+        document.getElementById("recordPaymentForm").reset();
+        await refreshDashboard();
+      } catch (err) {
+        alert("Failed to submit payment");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Record Payment";
+      }
+    });
+
+    // Verify Payment Flow
+    window.promptVerify = function(id, ref, client, amount) {
+      pendingVerifyId = id;
+      document.getElementById("verifyModalTxRef").textContent = ref;
+      document.getElementById("verifyModalClient").textContent = client;
+      document.getElementById("verifyModalAmount").textContent = formatNGN(amount);
+      openModal("verifyPaymentModal");
+    };
+
+    document.getElementById("confirmVerifyBtn").addEventListener("click", async () => {
+      if (!pendingVerifyId) return;
+      const btn = document.getElementById("confirmVerifyBtn");
+      btn.disabled = true;
+      btn.textContent = "Verifying...";
+
+      try {
+        const res = await fetch(`/api/finance/payments/${pendingVerifyId}/verify`, {
+          method: "POST"
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert("Error: " + (data.error || "Verification failed"));
+          return;
+        }
+        closeModal("verifyPaymentModal");
+        await refreshDashboard();
+      } catch (err) {
+        alert("Verification request failed");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Confirm & Issue Receipt";
+      }
+    });
+
+    // Financial Adjustment Flow
+    window.promptAdjust = function(id) {
+      document.getElementById("adjustPaymentId").value = id;
+      document.getElementById("adjustReason").value = "";
+      openModal("adjustPaymentModal");
+    };
+
+    document.getElementById("adjustPaymentForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const id = document.getElementById("adjustPaymentId").value;
+      const type = document.getElementById("adjustType").value;
+      const reason = document.getElementById("adjustReason").value.trim();
+
+      const btn = document.getElementById("submitAdjustBtn");
+      btn.disabled = true;
+      btn.textContent = "Applying...";
+
+      try {
+        const res = await fetch(`/api/finance/payments/${id}/adjust`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ adjustment_type: type, reason: reason })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert("Error: " + (data.error || "Adjustment failed"));
+          return;
+        }
+        closeModal("adjustPaymentModal");
+        await refreshDashboard();
+      } catch (err) {
+        alert("Adjustment request failed");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Apply Adjustment";
+      }
+    });
+
+    // Wema Config Modal Flow
+    document.getElementById("openWemaConfigBtn").addEventListener("click", async () => {
+      const res = await fetch("/api/finance/provider-config");
+      if (res.ok) {
+        const data = await res.json();
+        const cfg = data.config;
+        document.getElementById("wemaStatusSelect").value = cfg.status || "Not configured";
+        document.getElementById("wemaEnvSelect").value = cfg.environment || "sandbox";
+      }
+      openModal("wemaConfigModal");
+    });
+
+    document.getElementById("wemaConfigForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const status = document.getElementById("wemaStatusSelect").value;
+      const env = document.getElementById("wemaEnvSelect").value;
+      const secret = document.getElementById("wemaSecretInput").value.trim();
+
+      const btn = document.getElementById("saveWemaBtn");
+      btn.disabled = true;
+
+      try {
+        const res = await fetch("/api/finance/provider-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: status,
+            environment: env,
+            webhook_secret: secret || undefined
+          })
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          alert("Failed: " + (d.error || "Config update error"));
+          return;
+        }
+        closeModal("wemaConfigModal");
+        await refreshDashboard();
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // Export CSV
+    document.getElementById("exportCsvBtn").addEventListener("click", () => {
+      if (currentTransactions.length === 0) {
+        alert("No transaction records to export");
+        return;
+      }
+      const headers = ["Transaction Ref", "Client Name", "Client Ref", "Branch", "Amount (NGN)", "Method", "Status", "Receipt Ref", "Created At"];
+      const rows = currentTransactions.map(t => [
+        t.transaction_ref,
+        `"${(t.client_name || '').replace(/"/g, '""')}"`,
+        t.client_reference,
+        `"${(t.branch_name || '').replace(/"/g, '""')}"`,
+        t.amount,
+        t.method,
+        t.status,
+        t.receipt_ref || '',
+        t.created_at
+      ]);
+      const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `bliss_transactions_${isDemoMode ? 'demo' : 'live'}_${Date.now()}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+
+    // Installment plans
+    let currentSchedules = [];
+
+    function frequencyLabel(days) {
+      if (Number(days) === 7) return "Weekly";
+      if (Number(days) === 30) return "Monthly";
+      if (Number(days) === 90) return "Quarterly";
+      return `Every ${days} days`;
+    }
+
+    async function loadInstallments() {
+      const res = await fetch("/api/installments");
+      const tbody = document.getElementById("scheduleTableBody");
+      if (!res.ok) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:#DC2626">Unable to load installment plans.</td></tr>`;
+        return;
+      }
+      const data = await res.json();
+      currentSchedules = data.schedules || [];
+      if (!currentSchedules.length) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">No installment plans configured yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = currentSchedules.map(s => {
+        const badge = s.status === "active" ? "status-verified" : (s.status === "cancelled" ? "status-failed" : "status-pending");
+        return `
+          <tr>
+            <td><strong>${s.client_name}</strong><div style="font-size:11px;color:var(--muted);font-family:'Space Mono', monospace">${s.client_reference}</div></td>
+            <td style="font-size:12px">${s.property_title || "-"}</td>
+            <td style="font-weight:700">${formatNGN(s.total_agreed_price)}</td>
+            <td style="font-weight:700;color:#008F1B">${formatNGN(s.installment_amount)}</td>
+            <td style="font-size:12px">${frequencyLabel(s.frequency_days)}</td>
+            <td style="font-size:12px">${(s.next_due_date || "").slice(0, 10)}</td>
+            <td><span class="status-badge ${badge}">${s.status}${s.is_overdue ? " / overdue" : ""}</span></td>
+            <td style="text-align:right">
+              <div style="display:inline-flex;gap:5px">
+                ${s.status !== "cancelled" ? `<button type="button" class="btn btn-outline btn-sm" onclick="editSchedule(${s.id})" style="padding:3px 7px;font-size:11px">Edit</button>` : ""}
+                <button type="button" class="btn btn-outline btn-sm" onclick="scheduleHistory(${s.id})" style="padding:3px 7px;font-size:11px">History</button>
+                ${s.status === "active" ? `<button type="button" class="btn btn-outline btn-sm" onclick="cancelSchedule(${s.id})" style="padding:3px 7px;font-size:11px;color:#DC2626">Cancel</button>` : ""}
+              </div>
+            </td>
+          </tr>`;
+      }).join("");
+    }
+
+    window.openScheduleModal = function(id) {
+      const form = document.getElementById("scheduleForm");
+      form.reset();
+      document.getElementById("scheduleId").value = "";
+      document.getElementById("scheduleModalTitle").textContent = "Create Installment Plan";
+      document.getElementById("scheduleFrequency").value = "monthly";
+      document.getElementById("customDaysGroup").style.display = "none";
+      const due = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      document.getElementById("scheduleNextDue").value = due;
+      const s = id ? currentSchedules.find(x => x.id === id) : null;
+      if (s) {
+        document.getElementById("scheduleId").value = s.id;
+        document.getElementById("scheduleModalTitle").textContent = "Edit Installment Plan";
+        document.getElementById("scheduleClientId").value = s.client_id;
+        document.getElementById("schedulePropertyId").value = s.property_id || "";
+        document.getElementById("scheduleTotal").value = s.total_agreed_price;
+        document.getElementById("scheduleDeposit").value = s.deposit_amount;
+        document.getElementById("scheduleInstallment").value = s.installment_amount;
+        document.getElementById("scheduleNextDue").value = (s.next_due_date || "").slice(0, 10);
+        document.getElementById("scheduleNotes").value = s.notes || "";
+        const known = ["7", "30", "90"];
+        if (known.includes(String(s.frequency_days))) {
+          document.getElementById("scheduleFrequency").value = { 7: "weekly", 30: "monthly", 90: "quarterly" }[s.frequency_days];
+        } else {
+          document.getElementById("scheduleFrequency").value = "custom";
+          document.getElementById("customDaysGroup").style.display = "block";
+          document.getElementById("scheduleCustomDays").value = s.frequency_days;
+        }
+      }
+      openModal("scheduleModal");
+    };
+
+    window.editSchedule = function(id) { window.openScheduleModal(id); };
+
+    window.scheduleHistory = async function(id) {
+      const res = await fetch(`/api/installments/${id}/history`);
+      const body = document.getElementById("scheduleHistoryBody");
+      if (!res.ok) { body.innerHTML = `<p style="color:#DC2626">Unable to load history.</p>`; openModal("scheduleHistoryModal"); return; }
+      const data = await res.json();
+      body.innerHTML = (data.history || []).map(h => `
+        <div style="border-bottom:1px solid var(--line);padding:10px 0">
+          <div style="display:flex;justify-content:space-between">
+            <strong style="text-transform:uppercase;font-size:11px">${h.action}</strong>
+            <span style="color:var(--muted)">${(h.created_at || "").slice(0, 16)}</span>
+          </div>
+          <div style="color:var(--muted);margin-top:3px">By ${h.changed_by_name || "System"}${h.reason ? ` — ${h.reason}` : ""}</div>
+        </div>`).join("") || `<p style="color:var(--muted)">No history recorded.</p>`;
+      openModal("scheduleHistoryModal");
+    };
+
+    window.cancelSchedule = async function(id) {
+      const reason = prompt("Reason for cancelling this installment plan:");
+      if (reason === null) return;
+      const res = await fetch(`/api/installments/${id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason || "Cancelled by authorised staff" })
+      });
+      if (!res.ok) { const d = await res.json(); alert(d.error || "Unable to cancel plan"); return; }
+      await loadInstallments();
+    };
+
+    document.getElementById("openScheduleBtn").addEventListener("click", () => window.openScheduleModal());
+    document.getElementById("scheduleFrequency").addEventListener("change", (e) => {
+      document.getElementById("customDaysGroup").style.display = e.target.value === "custom" ? "block" : "none";
+    });
+
+    document.getElementById("scheduleForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const id = document.getElementById("scheduleId").value;
+      const frequency = document.getElementById("scheduleFrequency").value;
+      const payload = {
+        client_id: Number(document.getElementById("scheduleClientId").value),
+        property_id: document.getElementById("schedulePropertyId").value ? Number(document.getElementById("schedulePropertyId").value) : null,
+        total_amount: Number(document.getElementById("scheduleTotal").value),
+        deposit_amount: Number(document.getElementById("scheduleDeposit").value || 0),
+        installment_amount: Number(document.getElementById("scheduleInstallment").value),
+        next_due_date: document.getElementById("scheduleNextDue").value,
+        notes: document.getElementById("scheduleNotes").value.trim() || null,
+        reason: document.getElementById("scheduleNotes").value.trim() || null
+      };
+      if (frequency === "custom") payload.frequency_days = Number(document.getElementById("scheduleCustomDays").value);
+      else payload.frequency = frequency;
+
+      const btn = document.getElementById("saveScheduleBtn");
+      btn.disabled = true;
+      try {
+        const res = await fetch(id ? `/api/installments/${id}` : "/api/installments", {
+          method: id ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || "Unable to save installment plan"); return; }
+        closeModal("scheduleModal");
+        await loadInstallments();
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // Logout
+    document.getElementById("logoutBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      try { await fetch("/api/logout", { method: "POST" }); }
+      finally { window.location.href = "login.html"; }
+    });
+
+    document.addEventListener("DOMContentLoaded", init);
+  </script>
+</body>
+</html>

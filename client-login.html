@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <meta name="description" content="Secure Client Portal Login for Bliss Legacy Limited property owners and investors." />
+  <title>Client Portal Sign In | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <style>
+    body {
+      background-color: var(--soft);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 30px 16px;
+    }
+    .client-login-card {
+      width: 100%;
+      max-width: 440px;
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 40px 36px;
+      box-shadow: var(--shadow-md);
+    }
+    .portal-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--green-dark);
+      background-color: var(--green-light);
+      padding: 4px 10px;
+      border-radius: 100px;
+      margin-bottom: 14px;
+    }
+    .client-login-header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .client-login-logo {
+      width: 180px;
+      height: auto;
+      margin: 0 auto 16px;
+      display: block;
+    }
+    .client-login-title {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+    .client-login-subtitle {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+    .login-form-group {
+      margin-bottom: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .login-form-group label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--charcoal);
+    }
+    .login-form-group input {
+      width: 100%;
+      height: 46px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      outline: none;
+      transition: var(--transition);
+    }
+    .login-form-group input:focus {
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(0, 181, 34, 0.12);
+    }
+    .login-actions-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+    .login-actions-row a {
+      color: var(--green-dark);
+      font-weight: 600;
+    }
+    .login-msg-box {
+      min-height: 20px;
+      font-size: 13px;
+      text-align: center;
+      margin-top: 12px;
+      color: #C0392B;
+    }
+    .back-home-wrap {
+      margin-top: 24px;
+      text-align: center;
+    }
+    .back-home-link {
+      font-size: 13px;
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .back-home-link:hover {
+      color: var(--green-dark);
+    }
+  </style>
+</head>
+<body>
+  <div class="client-login-card">
+    <div class="client-login-header">
+      <a href="index.html">
+        <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy Limited Logo" class="client-login-logo" onerror="this.src='bliss-legacy-logo.png'">
+      </a>
+      <span class="portal-badge">Client Self-Service Portal</span>
+      <h1 class="client-login-title">Client Sign In</h1>
+      <p class="client-login-subtitle">View your property allocation, track verified payments, download receipts, and manage your account.</p>
+    </div>
+
+    <form id="clientLoginForm">
+      <div class="login-form-group">
+        <label for="clientIdentifier">Email Address or Client Reference *</label>
+        <input type="text" id="clientIdentifier" placeholder="e.g. BLC-MW2ER37J or name@example.com" required autocomplete="username">
+      </div>
+
+      <div class="login-form-group">
+        <label for="clientPassword">Account Password *</label>
+        <input type="password" id="clientPassword" placeholder="••••••••" required autocomplete="current-password">
+      </div>
+
+      <div class="login-actions-row">
+        <span style="font-size:12px;color:var(--muted)">Session secured via HttpOnly</span>
+        <a href="forgot-password.html">Forgot Password?</a>
+      </div>
+
+      <button type="submit" class="btn btn-green btn-block" id="submitBtn">
+        Sign In to Portal →
+      </button>
+
+      <div class="login-msg-box" id="loginMsg"></div>
+    </form>
+  </div>
+
+  <div class="back-home-wrap">
+    <a href="index.html" class="back-home-link">← Return to Bliss Legacy Homepage</a>
+  </div>
+
+  <script>
+    document.getElementById('clientLoginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('loginMsg');
+      const submitBtn = document.getElementById('submitBtn');
+      msg.textContent = '';
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Verifying Credentials...';
+
+      const email = document.getElementById('clientIdentifier').value.trim();
+      const password = document.getElementById('clientPassword').value;
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msg.textContent = data.error || 'Login failed. Please verify your credentials.';
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Sign In to Portal →';
+          return;
+        }
+
+        if (data.user && data.user.role === 'Client') {
+          window.location.href = '/client-dashboard.html';
+        } else if (data.user && data.user.role === 'Finance Officer') {
+          window.location.href = '/finance-dashboard.html';
+        } else {
+          window.location.href = '/dashboard.html';
+        }
+      } catch (err) {
+        msg.textContent = 'Network communication error. Please try again.';
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign In to Portal →';
+      }
+    });
+  </script>
+</body>
+</html>

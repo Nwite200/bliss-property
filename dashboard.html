@@ -3,42 +3,135 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dashboard | Bliss Legacy Limited</title>
+  <title>Staff Dashboard | Bliss Legacy Limited</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/css/styles.css">
 </head>
-<body>
+<body data-page="dashboard">
   <div class="dash">
-    <aside class="sidebar" id="sidebar">
-      <div class="brand"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy"></div>
-      <div class="section-label">Menu</div>
-      <a href="#" class="active">Overview</a>
-      <a href="#" id="logoutBtn">Logout</a>
-    </aside>
+    <aside class="sidebar" id="sidebar"></aside>
     <main class="dash-main">
-      <div class="dash-top"><h1 id="title">Dashboard</h1><span id="who" style="color:var(--muted);font-size:13px"></span></div>
-      <div class="kpi-grid">
-        <div class="kpi"><div class="label">Status</div><div class="value">Authenticated</div><div class="delta">Phase 2</div></div>
+      <section class="role-hero">
+        <h1 id="roleTitle">Loading dashboard…</h1>
+        <p id="roleSubtitle">Preparing your authorised view.</p>
+        <div class="role-hero-meta" id="heroMeta"></div>
+        <div class="hero-actions" id="heroActions"></div>
+      </section>
+
+      <div class="filter-panel">
+        <div class="field-group">
+          <label class="field-label" for="fromDate">From</label>
+          <input class="field-input" type="date" id="fromDate">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="toDate">To</label>
+          <input class="field-input" type="date" id="toDate">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="granularity">Trend</label>
+          <select class="field-input" id="granularity">
+            <option value="day">Daily</option>
+            <option value="week">Weekly</option>
+            <option value="month">Monthly</option>
+            <option value="year">Yearly</option>
+          </select>
+        </div>
+        <div class="field-group" id="branchFilterGroup" style="display:none">
+          <label class="field-label" for="branchFilter">Branch</label>
+          <select class="field-input" id="branchFilter"><option value="">All branches</option></select>
+        </div>
+        <button class="btn btn-green btn-sm" id="applyFilters" type="button">Apply filters</button>
+        <button class="btn btn-ghost btn-sm" id="resetFilters" type="button">Reset</button>
       </div>
-      <div class="card"><h3>Welcome</h3><p id="welcome">Loading...</p></div>
+
+      <div class="kpi-grid" id="summaryKpis"></div>
+      <div class="kpi-grid kpi-grid-5" id="periodKpis"></div>
+
+      <div class="split-grid wide-left">
+        <div class="card chart-card">
+          <div class="card-head">
+            <h3>Sales & lead trend</h3>
+            <span class="small muted" id="trendRangeLabel"></span>
+          </div>
+          <div class="bar-chart" id="trendChart"><div class="empty-state">Loading trend…</div></div>
+          <div class="chart-legend">
+            <span><span class="legend-dot verified"></span>Verified collections</span>
+            <span><span class="legend-dot contract"></span>Contract value</span>
+            <span><span class="legend-dot leads"></span>Leads</span>
+            <span><span class="legend-dot conversions"></span>Conversions</span>
+          </div>
+        </div>
+        <div class="card" id="pipelineCard">
+          <div class="card-head"><h3>Lead pipeline</h3><a class="small muted" href="leads.html">Open pipeline →</a></div>
+          <div class="pipeline-board" id="leadPipeline"><div class="empty-state">Loading pipeline…</div></div>
+        </div>
+      </div>
+
+      <div class="split-grid" id="rankingGrid">
+        <div class="card" id="branchComparisonCard">
+          <div class="card-head"><h3>Branch performance</h3><span class="small muted">Contract vs verified</span></div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Branch</th><th>Properties</th><th>Clients</th><th>Contract</th><th>Verified</th><th>Outstanding</th></tr></thead>
+            <tbody id="branchTableBody"></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Marketer rankings</h3><span class="small muted">Verified collections</span></div>
+          <div class="rank-list" id="marketerRankings"><div class="empty-state">Loading rankings…</div></div>
+        </div>
+      </div>
+
+      <div class="split-grid" id="teamAndFollowups">
+        <div class="card" id="teamRankingCard">
+          <div class="card-head"><h3>Team rankings</h3><span class="small muted">Team verified collections</span></div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Team</th><th>Lead</th><th>Members</th><th>Clients</th><th>Contract</th><th>Verified</th><th>Conversion</th></tr></thead>
+            <tbody id="teamTableBody"></tbody>
+          </table></div>
+        </div>
+        <div class="card" id="followUpsCard">
+          <div class="card-head"><h3>Follow-ups due</h3><a class="small muted" href="leads.html?follow_up_due=1">View all →</a></div>
+          <div class="mini-list" id="dueFollowUps"><div class="empty-state">No follow-ups due.</div></div>
+        </div>
+      </div>
+
+      <div class="split-grid" id="portfolioGrid">
+        <div class="card">
+          <div class="card-head"><h3 id="clientsCardTitle">Recent clients</h3><a class="small muted" href="clients.html">All clients →</a></div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Client</th><th>Status</th><th>Contract</th><th>Branch</th></tr></thead>
+            <tbody id="clientsTableBody"></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3 id="propertiesCardTitle">Property assignments</h3><a class="small muted" href="properties.html">Properties →</a></div>
+          <div class="mini-list" id="propertiesList"><div class="empty-state">No property assignments.</div></div>
+        </div>
+      </div>
+
+      <div class="split-grid" id="teamMembersAndProfile">
+        <div class="card" id="teamMembersCard">
+          <div class="card-head"><h3>Team members</h3><a class="small muted" href="staff-management.html">Manage teams →</a></div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Staff</th><th>Role</th><th>Branch</th><th>Status</th></tr></thead>
+            <tbody id="teamMembersBody"></tbody>
+          </table></div>
+        </div>
+        <div class="card" id="profileCard">
+          <div class="card-head"><h3>My profile</h3><a class="small muted" href="staff-management.html">Staff directory →</a></div>
+          <div id="profileBody"><div class="empty-state">Loading profile…</div></div>
+        </div>
+      </div>
+
+      <div class="card section-gap">
+        <div class="card-head"><h3>Recent activity</h3><a class="small muted" href="activity-centre.html">Activity centre →</a></div>
+        <div class="activity-feed" id="recentActivity"><div class="empty-state">Loading activity…</div></div>
+      </div>
     </main>
   </div>
-  <script>
-    (async () => {
-      const res = await fetch('/api/me');
-      if (!res.ok) { window.location.href = '/login.html'; return; }
-      const me = await res.json();
-      document.getElementById('title').textContent = me.role + ' Dashboard';
-      document.getElementById('who').textContent = me.email;
-      document.getElementById('welcome').textContent = 'Welcome, ' + me.full_name + '. Phase 2 authentication is active.';
-    })();
-    document.getElementById('logoutBtn').addEventListener('click', async (e) => {
-      e.preventDefault();
-      await fetch('/api/logout', { method:'POST' });
-      window.location.href = '/login.html';
-    });
-  </script>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/dashboard.js"></script>
 </body>
 </html>

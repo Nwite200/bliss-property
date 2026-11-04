@@ -1,5 +1,9 @@
 node_modules
 .git
+.wrangler
+.dev.vars
+.gitignore
+.assetsignore
 migrations
 src
 package.json
@@ -8,3 +12,8 @@ wrangler.toml
 DEVELOPMENT_PLAN.md
 README.txt
 bliss-legacy-logo.png
+seed_phase5.py
+seed_phase6.py
+test_phase5_suite.mjs
+test_phase6_suite.mjs
+PHASE6_WALKTHROUGH.md

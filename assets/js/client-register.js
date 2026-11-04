@@ -12,7 +12,18 @@ async function load() {
     window.location.href = "/login.html";
   });
   const me = await fetchJson("/api/me");
-  if (!me.ok) window.location.href = "/login.html";
+  if (!me.ok) { window.location.href = "/login.html"; return; }
+  const canSetPrice = ["Managing Director", "Branch Manager"].includes(me.data.role);
+  window.__blissCanSetClientPrice = canSetPrice;
+  if (!canSetPrice) {
+    const price = document.getElementById("agreed_purchase_price");
+    if (price) {
+      price.value = "";
+      price.disabled = true;
+      const group = price.closest("div");
+      if (group) group.style.display = "none";
+    }
+  }
 }
 async function loadBranches() {
   const { data } = await fetchJson("/branches");
@@ -34,7 +45,8 @@ async function onSubmit(e) {
     preferred_channel: document.getElementById("preferred_channel").value,
     status: document.getElementById("status").value,
     interested_property_id: document.getElementById("interested_property_id").value,
-    agreed_purchase_price: document.getElementById("agreed_purchase_price").value ? Number(document.getElementById("agreed_purchase_price").value) : null,
+    agreed_purchase_price: window.__blissCanSetClientPrice && document.getElementById("agreed_purchase_price").value
+      ? Number(document.getElementById("agreed_purchase_price").value) : null,
     assigned_branch_id: document.getElementById("assigned_branch_id").value,
   };
   if (!body.full_name || !body.phone_number) { msg.textContent = "Full name and phone number are required."; return; }

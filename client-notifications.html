@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <title>Notifications | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <style>
+    .portal-layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      min-height: 100vh;
+      background-color: var(--soft);
+    }
+    .portal-sidebar {
+      background-color: #17231A;
+      color: #D3DED5;
+      padding: 28px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .portal-sidebar .brand-logo {
+      width: 165px;
+      height: auto;
+      background-color: #FFFFFF;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      margin-bottom: 24px;
+      display: block;
+    }
+    .portal-sidebar .nav-section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #7E9383;
+      margin: 16px 8px 6px;
+      font-weight: 700;
+    }
+    .portal-sidebar a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      color: #A3B5A7;
+      font-size: 13px;
+      font-weight: 600;
+      transition: var(--transition);
+    }
+    .portal-sidebar a:hover,
+    .portal-sidebar a.active {
+      background-color: rgba(0, 181, 34, 0.15);
+      color: #7FE58D;
+    }
+    .portal-sidebar .nav-count {
+      margin-left: auto;
+      background: #00B522;
+      color: #06260C;
+      font-size: 10px;
+      font-weight: 800;
+      border-radius: 999px;
+      padding: 1px 7px;
+    }
+    .portal-main { padding: 32px 40px; max-width: 900px; }
+    @media (max-width: 900px) {
+      .portal-layout { grid-template-columns: 1fr; }
+      .portal-sidebar { flex-direction: row; overflow-x: auto; align-items: center; padding: 14px; }
+      .portal-sidebar .brand-logo { width: 120px; margin-bottom: 0; }
+      .portal-sidebar .nav-section-title { display: none; }
+      .portal-main { padding: 22px 16px; }
+    }
+
+    .notif-toolbar {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 12px; flex-wrap: wrap; margin-bottom: 18px;
+    }
+    .notif-summary {
+      font-size: 13px; color: var(--muted);
+    }
+    .notif-summary strong { color: var(--charcoal); }
+
+    .notif-list { display: flex; flex-direction: column; gap: 10px; }
+    .notif-card {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 16px 18px;
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      transition: var(--transition);
+    }
+    .notif-card.unread {
+      border-left-color: #00B522;
+      background: #FBFEFC;
+      box-shadow: var(--shadow-sm);
+    }
+    .notif-icon {
+      width: 38px; height: 38px; flex: 0 0 38px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 17px;
+      background: #EAF7EC;
+    }
+    .notif-body { flex: 1; min-width: 0; }
+    .notif-body h3 {
+      font-size: 14px; font-weight: 800; color: var(--charcoal);
+      margin: 0 0 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .notif-body p {
+      font-size: 13px; color: #4B5563; line-height: 1.55; margin: 0 0 6px;
+    }
+    .notif-meta {
+      font-size: 11px; color: var(--muted);
+      font-family: 'Space Mono', monospace;
+      display: flex; gap: 12px; flex-wrap: wrap;
+    }
+    .notif-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+    .notif-dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: #00B522;
+    }
+    .notif-empty {
+      background: #FFFFFF; border: 1px dashed var(--line);
+      border-radius: var(--radius-md); padding: 60px 20px; text-align: center;
+    }
+    .notif-empty h3 { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+    .notif-empty p { font-size: 13px; color: var(--muted); margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="portal-layout">
+    <aside class="portal-sidebar">
+      <a href="index.html">
+        <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" class="brand-logo" onerror="this.src='bliss-legacy-logo.png'">
+      </a>
+      <span class="nav-section-title">Client Workspace</span>
+      <a href="client-dashboard.html">📊 Overview</a>
+      <a href="client-property.html">🏡 My Property</a>
+      <a href="client-payments.html">💳 Payment History</a>
+      <a href="client-virtual-account.html">🏦 My Virtual Account</a>
+      <a href="client-receipts.html">📄 Receipts</a>
+      <a href="client-notifications.html" class="active">🔔 Notifications <span class="nav-count" id="sidebarCount" style="display:none">0</span></a>
+      <a href="client-profile.html">👤 Profile & Security</a>
+      <span class="nav-section-title" style="margin-top:auto">Actions</span>
+      <a href="index.html">🌐 Public Website</a>
+      <a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Sign Out</a>
+    </aside>
+
+    <main class="portal-main">
+      <h1 style="font-size:26px;font-weight:800;margin-bottom:6px">Notifications</h1>
+      <p style="font-size:14px;color:var(--muted);margin-bottom:22px">Payment confirmations, installment reminders and account updates for your Bliss Legacy purchase.</p>
+
+      <div class="notif-toolbar">
+        <div class="notif-summary" id="notifSummary">Loading notifications…</div>
+        <div style="display:flex;gap:8px">
+          <select id="notifFilter" style="height:36px;padding:0 10px;border:1px solid var(--line);border-radius:4px;font-size:12px;background:#fff">
+            <option value="all">All notifications</option>
+            <option value="unread">Unread only</option>
+          </select>
+          <button type="button" class="btn btn-outline btn-sm" id="markAllBtn">Mark all as read</button>
+        </div>
+      </div>
+
+      <div id="notifLoading" style="text-align:center;padding:40px;color:var(--muted)">Loading your notifications…</div>
+
+      <div id="notifEmpty" class="notif-empty" style="display:none">
+        <h3>No notifications yet</h3>
+        <p id="notifEmptyText">Payment verifications, receipts and installment reminders will appear here.</p>
+      </div>
+
+      <div class="notif-list" id="notifList" style="display:none"></div>
+    </main>
+  </div>
+
+  <script src="assets/js/components.js"></script>
+  <script>
+    let allNotifications = [];
+    let currentFilter = "all";
+
+    function esc(value) {
+      return String(value === undefined || value === null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function iconFor(type) {
+      const t = String(type || "");
+      if (t.includes("verified") || t.includes("receipt")) return "✅";
+      if (t.includes("failed") || t.includes("reversed") || t.includes("refund")) return "⚠️";
+      if (t.includes("overdue")) return "⏰";
+      if (t.includes("installment") || t.includes("upcoming")) return "📅";
+      if (t.includes("profile")) return "👤";
+      return "🔔";
+    }
+
+    function timeLabel(value) {
+      if (!value) return "";
+      const raw = String(value).trim();
+      const date = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)
+        ? new Date(raw.replace(" ", "T") + "Z")
+        : new Date(raw);
+      if (isNaN(date.getTime())) return raw.slice(0, 16);
+      return date.toLocaleString("en-NG", {
+        day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit"
+      });
+    }
+
+    function render() {
+      const unread = allNotifications.filter(n => !n.is_read);
+      document.getElementById("notifSummary").innerHTML =
+        `<strong>${allNotifications.length}</strong> notification${allNotifications.length === 1 ? "" : "s"} · ` +
+        `<strong>${unread.length}</strong> unread`;
+
+      const badge = document.getElementById("sidebarCount");
+      if (unread.length) {
+        badge.style.display = "inline-block";
+        badge.textContent = unread.length;
+      } else {
+        badge.style.display = "none";
+      }
+
+      document.getElementById("markAllBtn").disabled = unread.length === 0;
+
+      const visible = currentFilter === "unread" ? unread : allNotifications;
+      const list = document.getElementById("notifList");
+      const empty = document.getElementById("notifEmpty");
+      const loading = document.getElementById("notifLoading");
+      loading.style.display = "none";
+
+      if (!visible.length) {
+        list.style.display = "none";
+        empty.style.display = "block";
+        document.getElementById("notifEmptyText").textContent = currentFilter === "unread"
+          ? "You have read every notification."
+          : "Payment verifications, receipts and installment reminders will appear here.";
+        return;
+      }
+
+      empty.style.display = "none";
+      list.style.display = "flex";
+      list.innerHTML = visible.map(n => `
+        <article class="notif-card ${n.is_read ? "" : "unread"}" data-id="${n.id}">
+          <div class="notif-icon">${iconFor(n.type)}</div>
+          <div class="notif-body">
+            <h3>${esc(n.title)} ${n.is_read ? "" : `<span class="notif-dot" title="Unread"></span>`}</h3>
+            <p>${esc(n.message)}</p>
+            <div class="notif-meta">
+              <span>${timeLabel(n.created_at)}</span>
+              ${n.type ? `<span>${esc(n.type)}</span>` : ""}
+            </div>
+          </div>
+          <div class="notif-actions">
+            ${n.is_read ? "" : `<button type="button" class="btn btn-outline btn-sm" data-read="${n.id}" style="padding:4px 9px;font-size:11px">Mark read</button>`}
+          </div>
+        </article>
+      `).join("");
+    }
+
+    async function loadNotifications() {
+      try {
+        const res = await fetch("/api/client/notifications");
+        if (res.status === 401 || res.status === 403) {
+          window.location.href = "client-login.html";
+          return;
+        }
+        if (!res.ok) throw new Error("Unable to load notifications");
+        const data = await res.json();
+        allNotifications = data.notifications || [];
+        render();
+      } catch {
+        window.location.href = "client-login.html";
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", async () => {
+      await loadNotifications();
+
+      document.getElementById("notifFilter").addEventListener("change", (e) => {
+        currentFilter = e.target.value;
+        render();
+      });
+
+      document.getElementById("markAllBtn").addEventListener("click", async () => {
+        const res = await fetch("/api/client/notifications/read-all", { method: "POST" });
+        if (!res.ok) { alert("Unable to mark notifications as read."); return; }
+        allNotifications = allNotifications.map(n => ({ ...n, is_read: 1 }));
+        render();
+      });
+
+      document.getElementById("notifList").addEventListener("click", async (e) => {
+        const btn = e.target.closest("[data-read]");
+        if (!btn) return;
+        const id = btn.getAttribute("data-read");
+        btn.disabled = true;
+        const res = await fetch(`/api/client/notifications/${id}/read`, { method: "POST" });
+        if (!res.ok) {
+          btn.disabled = false;
+          alert("Unable to update this notification.");
+          return;
+        }
+        allNotifications = allNotifications.map(n => String(n.id) === String(id) ? { ...n, is_read: 1 } : n);
+        render();
+      });
+
+      document.getElementById("logoutBtn").addEventListener("click", async (e) => {
+        e.preventDefault();
+        await fetch("/api/logout", { method: "POST" });
+        window.location.href = "client-login.html";
+      });
+    });
+  </script>
+</body>
+</html>

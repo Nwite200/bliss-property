@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Staff & Team Management | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body data-page="staff">
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <section class="role-hero">
+        <h1>Staff & Team Management</h1>
+        <p>Create staff accounts, assign roles and branches, manage teams, activate or deactivate accounts and review staff activity history.</p>
+        <div class="role-hero-meta" id="heroMeta"></div>
+        <div class="hero-actions">
+          <button class="btn btn-green" type="button" id="newStaffBtn">+ Create staff account</button>
+          <button class="btn btn-outline-white" type="button" id="newTeamBtn">+ Create team</button>
+        </div>
+      </section>
+
+      <div class="tabs">
+        <button class="tab-btn active" type="button" data-tab="staff">Staff directory</button>
+        <button class="tab-btn" type="button" data-tab="teams">Teams</button>
+      </div>
+
+      <section id="staffTab">
+        <div class="card">
+          <div class="card-head">
+            <h3>Staff directory</h3>
+            <span class="small muted" id="staffCount"></span>
+          </div>
+          <div class="filters mb-16">
+            <input type="search" id="staffSearch" placeholder="Search name, email or phone…">
+            <select id="staffRoleFilter"><option value="">All roles</option><option>Managing Director</option><option>Branch Manager</option><option>Team Lead</option><option>Marketer</option><option>Finance Officer</option></select>
+            <select id="staffBranchFilter"><option value="">All branches</option></select>
+            <select id="staffStatusFilter"><option value="">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+            <button class="btn btn-green btn-sm" type="button" id="applyStaffFilters">Filter</button>
+          </div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Staff</th><th>Role</th><th>Branch</th><th>Teams</th><th>Status</th><th>Last login</th><th>Actions</th></tr></thead>
+            <tbody id="staffBody"></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <section id="teamsTab" style="display:none">
+        <div class="card">
+          <div class="card-head"><h3>Teams</h3><span class="small muted" id="teamCount"></span></div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Team</th><th>Branch</th><th>Team lead</th><th>Members</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="teamBody"></tbody>
+          </table></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="staffModal">
+    <div class="modal-box">
+      <div class="modal-header"><h3 id="staffModalTitle">Create staff account</h3><button class="icon-btn" type="button" data-close-modal="staffModal">✕</button></div>
+      <form id="staffForm">
+        <input type="hidden" id="staffId">
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="staffFullName">Full name</label><input class="field-input" id="staffFullName" required></div>
+          <div class="field-group"><label class="field-label" for="staffEmail">Email</label><input class="field-input" type="email" id="staffEmail" required></div>
+          <div class="field-group" id="staffPasswordGroup"><label class="field-label" for="staffPassword">Temporary password</label><input class="field-input" type="password" id="staffPassword" minlength="8" placeholder="At least 8 characters"></div>
+          <div class="field-group"><label class="field-label" for="staffPhone">Phone</label><input class="field-input" id="staffPhone"></div>
+          <div class="field-group"><label class="field-label" for="staffRole">Role</label><select class="field-input" id="staffRole" required></select></div>
+          <div class="field-group"><label class="field-label" for="staffBranch">Branch</label><select class="field-input" id="staffBranch" required></select></div>
+          <div class="field-group"><label class="field-label" for="staffJobTitle">Job title</label><input class="field-input" id="staffJobTitle"></div>
+          <div class="field-group"><label class="field-label" for="staffDateJoined">Date joined</label><input class="field-input" type="date" id="staffDateJoined"></div>
+          <div class="field-group full"><label class="field-label" for="staffNotes">Internal notes</label><textarea class="field-input" id="staffNotes" rows="2"></textarea></div>
+          <div class="field-group full"><label class="field-label">Team memberships</label><div id="staffTeamsChecks" class="quick-links"></div></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button class="btn btn-ghost" type="button" data-close-modal="staffModal">Cancel</button>
+          <button class="btn btn-green" type="submit" id="staffSubmitBtn">Save staff account</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="teamModal">
+    <div class="modal-box">
+      <div class="modal-header"><h3 id="teamModalTitle">Create team</h3><button class="icon-btn" type="button" data-close-modal="teamModal">✕</button></div>
+      <form id="teamForm">
+        <input type="hidden" id="teamId">
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="teamName">Team name</label><input class="field-input" id="teamName" required></div>
+          <div class="field-group"><label class="field-label" for="teamBranch">Branch</label><select class="field-input" id="teamBranch" required></select></div>
+          <div class="field-group full"><label class="field-label" for="teamLead">Team lead</label><select class="field-input" id="teamLead"><option value="">Unassigned</option></select></div>
+          <div class="field-group full"><label class="field-label">Team members</label><div id="teamMembersChecks" class="quick-links"></div></div>
+          <div class="field-group full"><label class="field-label" for="teamActive">Status</label><select class="field-input" id="teamActive"><option value="1">Active</option><option value="0">Inactive</option></select></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button class="btn btn-ghost" type="button" data-close-modal="teamModal">Cancel</button>
+          <button class="btn btn-green" type="submit" id="teamSubmitBtn">Save team</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="activityModal">
+    <div class="modal-box modal-wide">
+      <div class="modal-header"><h3 id="activityModalTitle">Staff activity</h3><button class="icon-btn" type="button" data-close-modal="activityModal">✕</button></div>
+      <div id="activityModalBody"><div class="empty-state">Loading…</div></div>
+    </div>
+  </div>
+
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/staff-management.js"></script>
+</body>
+</html>

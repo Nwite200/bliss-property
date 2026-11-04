@@ -1,137 +1,336 @@
-// Bliss Legacy Limited — sample property data (DEMONSTRATION CONTENT).
-// Replace with approved company listings. Structured for future API/DB integration.
+// Bliss Legacy Limited — Sample Property Data (DEMONSTRATION CONTENT).
+// Structured for seamless future API and administrative backend integration.
+
+window.BLIS_CONFIG = {
+  companyName: "Bliss Legacy Limited",
+  tagline: "Your Future Begins With the Right Property.",
+  whatsappNumber: "2348000000000", // Configurable placeholder (format: country code without +)
+  phone: "+234 800 000 0000",       // Configurable placeholder
+  email: "info@blisslegacylimited.com", // Configurable placeholder
+  address: "Head Office, Lagos, Nigeria", // Configurable placeholder
+  social: {
+    facebook: "https://facebook.com",
+    instagram: "https://instagram.com",
+    twitter: "https://twitter.com",
+    linkedin: "https://linkedin.com"
+  }
+};
+
+window.BLIS_BRANCHES = [
+  {
+    name: "Head Office",
+    city: "Lagos",
+    state: "Lagos State",
+    type: "Corporate Headquarters",
+    address: "Central Business District, Lagos",
+    phone: "+234 800 000 0000",
+    isHeadOffice: true
+  },
+  {
+    name: "Ikeja",
+    city: "Ikeja",
+    state: "Lagos State",
+    type: "Mainland Branch",
+    address: "Commercial Avenue, Ikeja, Lagos",
+    phone: "+234 800 000 0001",
+    isHeadOffice: false
+  },
+  {
+    name: "Ajah",
+    city: "Ajah",
+    state: "Lagos State",
+    type: "Island & Lekki Corridor Branch",
+    address: "Lekki-Epe Expressway, Ajah, Lagos",
+    phone: "+234 800 000 0002",
+    isHeadOffice: false
+  },
+  {
+    name: "Asaba",
+    city: "Asaba",
+    state: "Delta State",
+    type: "Delta State Regional Office",
+    address: "Nnebisi Road, Asaba, Delta State",
+    phone: "+234 800 000 0003",
+    isHeadOffice: false
+  },
+  {
+    name: "Ihama",
+    city: "Benin City",
+    state: "Edo State",
+    type: "GRA Branch",
+    address: "Ihama Road, GRA, Benin City, Edo State",
+    phone: "+234 800 000 0004",
+    isHeadOffice: false
+  },
+  {
+    name: "Obakhavba",
+    city: "Benin City",
+    state: "Edo State",
+    type: "Commercial Office",
+    address: "Obakhavba Axis, Benin City, Edo State",
+    phone: "+234 800 000 0005",
+    isHeadOffice: false
+  }
+];
+
 window.BLIS_PROPERTIES = [
   {
     id: "prop-001",
-    name: "Legacy Heights Apartments",
-    slug: "legacy-heights-apartments",
+    name: "Greenfield Estate Phase 1",
+    slug: "greenfield-estate-phase-1",
     images: [
-      "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1400&q=85",
-      "https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=1400&q=85",
-      "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1400&q=85"
+      "https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1600566753086-00f18fb6b3ea?auto=format&fit=crop&w=1200&q=80"
     ],
-    description: "A modern residential development offering spacious apartments with premium finishes, natural lighting and secure estate living. Ideal for families and professionals seeking comfort and long-term value. (Demonstration content.)",
-    location: "Ikeja",
+    description: "A serene, master-planned residential community in the prime axis of Ikeja. Greenfield Estate Phase 1 offers modern 4-bedroom semi-detached duplexes built to the highest architectural standards with 24-hour security, paved road networks, constant water supply, and uninterrupted estate power. Perfect for families seeking safety, tranquility, and capital appreciation.",
+    location: "Ikeja, Lagos",
     branch: "Ikeja",
     category: "Residential",
-    price: 45000000,
-    units: 12,
-    features: ["3 Bedrooms", "2 Bathrooms", "Fitted Kitchen", "Parking Space", "24/7 Security", "Estate Road"],
+    price: 85000000,
+    units: 6,
+    totalUnits: 20,
+    bedrooms: 4,
+    bathrooms: 4,
+    size: "380 sqm",
+    features: [
+      "4 All En-Suite Bedrooms",
+      "Fully Fitted Kitchen",
+      "Attached BQ",
+      "24/7 Monitored Security",
+      "Interlocked Paved Roads",
+      "Central Water Treatment",
+      "Dedicated Transformer",
+      "Perimeter Fencing & CCTV"
+    ],
     status: "Available",
-    featured: true
+    featured: true,
+    isDemo: true
   },
   {
     id: "prop-002",
-    name: "Legacy Gardens Estate",
-    slug: "legacy-gardens-estate",
+    name: "Lakeview Courts",
+    slug: "lakeview-courts",
     images: [
-      "https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=1400&q=85",
-      "https://images.unsplash.com/photo-1600607687644-c7171b42498f?auto=format&fit=crop&w=1400&q=85"
+      "https://images.unsplash.com/photo-1570129477492-45c003edd2be?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1613977257363-707ba9348227?auto=format&fit=crop&w=1200&q=80"
     ],
-    description: "An elegant estate community designed for serene family living, with landscaped surroundings and quality infrastructure. (Demonstration content.)",
-    location: "Ikeja",
-    branch: "Ikeja",
+    description: "Architecturally refined 3-bedroom luxury terrace duplexes nestled in a secure gated community in Ajah. Designed with open-concept living rooms, floor-to-ceiling windows, and private parking. Close proximity to shopping centers, reputable schools, and business districts along the Lekki corridor.",
+    location: "Ajah, Lagos",
+    branch: "Ajah",
     category: "Residential",
-    price: 62500000,
-    units: 8,
-    features: ["3 Bedrooms", "En-suite", "Boys Quarter", "Gated Estate", "Water Supply"],
+    price: 65000000,
+    units: 4,
+    totalUnits: 14,
+    bedrooms: 3,
+    bathrooms: 3,
+    size: "240 sqm",
+    features: [
+      "3 En-Suite Bedrooms",
+      "Contemporary Open Living",
+      "Dedicated Parking (2 cars)",
+      "Solar Street Lighting",
+      "Estate Generator Backup",
+      "Kids Play Area",
+      "Fibre-Optic Internet Ready",
+      "Drainage Infrastructure"
+    ],
     status: "Available",
-    featured: true
+    featured: true,
+    isDemo: true
   },
   {
     id: "prop-003",
-    name: "Serene Acres Plot",
-    slug: "serene-acres-plot",
+    name: "Delta Prime Plots",
+    slug: "delta-prime-plots",
     images: [
-      "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1400&q=85"
+      "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80"
     ],
-    description: "A well-positioned residential plot offering a solid foundation for your dream home or investment. (Demonstration content.)",
-    location: "Asaba",
+    description: "100% dry, surveyed, and ready-to-build residential and commercial plots situated in the rapidly expanding capital corridor of Asaba, Delta State. Features clean title documentation, government-approved layouts, and excellent proximity to the Asaba International Airport and central business areas.",
+    location: "Asaba, Delta",
     branch: "Asaba",
     category: "Land",
-    price: 12500000,
-    units: 20,
-    features: ["Residential Plot", "Dry Land", "Accessible Road", "Survey Available"],
+    price: 14500000,
+    units: 18,
+    totalUnits: 50,
+    bedrooms: 0,
+    bathrooms: 0,
+    size: "500 sqm / Plot",
+    features: [
+      "Instant Allocation",
+      "100% Dry Land",
+      "Registered Survey Plan",
+      "Deed of Assignment Ready",
+      "Electricity Connection Available",
+      "Wide Access Roads",
+      "High Investment Yield Potential",
+      "Free from Encumbrances"
+    ],
     status: "Available",
-    featured: false
+    featured: true,
+    isDemo: true
   },
   {
     id: "prop-004",
-    name: "The Signature Apartments",
-    slug: "signature-apartments",
+    name: "Benin Heights Apartments",
+    slug: "benin-heights-apartments",
     images: [
-      "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1400&q=85"
+      "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&w=1200&q=80"
     ],
-    description: "Comfortable city living in a prime location, with efficient layouts and modern amenities. (Demonstration content.)",
-    location: "Ihama",
+    description: "Premium 2 and 3-bedroom city apartments situated in the prestigious GRA neighborhood of Ihama, Benin City. Built to international standards with Spanish porcelain tiling, fitted granite kitchen tops, elevator access, and secure multi-level parking.",
+    location: "Ihama, Benin City",
     branch: "Ihama",
     category: "Residential",
-    price: 38500000,
-    units: 6,
-    features: ["2 Bedrooms", "1 Bathroom", "Open Plan Kitchen", "Balcony"],
+    price: 36000000,
+    units: 7,
+    totalUnits: 24,
+    bedrooms: 3,
+    bathrooms: 2,
+    size: "160 sqm",
+    features: [
+      "Master Bedroom En-Suite",
+      "Private Viewing Balcony",
+      "Elevator Access",
+      "Covered Ground Parking",
+      "Soundproof Generator Plant",
+      "Intercom Security System",
+      "Clean Borehole Water Supply",
+      "Access Control Gate"
+    ],
     status: "Available",
-    featured: false
+    featured: false,
+    isDemo: true
   },
   {
     id: "prop-005",
-    name: "Business Point",
-    slug: "business-point",
+    name: "Commercial Hub Obakhavba",
+    slug: "commercial-hub-obakhavba",
     images: [
-      "https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=1400&q=85"
+      "https://images.unsplash.com/photo-1486325212027-8081e485255e?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1200&q=80"
     ],
-    description: "A commercial space suited for offices, retail or professional services in a growing business district. (Demonstration content.)",
-    location: "Obakhavba",
+    description: "Purpose-engineered commercial plazas and office suites situated in a high-footfall business corridor in Obakhavba, Benin City. Designed with customizable shell-and-core units, modern glass facades, dedicated loading bays, and expansive customer parking.",
+    location: "Obakhavba, Benin City",
     branch: "Obakhavba",
     category: "Commercial",
-    price: 55000000,
-    units: 4,
-    features: ["Open Floor Plan", "Reception Area", "Parking", "Power Backup"],
+    price: 52000000,
+    units: 5,
+    totalUnits: 12,
+    bedrooms: 0,
+    bathrooms: 2,
+    size: "220 sqm",
+    features: [
+      "Prime Road Frontage",
+      "High Footfall Corridor",
+      "Double-Glazed Facade",
+      "Dedicated Loading Bay",
+      "Customer Parking Lot",
+      "Industrial Power Backup",
+      "Fire Detection & Suppression",
+      "Flexible Floor Plan"
+    ],
     status: "Available",
-    featured: false
+    featured: false,
+    isDemo: true
   },
   {
     id: "prop-006",
-    name: "Palm Court Homes",
-    slug: "palm-court-homes",
+    name: "Royal Palms Estate",
+    slug: "royal-palms-estate",
     images: [
-      "https://images.unsplash.com/photo-1600607687644-c7171b42498f?auto=format&fit=crop&w=1400&q=85",
-      "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1400&q=85"
+      "https://images.unsplash.com/photo-1600047509807-ba8f99d2cdde?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1600585154526-990dced4db0d?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1600607687920-4e2a09cf159d?auto=format&fit=crop&w=1200&q=80"
     ],
-    description: "Spacious family homes offering generous living areas, quality finishes and a welcoming environment. (Demonstration content.)",
-    location: "Ajah",
+    description: "The pinnacle of luxury living in Ajah, Lagos. Royal Palms Estate presents fully detached 5-bedroom smart homes featuring private swimming pools, rooftop lounge terraces, integrated automated security, and lush landscaped gardens.",
+    location: "Ajah, Lagos",
     branch: "Ajah",
     category: "Residential",
-    price: 72000000,
-    units: 5,
-    features: ["5 Bedrooms", "4 Bathrooms", "Swimming Pool", "Garden", "Garage"],
+    price: 145000000,
+    units: 2,
+    totalUnits: 8,
+    bedrooms: 5,
+    bathrooms: 6,
+    size: "550 sqm",
+    features: [
+      "5 All En-Suite Bedrooms",
+      "Private Swimming Pool",
+      "Integrated Smart Home System",
+      "Solar Inverter Backup",
+      "Rooftop Terrace Lounge",
+      "Chef's Kitchen + Pantry",
+      "2-Room Boys Quarters",
+      "Perimeter Infrared Security"
+    ],
     status: "Available",
-    featured: true
+    featured: true,
+    isDemo: true
   },
   {
     id: "prop-007",
-    name: "Harbour View Terrace",
-    slug: "harbour-view-terrace",
+    name: "Victory Park Commercial Suites",
+    slug: "victory-park-commercial-suites",
     images: [
-      "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1400&q=85"
+      "https://images.unsplash.com/photo-1497215728101-856f4ea42174?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=1200&q=80"
     ],
-    description: "Contemporary terraces with clean lines and bright interiors, designed for modern urban living. (Demonstration content.)",
-    location: "Ajah",
-    branch: "Ajah",
-    category: "Residential",
-    price: 58000000,
-    units: 10,
-    features: ["4 Bedrooms", "3 Bathrooms", "Terrace", "Smart Home Ready"],
-    status: "Coming Soon",
-    featured: false
+    description: "Versatile commercial suites in Ikeja suitable for corporate headquarters, professional clinics, and creative agencies. Features ample parking, dual elevators, high-speed fiber internet infrastructure, and 24-hour estate management.",
+    location: "Ikeja, Lagos",
+    branch: "Ikeja",
+    category: "Commercial",
+    price: 78000000,
+    units: 3,
+    totalUnits: 10,
+    bedrooms: 0,
+    bathrooms: 3,
+    size: "300 sqm",
+    features: [
+      "Central Air Conditioning Ready",
+      "High Visibility Signage Space",
+      "Dual Passenger Elevators",
+      "3-Phase Power Connection",
+      "Professional Facility Management",
+      "Secured Under-Building Parking",
+      "CCTV Surveillance",
+      "Fire Safety Certification"
+    ],
+    status: "Available",
+    featured: false,
+    isDemo: true
+  },
+  {
+    id: "prop-008",
+    name: "Sunrise Meadows Scheme 2",
+    slug: "sunrise-meadows-scheme-2",
+    images: [
+      "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1500076656116-558758c991c1?auto=format&fit=crop&w=1200&q=80"
+    ],
+    description: "A fast-appreciating land investment opportunity along the vibrant Asaba expansion corridor. Perfectly dry topography, immediate physical allocation, and completely free from any customary encumbrances. Excellent for long-term banking or early residential construction.",
+    location: "Asaba, Delta",
+    branch: "Asaba",
+    category: "Land",
+    price: 9500000,
+    units: 25,
+    totalUnits: 60,
+    bedrooms: 0,
+    bathrooms: 0,
+    size: "450 sqm / Plot",
+    features: [
+      "Registered Global C of O",
+      "Immediate Survey & Pegging",
+      "Well-Drained Sandy Soil",
+      "Gated Perimeter Security",
+      "Planned Green Parks",
+      "Direct Link to Express Route",
+      "Flexible Installment Options",
+      "Documented Ownership Transfer"
+    ],
+    status: "Available",
+    featured: false,
+    isDemo: true
   }
 ];
-window.BLIS_BRANCHES = ["Ikeja", "Ajah", "Asaba", "Ihama", "Obakhavba", "Head Office"];
-window.BLIS_CONFIG = {
-  companyName: "Bliss Legacy Limited",
-  tagline: "Find Your Place. Build Your Legacy.",
-  whatsappNumber: "",
-  phone: "",
-  email: "",
-  address: "",
-  social: { facebook: "", instagram: "", twitter: "", linkedin: "" }
-};

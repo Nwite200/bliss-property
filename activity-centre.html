@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Activity Centre | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body data-page="activity">
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <section class="role-hero">
+        <h1>Activity Centre</h1>
+        <p>Client registrations, assignments, property updates, lead status changes, follow-ups, conversions and staff account changes. In-app delivery is active; email and WhatsApp adapters remain pending.</p>
+        <div class="role-hero-meta" id="heroMeta"></div>
+      </section>
+
+      <div class="filter-panel">
+        <div class="field-group"><label class="field-label" for="activityType">Category</label>
+          <select class="field-input" id="activityType">
+            <option value="">All activity</option>
+            <option value="client">Clients</option>
+            <option value="property">Properties</option>
+            <option value="lead">Leads</option>
+            <option value="staff">Staff</option>
+            <option value="team">Teams</option>
+            <option value="payment">Payments</option>
+            <option value="installment">Installments</option>
+            <option value="provider">Provider</option>
+          </select>
+        </div>
+        <div class="field-group"><label class="field-label" for="activityFrom">From</label><input class="field-input" type="date" id="activityFrom"></div>
+        <div class="field-group"><label class="field-label" for="activityTo">To</label><input class="field-input" type="date" id="activityTo"></div>
+        <button class="btn btn-green btn-sm" type="button" id="applyActivityFilters">Filter</button>
+        <button class="btn btn-ghost btn-sm" type="button" id="resetActivityFilters">Reset</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Activity history</h3><span class="small muted" id="activityCount"></span></div>
+        <div class="route-note mb-16">The activity centre reads the immutable audit trail. DEMO financial records are excluded from live financial KPIs; activity entries remain an audit record.</div>
+        <div class="activity-feed" id="activityFeed"><div class="empty-state">Loading activity…</div></div>
+        <div class="toolbar mt-16" style="justify-content:space-between">
+          <span class="small muted" id="activityPageLabel"></span>
+          <div class="toolbar">
+            <button class="btn btn-ghost btn-sm" type="button" id="activityPrev">← Previous</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="activityNext">Next →</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/activity-centre.js"></script>
+</body>
+</html>

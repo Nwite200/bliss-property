@@ -6,7 +6,10 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply bliss-legacy-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply bliss-legacy-db --remote"
+    "db:migrate:remote": "wrangler d1 migrations apply bliss-legacy-db --remote",
+    "test:phase5": "node --experimental-sqlite test_phase5_suite.mjs",
+    "test:phase6": "node --experimental-sqlite test_phase6_suite.mjs",
+    "test": "npm run test:phase5 && npm run test:phase6"
   },
   "devDependencies": {
     "wrangler": "^4.157.0"

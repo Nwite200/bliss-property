@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Performance Analytics | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body data-page="performance">
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <section class="role-hero">
+        <h1>Performance Analytics</h1>
+        <p>Accurate D1 reporting for contract value, verified collections, leads, conversions, branch comparisons, marketer rankings and team rankings.</p>
+        <div class="role-hero-meta" id="heroMeta"></div>
+        <div class="hero-actions">
+          <a class="btn btn-outline-white" href="dashboard.html">← Back to dashboard</a>
+          <a class="btn btn-green" href="leads.html">Lead pipeline</a>
+          <button class="btn btn-outline-white" type="button" id="exportCsv">Export current view</button>
+        </div>
+      </section>
+
+      <div class="filter-panel">
+        <div class="field-group"><label class="field-label" for="fromDate">From</label><input class="field-input" type="date" id="fromDate"></div>
+        <div class="field-group"><label class="field-label" for="toDate">To</label><input class="field-input" type="date" id="toDate"></div>
+        <div class="field-group"><label class="field-label" for="granularity">Granularity</label>
+          <select class="field-input" id="granularity"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option><option value="year">Yearly</option></select>
+        </div>
+        <div class="field-group" id="branchFilterGroup" style="display:none"><label class="field-label" for="branchFilter">Branch</label><select class="field-input" id="branchFilter"><option value="">All branches</option></select></div>
+        <button class="btn btn-green btn-sm" type="button" id="applyFilters">Apply</button>
+        <button class="btn btn-ghost btn-sm" type="button" id="resetFilters">Last 30 days</button>
+      </div>
+
+      <div class="kpi-grid kpi-grid-3" id="summaryKpis"></div>
+      <div class="kpi-grid kpi-grid-5" id="periodKpis"></div>
+
+      <div class="card chart-card section-gap">
+        <div class="card-head"><h3>Sales, collections and lead trend</h3><span class="small muted" id="trendRangeLabel"></span></div>
+        <div class="bar-chart" id="trendChart"><div class="empty-state">Loading trend…</div></div>
+        <div class="chart-legend">
+          <span><span class="legend-dot verified"></span>Verified collections</span>
+          <span><span class="legend-dot contract"></span>Contract value</span>
+          <span><span class="legend-dot leads"></span>Leads generated</span>
+          <span><span class="legend-dot conversions"></span>Conversions</span>
+        </div>
+      </div>
+
+      <div class="card section-gap" id="funnelCard">
+        <div class="card-head"><h3>Lead funnel</h3><span class="small muted">Live leads only; DEMO records excluded</span></div>
+        <div class="pipeline-board" id="leadFunnel"><div class="empty-state">Loading funnel…</div></div>
+      </div>
+
+      <div class="card section-gap" id="branchCard">
+        <div class="card-head"><h3>Branch comparison</h3><span class="small muted">Contract value vs verified cash</span></div>
+        <div class="table-responsive"><table class="table">
+          <thead><tr><th>Branch</th><th>Properties</th><th>Clients</th><th>Leads</th><th>Conversions</th><th>Contract</th><th>Verified</th><th>Outstanding</th><th>Conversion</th></tr></thead>
+          <tbody id="branchBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card section-gap">
+        <div class="card-head"><h3>Marketer rankings</h3><span class="small muted">Ranked by verified collections</span></div>
+        <div class="table-responsive"><table class="table">
+          <thead><tr><th>#</th><th>Marketer</th><th>Branch</th><th>Clients</th><th>Leads</th><th>Converted</th><th>Contract</th><th>Verified</th><th>Conversion</th></tr></thead>
+          <tbody id="marketerBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card section-gap" id="teamCard">
+        <div class="card-head"><h3>Team rankings</h3><span class="small muted">Team lead, members and verified collections</span></div>
+        <div class="table-responsive"><table class="table">
+          <thead><tr><th>#</th><th>Team</th><th>Lead</th><th>Members</th><th>Clients</th><th>Leads</th><th>Converted</th><th>Contract</th><th>Verified</th><th>Conversion</th></tr></thead>
+          <tbody id="teamBody"></tbody>
+        </table></div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/performance.js"></script>
+</body>
+</html>

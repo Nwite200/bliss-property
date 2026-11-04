@@ -3,110 +3,468 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#00b522" />
-  <meta name="description" content="Discover premium property opportunities with Bliss Legacy Limited. Explore homes, land and investment properties across our locations." />
+  <meta name="theme-color" content="#00B522" />
+  <meta name="description" content="Discover exceptional property opportunities with Bliss Legacy Limited. We make property ownership and investment straightforward, transparent and rewarding across Nigeria." />
   <title>Bliss Legacy Limited | Your Future Begins With the Right Property.</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/css/styles.css">
 </head>
-<body>
+<body class="page-home">
+  <!-- Persistent Site Header (injected via components.js) -->
   <div id="header-slot"></div>
+
   <main>
-    <section class="hero" id="home">
-      <div class="container hero-content">
-        <span class="eyebrow fade-in">Bliss Legacy Limited</span>
-        <h1 class="fade-in">Your Future Begins With the <span>Right Property.</span></h1>
-        <p class="fade-in">Discover exceptional property opportunities with Bliss Legacy Limited. We make property ownership and investment straightforward, transparent and rewarding.</p>
-        <div class="hero-buttons fade-in">
-          <a class="btn btn-green" href="#properties">Explore Properties</a>
-          <a class="btn btn-outline" href="#contact">Speak to an Agent</a>
-        </div>
-        <div class="hero-note fade-in">
-          <span><span class="dot"></span>Verified opportunities</span>
-          <span><span class="dot"></span>Transparent process</span>
-          <span><span class="dot"></span>Customer support</span>
-        </div>
-      </div>
-    </section>
-
-    <div class="trustbar"><div class="container trustgrid">
-      <div class="trustitem"><div class="trusticon">⌂</div><div><strong>Find a place to call yours</strong><small>Explore property opportunities</small></div></div>
-      <div class="trustitem"><div class="trusticon">◇</div><div><strong>Make informed decisions</strong><small>Clear property information</small></div></div>
-      <div class="trustitem"><div class="trusticon">✓</div><div><strong>Guidance at every step</strong><small>A team ready to assist</small></div></div>
-    </div></div>
-
-    <section id="properties"><div class="container">
-      <div class="section-head"><div><div class="kicker">Explore opportunities</div><h2>Find a property that feels right.</h2></div><p>Browse a selection of property opportunities and discover the details that matter to your next move.</p></div>
-        <div class="filters">
-          <input id="searchInput" type="text" placeholder="Search by property name">
-          <select id="locationFilter"><option value="">All Locations</option></select>
-          <select id="categoryFilter"><option value="">All Categories</option></select>
-          <select id="priceFilter"><option value="">Any Price</option>
-            <option value="0-30000000">Up to ₦30M</option>
-            <option value="30000001-60000000">₦30M – ₦60M</option>
-            <option value="60000001-999999999">₦60M+</option>
-          </select>
-          <select id="sortSelect"><option value="">Sort</option>
-            <option value="asc">Price: Low to High</option>
-            <option value="desc">Price: High to Low</option>
-          </select>
-        </div>
-        <div class="property-grid" id="propertyGrid"></div>
-      </div>
-    </section>
-
-    <section class="about" id="about"><div class="container about-grid">
-      <div class="about-visual"><img src="https://images.unsplash.com/photo-1600566753086-00f18fb6b3ea?auto=format&fit=crop&w=1100&q=85" alt="Contemporary luxury home exterior"><div class="about-stamp"><strong>BLISS</strong><small>BUILDING YOUR LEGACY</small></div></div>
-      <div class="about-copy"><div class="kicker">About Bliss Legacy</div><h2>Property decisions deserve clarity and confidence.</h2><p>At Bliss Legacy Limited, we believe the right property can shape a family's future. Our role is to make the journey feel informed, transparent and well guided — from first enquiry to final handover.</p><p>We combine market insight with a people-first service model, ensuring clients feel supported at every step.</p><div class="checks"><div class="check"><b>✓</b>Transparent processes</div><div class="check"><b>✓</b>Professional guidance</div><div class="check"><b>✓</b>Verified opportunities</div><div class="check"><b>✓</b>Customer-first service</div></div><a class="btn btn-green" href="#contact">Speak to an Agent</a></div>
-    </div></section>
-
-    <section id="branches"><div class="container">
-      <div class="section-head"><div><div class="kicker">Our presence</div><h2>Find us across key locations.</h2></div><p>Bliss Legacy serves clients across six branches in Nigeria.</p></div>
-      <div class="branches-grid" id="branchesGrid"></div>
-    </div></section>
-
-    <section class="section section-soft" id="why">
-      <div class="container">
-        <span class="eyebrow">Why Choose Us</span>
-        <h2>Built on Trust and Professionalism</h2>
-        <div class="values-grid">
-          <div class="value fade-in"><div class="icon">✓</div><h3>Transparency</h3><p>Clear processes and honest communication at every step.</p></div>
-          <div class="value fade-in"><div class="icon">★</div><h3>Trust</h3><p>Dependable service built on long-term client relationships.</p></div>
-          <div class="value fade-in"><div class="icon">◆</div><h3>Professional Service</h3><p>Experienced guidance from enquiry to ownership.</p></div>
-          <div class="value fade-in"><div class="icon">✔</div><h3>Verified Opportunities</h3><p>Carefully presented property opportunities.</p></div>
-          <div class="value fade-in"><div class="icon">☎</div><h3>Customer Support</h3><p>Responsive support before and after purchase.</p></div>
-          <div class="value fade-in"><div class="icon">₦</div><h3>Flexible Payment</h3><p>Flexible payment processes where applicable.</p></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="section" id="contact">
-      <div class="container">
-        <span class="eyebrow">Contact Us</span>
-        <h2>Let's Talk Property</h2>
-        <div class="contact-grid">
-          <div>
-            <p>Reach out for enquiries, viewings or investment guidance. Company contact details are configurable placeholders until confirmed.</p>
-            <p><strong>Phone:</strong> <span id="contactPhone">(configure)</span></p>
-            <p><strong>Email:</strong> <span id="contactEmail">(configure)</span></p>
-            <p><strong>Address:</strong> <span id="contactAddress">(configure)</span></p>
-            <p><strong>WhatsApp:</strong> <button class="btn btn-green" id="waBtn" style="margin-top:8px">Chat on WhatsApp</button></p>
+    <!-- 2. Hero Section -->
+    <section class="hero-section" id="home">
+      <div class="hero-overlay"></div>
+      <div class="container hero-container">
+        <div class="hero-content">
+          <div class="hero-badge fade-in">
+            <span class="badge-pulsing-dot"></span>
+            <span>Trusted Real Estate Company in Nigeria</span>
           </div>
-          <form class="contact-form" id="contactForm">
-            <input type="text" placeholder="Full name" required>
-            <input type="email" placeholder="Email address" required>
-            <input type="tel" placeholder="Phone number">
-            <textarea placeholder="Your message"></textarea>
-            <button class="btn btn-green" type="submit">Send Message</button>
-          </form>
+
+          <h1 class="hero-title fade-in">
+            Your Future Begins With the <span class="highlight-green">Right Property.</span>
+          </h1>
+
+          <p class="hero-subtitle fade-in">
+            Discover exceptional property opportunities with Bliss Legacy Limited. We make property ownership and investment straightforward, transparent and rewarding.
+          </p>
+
+          <div class="hero-cta-group fade-in">
+            <a class="btn btn-green btn-hero" href="#properties">Explore Properties →</a>
+            <a class="btn btn-hero-outline wa-link" href="#" data-message="Hello Bliss Legacy Limited, I would like to speak with a property consultant.">
+              Speak to an Agent ↗
+            </a>
+          </div>
+
+          <!-- Trust points below CTAs -->
+          <div class="hero-trust-indicators fade-in">
+            <div class="trust-indicator">
+              <span class="ind-icon">✓</span>
+              <span>Verified Titles & Clear Ownership</span>
+            </div>
+            <div class="trust-indicator">
+              <span class="ind-icon">✓</span>
+              <span>100% Transparent Pricing</span>
+            </div>
+            <div class="trust-indicator">
+              <span class="ind-icon">✓</span>
+              <span>6 Branch Locations Nationwide</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Floating Quick Stats Pill Box -->
+        <div class="hero-stats-panel fade-in">
+          <div class="stat-item">
+            <span class="stat-number">6+</span>
+            <span class="stat-label">Branch Offices</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat-item">
+            <span class="stat-number">100%</span>
+            <span class="stat-label">Verified Titles</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat-item">
+            <span class="stat-number">24/7</span>
+            <span class="stat-label">Consultant Support</span>
+          </div>
         </div>
       </div>
     </section>
-    <div class="cta"><div class="container"><div class="cta-panel"><div><div class="eyebrow" style="color:#b8f2c3">Let's take the next step</div><h2>Ready to find your place?</h2><p>Tell us what you are looking for. Our team will be happy to help you explore available opportunities.</p></div><a class="btn btn-green wa-link" href="#" data-message="Hello Bliss Legacy, I am interested in finding a property. Please assist me.">Chat with us on WhatsApp ↗</a></div></div></div>
+
+    <!-- Trustbar Section -->
+    <section class="trustbar-section">
+      <div class="container">
+        <div class="trustbar-grid">
+          <div class="trustbar-card">
+            <div class="trustbar-icon">⌂</div>
+            <div class="trustbar-text">
+              <strong>Find A Place To Call Yours</strong>
+              <p>Curated residential homes, duplexes and serviced estate communities.</p>
+            </div>
+          </div>
+          <div class="trustbar-card">
+            <div class="trustbar-icon">◇</div>
+            <div class="trustbar-text">
+              <strong>Verified Land & Commercial Assets</strong>
+              <p>Strategic plots and business properties in rapid economic corridors.</p>
+            </div>
+          </div>
+          <div class="trustbar-card">
+            <div class="trustbar-icon">✓</div>
+            <div class="trustbar-text">
+              <strong>Guidance At Every Milestone</strong>
+              <p>Experienced advisors dedicated to transparent documentation and handover.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Dynamic Property Listings Section -->
+    <section class="section properties-section" id="properties">
+      <div class="container">
+        <div class="section-header">
+          <div class="header-text-block">
+            <span class="kicker-tag">Featured Portfolio</span>
+            <h2 class="section-heading">Explore Available Properties</h2>
+            <p class="section-subtext">
+              Browse our portfolio of residential, commercial, and land investment opportunities across Nigeria. All listings feature verified titles and transparent purchasing structures.
+            </p>
+          </div>
+          <div class="header-action-block">
+            <span class="results-counter" id="resultsCounter">Loading properties...</span>
+          </div>
+        </div>
+
+        <!-- Search & Filter Controls -->
+        <div class="filter-controls-panel">
+          <div class="filter-input-wrap search-wrap">
+            <span class="input-icon">🔍</span>
+            <input type="text" id="searchInput" placeholder="Search by property name, axis, or keyword..." aria-label="Search properties">
+          </div>
+
+          <div class="filter-select-wrap">
+            <select id="locationFilter" aria-label="Filter by location">
+              <option value="">All Locations & Branches</option>
+            </select>
+          </div>
+
+          <div class="filter-select-wrap">
+            <select id="categoryFilter" aria-label="Filter by category">
+              <option value="">All Categories</option>
+            </select>
+          </div>
+
+          <div class="filter-select-wrap">
+            <select id="priceFilter" aria-label="Filter by price">
+              <option value="">Any Price Range</option>
+              <option value="0-20000000">Under ₦20,000,000</option>
+              <option value="20000001-50000000">₦20M – ₦50,000,000</option>
+              <option value="50000001-100000000">₦50M – ₦100,000,000</option>
+              <option value="100000001">Above ₦100,000,000</option>
+            </select>
+          </div>
+
+          <div class="filter-select-wrap sort-wrap">
+            <select id="sortSelect" aria-label="Sort properties">
+              <option value="">Default Sorting</option>
+              <option value="price-asc">Price: Low to High</option>
+              <option value="price-desc">Price: High to Low</option>
+            </select>
+          </div>
+
+          <button class="btn btn-reset-filters" id="resetFiltersBtn" title="Reset all search filters">
+            Reset
+          </button>
+        </div>
+
+        <!-- Demonstration Content Notice -->
+        <div class="demo-notice-banner">
+          <span class="demo-badge">Demonstration Content</span>
+          <span class="demo-text">Property listings, photography, and prices shown are realistic demonstration content until official property records are loaded.</span>
+        </div>
+
+        <!-- Dynamic Grid Container -->
+        <div class="property-grid" id="propertyGrid">
+          <div class="loading-state">
+            <div class="spinner"></div>
+            <p>Loading curated properties...</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. About Bliss Legacy Section -->
+    <section class="section about-section" id="about">
+      <div class="container">
+        <div class="about-grid">
+          <div class="about-visual-side fade-in">
+            <div class="about-img-frame">
+              <img src="https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80" alt="Bliss Legacy Architecture & Team" class="about-main-img" onerror="this.src='https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=1200&q=80'">
+              <div class="about-stamp-card">
+                <span class="stamp-title">BLISS LEGACY</span>
+                <span class="stamp-metric">100%</span>
+                <span class="stamp-sub">Title Integrity Focus</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="about-content-side fade-in">
+            <span class="kicker-tag">About Bliss Legacy Limited</span>
+            <h2 class="section-heading">Property Decisions Deserve Clarity, Integrity and Confidence.</h2>
+            <p class="about-lead">
+              At Bliss Legacy Limited, we believe property ownership is one of the most powerful catalysts for generational wealth and family security.
+            </p>
+            <p class="about-body">
+              With branch offices strategically situated across Lagos, Benin City, and Asaba, we combine deep local real estate intelligence with rigorous standards of legal compliance and modern customer care. Whether you are acquiring your first residential home, investing in prime land, or seeking high-yield commercial spaces, our team guides you every step of the way.
+            </p>
+
+            <div class="about-commitments-grid">
+              <div class="commitment-item">
+                <span class="commit-check">✓</span>
+                <div>
+                  <strong>Verified Titles & Documentation</strong>
+                  <p>Every listing is authenticated, surveyed, and free from encumbrance.</p>
+                </div>
+              </div>
+              <div class="commitment-item">
+                <span class="commit-check">✓</span>
+                <div>
+                  <strong>Transparent Advisory</strong>
+                  <p>Clear pricing with zero hidden fees or unverified charges.</p>
+                </div>
+              </div>
+              <div class="commitment-item">
+                <span class="commit-check">✓</span>
+                <div>
+                  <strong>Accessible Locations</strong>
+                  <p>Local branch offices ready to receive you for inspections and meetings.</p>
+                </div>
+              </div>
+              <div class="commitment-item">
+                <span class="commit-check">✓</span>
+                <div>
+                  <strong>Long-Term Client Care</strong>
+                  <p>Seamless allocation protocols and ongoing property advisory.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="about-cta-row">
+              <a class="btn btn-green wa-link" href="#" data-message="Hello Bliss Legacy Limited, I would like to learn more about your company and upcoming opportunities.">
+                Speak With an Advisor ↗
+              </a>
+              <a class="btn btn-outline" href="#branches">
+                Locate Nearest Branch
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. Our Branches Section -->
+    <section class="section branches-section" id="branches">
+      <div class="container">
+        <div class="section-header center-header">
+          <span class="kicker-tag">Nationwide Network</span>
+          <h2 class="section-heading">Our Six Branch Locations</h2>
+          <p class="section-subtext">
+            Connect directly with Bliss Legacy Limited at any of our offices across Lagos, Delta State, and Edo State.
+          </p>
+        </div>
+
+        <div class="branches-grid" id="branchesGrid">
+          <!-- Populated dynamically via main.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. Why Choose Us Section -->
+    <section class="section why-section" id="why">
+      <div class="container">
+        <div class="section-header center-header">
+          <span class="kicker-tag">The Bliss Difference</span>
+          <h2 class="section-heading">Why Choose Bliss Legacy Limited</h2>
+          <p class="section-subtext">
+            Our operating philosophy is built upon six core pillars that govern every property transaction and client relationship.
+          </p>
+        </div>
+
+        <div class="values-grid">
+          <div class="value-card fade-in">
+            <div class="value-icon-box">🔍</div>
+            <h3 class="value-title">Transparency</h3>
+            <p class="value-desc">
+              Open, honest communication with detailed breakdowns of all costs, milestones, and documentation terms from day one.
+            </p>
+          </div>
+
+          <div class="value-card fade-in">
+            <div class="value-icon-box">🤝</div>
+            <h3 class="value-title">Trust</h3>
+            <p class="value-desc">
+              We cultivate enduring relationships by delivering strictly on what we promise, ensuring peace of mind for every investor.
+            </p>
+          </div>
+
+          <div class="value-card fade-in">
+            <div class="value-icon-box">👔</div>
+            <h3 class="value-title">Professional Service</h3>
+            <p class="value-desc">
+              Seasoned real estate advisors and legal experts who manage the intricacies of property acquisition with precision.
+            </p>
+          </div>
+
+          <div class="value-card fade-in">
+            <div class="value-icon-box">🛡️</div>
+            <h3 class="value-title">Verified Opportunities</h3>
+            <p class="value-desc">
+              Comprehensive due diligence, confirmed government excisions, registered surveys, and authenticated gazettes before listing.
+            </p>
+          </div>
+
+          <div class="value-card fade-in">
+            <div class="value-icon-box">🎧</div>
+            <h3 class="value-title">Customer Support</h3>
+            <p class="value-desc">
+              Dedicated relationship managers ready to provide responsive updates, guide site viewings, and answer all questions.
+            </p>
+          </div>
+
+          <div class="value-card fade-in">
+            <div class="value-icon-box">💳</div>
+            <h3 class="value-title">Flexible Payment Processes</h3>
+            <p class="value-desc">
+              Convenient structured installment frameworks tailored to your cashflow milestones where applicable.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8. Contact Section -->
+    <section class="section contact-section" id="contact">
+      <div class="container">
+        <div class="section-header">
+          <span class="kicker-tag">Direct Communication</span>
+          <h2 class="section-heading">Let's Discuss Your Next Property</h2>
+          <p class="section-subtext">
+            Reach out to our team today for property inquiries, scheduled inspections, or investment consultations.
+          </p>
+        </div>
+
+        <div class="contact-layout-grid">
+          <!-- Left Column: Contact Channels & Placeholders -->
+          <div class="contact-info-panel fade-in">
+            <div class="contact-intro">
+              <h3>Get In Touch</h3>
+              <p>We invite you to reach out through phone, email, or WhatsApp. Real contact information can be updated in the system configuration.</p>
+            </div>
+
+            <div class="contact-methods-list">
+              <div class="contact-method-item">
+                <div class="method-icon">📞</div>
+                <div class="method-details">
+                  <span class="method-label">Direct Telephone Support</span>
+                  <strong class="method-value" id="contactPhone">+234 800 000 0000</strong>
+                </div>
+              </div>
+
+              <div class="contact-method-item">
+                <div class="method-icon">✉️</div>
+                <div class="method-details">
+                  <span class="method-label">Official Email Address</span>
+                  <strong class="method-value" id="contactEmail">info@blisslegacylimited.com</strong>
+                </div>
+              </div>
+
+              <div class="contact-method-item">
+                <div class="method-icon">🏢</div>
+                <div class="method-details">
+                  <span class="method-label">Corporate Headquarters</span>
+                  <strong class="method-value" id="contactAddress">Head Office, Lagos, Nigeria</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="contact-whatsapp-box">
+              <p>Prefer quick answers? Message our verified agent directly on WhatsApp.</p>
+              <button class="btn btn-whatsapp-full" id="waBtn">
+                <span>💬</span> Chat with Agent on WhatsApp
+              </button>
+            </div>
+          </div>
+
+          <!-- Right Column: Interactive Contact Form -->
+          <div class="contact-form-panel fade-in">
+            <h3 class="form-title">Send Us a Direct Message</h3>
+            <p class="form-subtitle">Fill out the form below and an agent from your preferred branch will respond within 24 hours.</p>
+
+            <form class="contact-form" id="contactForm">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="contactFullName">Full Name *</label>
+                  <input type="text" id="contactFullName" placeholder="e.g. Oladapo Balogun" required>
+                </div>
+                <div class="form-group">
+                  <label for="contactPhoneInput">Phone Number *</label>
+                  <input type="tel" id="contactPhoneInput" placeholder="+234 800 000 0000" required>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="contactEmailInput">Email Address *</label>
+                <input type="email" id="contactEmailInput" placeholder="oladapo@example.com" required>
+              </div>
+
+              <div class="form-group">
+                <label for="contactBranchSelect">Preferred Branch / City of Interest</label>
+                <select id="contactBranchSelect">
+                  <option value="Head Office">Head Office (Lagos)</option>
+                  <option value="Ikeja">Ikeja Branch (Lagos)</option>
+                  <option value="Ajah">Ajah Branch (Lagos)</option>
+                  <option value="Asaba">Asaba Branch (Delta State)</option>
+                  <option value="Ihama">Ihama Branch (Benin City)</option>
+                  <option value="Obakhavba">Obakhavba Branch (Benin City)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="contactMessage">How can we assist you? *</label>
+                <textarea id="contactMessage" rows="4" placeholder="Tell us about the property type or location you are interested in..." required></textarea>
+              </div>
+
+              <button class="btn btn-green btn-block" type="submit">
+                Submit Message
+              </button>
+            </form>
+
+            <div class="form-success-box" id="formSuccess" style="display:none">
+              <div class="success-icon">✓</div>
+              <h4>Message Sent Successfully!</h4>
+              <p>Thank you for reaching out to Bliss Legacy Limited. Our consultant will contact you via phone and email shortly.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom Conversion Banner -->
+    <section class="cta-banner-section">
+      <div class="container">
+        <div class="cta-banner-card">
+          <div class="cta-banner-content">
+            <span class="cta-badge">Your Journey Begins Today</span>
+            <h2 class="cta-title">Ready to Find Your Place & Build Your Legacy?</h2>
+            <p class="cta-desc">
+              Our consultants are ready to assist you in exploring verified listings, scheduling physical inspections, and structuring your payment plan.
+            </p>
+          </div>
+          <div class="cta-banner-actions">
+            <a class="btn btn-green wa-link" href="#" data-message="Hello Bliss Legacy Limited, I am ready to explore verified property opportunities.">
+              Chat on WhatsApp ↗
+            </a>
+            <a class="btn btn-outline-white" href="#properties">
+              View All Properties
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
-  <a class="wa-float wa-link" href="#" aria-label="Chat on WhatsApp" data-message="Hello Bliss Legacy, I would like to make an enquiry.">✆</a>
+
+  <!-- Floating WhatsApp Action -->
+  <a class="wa-float wa-link" href="#" aria-label="Chat with an agent on WhatsApp" data-message="Hello Bliss Legacy Limited, I would like to make an enquiry regarding your properties.">💬</a>
+
+  <!-- Site Footer (injected via components.js) -->
   <div id="footer-slot"></div>
 
   <script src="assets/js/data/properties.js"></script>
