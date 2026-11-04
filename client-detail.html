@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Client Details | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy"></div>
+      <div class="section-label">Clients</div>
+      <a href="clients.html">All Clients</a>
+      <div class="section-label">Account</div>
+      <a href="#" id="logoutBtn">Logout</a>
+    </aside>
+    <main class="dash-main">
+      <div class="dash-top"><h1>Client Profile</h1><span id="refBadge" class="badge badge-gray"></span></div>
+      <div class="card" style="max-width:800px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div>
+            <h2 id="clientName"></h2>
+            <p id="clientMeta" style="color:var(--muted);font-size:13px;margin:6px 0"></p>
+            <div class="meta" style="margin-top:16px">
+              <div class="meta-item"><span>Reference</span><strong id="detailRef"></strong></div>
+              <div class="meta-item"><span>Phone</span><strong id="detailPhone"></strong></div>
+              <div class="meta-item"><span>Email</span><strong id="detailEmail"></strong></div>
+              <div class="meta-item"><span>Address</span><strong id="detailAddress"></strong></div>
+              <div class="meta-item"><span>State / City</span><strong id="detailStateCity"></strong></div>
+              <div class="meta-item"><span>Status</span><strong id="detailStatus"></strong></div>
+              <div class="meta-item"><span>Branch</span><strong id="detailBranch"></strong></div>
+              <div class="meta-item"><span>Marketer</span><strong id="detailMarketer"></strong></div>
+              <div class="meta-item"><span>Purchase price</span><strong id="detailPrice"></strong></div>
+              <div class="meta-item"><span>Property</span><strong id="detailProperty"></strong></div>
+            </div>
+            <div style="margin-top:12px"><label class="field-label" style="display:flex;justify-content:space-between"><span>Status</span><select id="statusSelect" class="field-input"><option>Prospect</option><option>Interested</option><option>Negotiation</option><option>Reserved</option><option>Active Buyer</option><option>Completed</option><option>Cancelled</option><option>Inactive</option></select></label>
+              <button class="btn btn-green" id="saveStatus" style="margin-top:8px">Update status</button>
+            </div>
+          </div>
+          <div>
+            <h3 style="font-size:16px;margin-bottom:10px">Assignment history</h3>
+            <div id="assignHistory" style="font-size:12px;color:var(--muted);padding:8px 0;border-bottom:1px solid var(--line)"></div>
+            <div id="assignHistoryList" style="max-height:260px;overflow:auto"></div>
+            <h3 style="font-size:16px;margin:18px 0 10px">Status history</h3>
+            <div id="statusHistoryList" style="font-size:12px;color:var(--muted)"></div>
+            <h3 style="font-size:16px;margin:18px 0 10px">Notes</h3>
+            <div id="notesList" style="font-size:12px;color:var(--muted)"></div>
+            <div style="margin-top:8px"><label class="field-label">Add note</label><textarea id="noteInput" rows="2" class="field-input"></textarea></div>
+            <button class="btn btn-green" id="addNoteBtn" style="margin-top:6px">Add note</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/client-detail.js"></script>
+</body>
+</html>

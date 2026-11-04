@@ -130,3 +130,52 @@
 - Remote D1 deploy + production secrets (no production deploy yet)
 - Forgot-password email delivery, client onboarding, brute-force rate limiting
 
+
+## Phase 4 — Completed (local verification)
+
+### Files created
+- `migrations/0003_clients.sql` — clients, client_assignments, client_assignment_history, client_status_history, client_notes
+- `clients.html`, `client-detail.html`, `client-register.html` — client management UI
+- `assets/js/clients.js`, `assets/js/client-detail.js`, `assets/js/client-register.js` — client modules
+
+### Modified
+- `src/index.js` — client API endpoints (list, create, details, update, status, assign, reassign, history, notes, /api/users)
+- `DEVELOPMENT_PLAN.md`
+
+### Database migration
+- `0003_clients.sql` applied locally. Tables: clients, client_assignments, client_assignment_history, client_status_history, client_notes. Foreign keys + indexes configured.
+
+### API endpoints
+- GET /api/users (optional role/branch filter)
+- GET /api/clients (scoped; q/status/branch/marketer filters, pagination)
+- POST /api/clients (marketer+; duplicate phone detection; branch enforcement)
+- GET /api/clients/:id (scoped)
+- PUT /api/clients/:id (MD/BM/Team Lead)
+- POST /api/clients/:id/status
+- POST /api/clients/:id/assign
+- POST /api/clients/:id/reassign
+- GET /api/clients/:id/status-history, /assignment-history
+- POST /api/clients/:id/notes
+
+### Client lifecycle & attribution
+- `original_marketer_id` is immutable; branch/team lead auto-inherited from registrar.
+- `client_assignments` + `client_assignment_history` preserve full transfer trail (never overwritten).
+- Status history + notes tables capture audit trail.
+
+### Permissions (server-side enforced)
+- MD: all clients; BM: own branch only; Team Lead: own team; Marketer: own registrations/assigned; Finance: read-only client/purchase data
+- Marketer cannot change original acquisition attribution; cannot assign/transfer.
+
+### Tests executed (all passed)
+- Marketer registration; duplicate phone → 409
+- Automatic branch/team-lead attribution from registrar (immutable original_marketer_id)
+- Marketer cannot assign/transfer (403)
+- BM scoped to own branch (cross-branch excluded)
+- MD reassign + full assignment-history preserved
+- Status changes + status-history; notes
+- Phase 1-3 property/authentication APIs unaffected
+
+### Remaining
+- Client portal/self-service (Phase 5)
+- Branding/contact configuration and testing in staging (no production deploy without approval)
+

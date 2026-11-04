@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Register Client | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy"></div>
+      <div class="section-label">Clients</div>
+      <a href="clients.html">All Clients</a>
+      <a href="#" class="active">Register Client</a>
+      <div class="section-label">Account</div>
+      <a href="#" id="logoutBtn">Logout</a>
+    </aside>
+    <main class="dash-main">
+      <div class="dash-top"><h1>Register Client</h1></div>
+      <div class="card" style="max-width:760px">
+        <form id="clientForm" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div style="grid-column:1/-1"><label class="field-label">Full name <span class="req">*</span></label><input id="full_name" type="text" required></div>
+          <div style="grid-column:1/-1"><label class="field-label">Phone number <span class="req">*</span></label><input id="phone_number" type="tel" required></div>
+          <div style="grid-column:1/-1"><label class="field-label">Email address</label><input id="email_address" type="email"></div>
+          <div style="grid-column:1/-1"><label class="field-label">Residential address</label><input id="residential_address" type="text"></div>
+          <div style="grid-column:1/-1"><label class="field-label">State</label><input id="state" type="text"></div>
+          <div style="grid-column:1/-1"><label class="field-label">City</label><input id="city" type="text"></div>
+          <div style="grid-column:1/-1"><label class="field-label">Next of kin</label><input id="next_of_kin" type="text"></div>
+          <div style="grid-column:1/-1"><label class="field-label">Preferred channel</label><select id="preferred_channel"><option>WhatsApp</option><option>Email</option><option>Phone</option><option>WhatsApp + Email</option></select></div>
+          <div style="grid-column:1/-1"><label class="field-label">Interested property</label><input id="interested_property_id" type="text" placeholder="Property reference or ID"></div>
+          <div style="grid-column:1/-1"><label class="field-label">Agreed purchase price (₦)</label><input id="agreed_purchase_price" type="number" placeholder="Stored separately from advertised price"></div>
+          <div style="grid-column:1/-1" style="display:flex;gap:12px;align-items:end">
+            <div style="flex:1"><label class="field-label">Assigned branch</label><select id="assigned_branch_id"></select></div>
+            <div style="flex:1"><label class="field-label">Status</label><select id="status"><option>Prospect</option><option>Interested</option><option>Negotiation</option><option>Reserved</option><option>Active Buyer</option><option>Completed</option><option>Cancelled</option><option>Inactive</option></select></div>
+          </div>
+          <div style="grid-column:1/-1"><label class="field-label">Notes</label><textarea id="notes" rows="3"></textarea></div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+            <a class="btn btn-outline" href="clients.html">Cancel</a>
+            <button class="btn btn-green" type="submit">Register Client</button>
+          </div>
+          <div id="formMsg" style="color:#c0392b;font-size:13px;margin-top:8px"></div>
+        </form>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/client-register.js"></script>
+</body>
+</html>

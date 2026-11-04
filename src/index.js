@@ -238,7 +238,6 @@ export default {
     // ---- Property details ----
     const propMatch = path.match(/^\/api\/properties\/(\d+)$/);
     if (propMatch && request.method === "GET") {
-      const id = propMatch[1];
       const actor = await getSessionUser(env, request);
       const prop = await env.DB.prepare("SELECT p.*, pc.name AS category_name, b.name AS branch_name FROM properties p LEFT JOIN property_categories pc ON pc.id=p.category_id LEFT JOIN branches b ON b.id=p.branch_id WHERE p.id=?").bind(id).first();
       if (!prop) return json({ error: "Not found" }, 404);
@@ -278,7 +277,6 @@ export default {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
-      const id = propUpdateMatch[1];
       const existing = await env.DB.prepare("SELECT * FROM properties WHERE id=?").bind(id).first();
       if (!existing) return json({ error: "Not found" }, 404);
       if (actor.role_name === "Branch Manager" && existing.branch_id !== actor.branch_id) return json({ error: "Forbidden" }, 403);
@@ -308,7 +306,6 @@ export default {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
-      const id = statusMatch[1];
       const body = await request.json();
       const newStatus = body.status;
       if (!["Available","Reserved","Sold","Unavailable"].includes(newStatus)) return json({ error: "Invalid status" }, 400);
@@ -338,7 +335,6 @@ export default {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
-      const id = imgMatch[1];
       const existing = await env.DB.prepare("SELECT branch_id FROM properties WHERE id=?").bind(id).first();
       if (!existing) return json({ error: "Not found" }, 404);
       if (actor.role_name === "Branch Manager" && existing.branch_id !== actor.branch_id) return json({ error: "Forbidden" }, 403);
@@ -382,6 +378,248 @@ export default {
       await env.DB.prepare("DELETE FROM property_images WHERE id=?").bind(imgId).run();
       await audit(env, actor.id, "property.image.delete", "property", propId, { key: img.r2_key });
       return json({ ok: true });
+    }
+
+    // ---- Client helpers ----
+    function clientScope(actor) {
+      const role = actor.role_name;
+      if (role === 'Managing Director') return { clause: '', binds: [] };
+      if (role === 'Branch Manager') return { clause: 'c.assigned_branch_id = ?', binds: [actor.branch_id] };
+      if (role === 'Team Lead') return { clause: 'c.team_lead_id = ? OR c.original_marketer_id = ?', binds: [actor.id, actor.id] };
+      if (role === 'Marketer') return { clause: 'c.original_marketer_id = ? OR c.created_by = ?', binds: [actor.id, actor.id] };
+      if (role === 'Finance Officer') return { clause: '', binds: [] };
+      return { clause: 'c.id = -1', binds: [] };
+    }
+    function canManageClient(actor, client) {
+      const role = actor.role_name;
+      if (role === 'Managing Director') return true;
+      if (role === 'Branch Manager') return client.assigned_branch_id === actor.branch_id;
+      if (role === 'Team Lead') return client.team_lead_id === actor.id || client.original_marketer_id === actor.id || client.created_by === actor.id;
+      if (role === 'Marketer') return client.original_marketer_id === actor.id || client.created_by === actor.id;
+      return false;
+    }
+    // ---- List users (optional role filter) ----
+    if (path === '/api/users' && request.method === 'GET') {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      let role = url.searchParams.get('role');
+      const branch = url.searchParams.get('branch');
+      if (role && !['Managing Director','Branch Manager','Team Lead','Marketer','Finance Officer','Client'].includes(role)) role = null;
+      let where = [];
+      const binds = [];
+      if (role) { where.push('r.name = ?'); binds.push(role); }
+      if (branch) { where.push('u.branch_id = ?'); binds.push(branch); }
+      const sql = `SELECT u.id, u.email, u.full_name, r.name AS role_name, u.branch_id FROM users u JOIN roles r ON r.id=u.role_id WHERE u.is_active=1 ${where.length ? 'AND ' + where.join(' AND ') : ''} ORDER BY u.id`;
+      const { results } = await env.DB.prepare(sql).bind(...binds).all();
+      return json({ users: results });
+    }
+
+
+    // ---- List clients ----
+    if (path === '/api/clients' && request.method === 'GET') {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      const scope = clientScope(actor);
+      const q = url.searchParams.get('q') || '';
+      const status = url.searchParams.get('status') || '';
+      const branch = url.searchParams.get('branch') || '';
+      const marketer = url.searchParams.get('marketer') || '';
+      const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+      const limit = Math.min(50, parseInt(url.searchParams.get('limit') || '20', 10));
+      const offset = (page - 1) * limit;
+      let clauses = scope.clause ? [scope.clause] : [];
+      const binds = [...scope.binds];
+      if (q) { clauses.push('(c.full_name LIKE ? OR c.client_reference LIKE ? OR c.phone_number LIKE ?)'); binds.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+      if (status) { clauses.push('c.status = ?'); binds.push(status); }
+      if (branch && ['Managing Director','Finance Officer'].includes(actor.role_name)) { clauses.push('c.assigned_branch_id = ?'); binds.push(branch); }
+      if (marketer) { clauses.push('c.original_marketer_id = ?'); binds.push(marketer); }
+      clauses.push('c.is_deleted = 0');
+      const whereSql = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+      const sql = `SELECT c.*, u.full_name AS created_by_name, m.full_name AS original_marketer_name, b.name AS branch_name FROM clients c LEFT JOIN users u ON u.id=c.created_by LEFT JOIN users m ON m.id=c.original_marketer_id LEFT JOIN branches b ON b.id=c.assigned_branch_id ${whereSql} ORDER BY c.created_at DESC LIMIT ? OFFSET ?`;
+      const countSql = `SELECT COUNT(*) AS c FROM clients c ${whereSql}`;
+      const { results } = await env.DB.prepare(sql).bind(...binds, limit, offset).all();
+      const cnt = await env.DB.prepare(countSql).bind(...binds).first();
+      return json({ clients: results, page, limit, total: cnt ? cnt.c : 0 });
+    }
+
+    // ---- Register client ----
+    if (path === '/api/clients' && request.method === 'POST') {
+      if (!csrfOk(request)) return json({ error: 'CSRF check failed' }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      if (!['Managing Director','Branch Manager','Team Lead','Marketer'].includes(actor.role_name)) return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const { full_name, phone_number, email_address, residential_address, state, city, next_of_kin, notes, preferred_channel, status, interested_property_id, agreed_purchase_price, assigned_branch_id } = body || {};
+      if (!full_name || !phone_number) return json({ error: 'Full name and phone number are required' }, 400);
+      let resolvedBranchId = actor.branch_id;
+      if (actor.role_name === 'Managing Director' || actor.role_name === 'Branch Manager') {
+        resolvedBranchId = assigned_branch_id || actor.branch_id;
+        if (assigned_branch_id && assigned_branch_id !== actor.branch_id && actor.role_name === 'Branch Manager') {
+          return json({ error: 'Cross-branch forbidden' }, 403);
+        }
+      }
+      const dup = await env.DB.prepare("SELECT id FROM clients WHERE phone_number = ? AND assigned_branch_id = ? AND is_deleted = 0 LIMIT 1").bind(phone_number, resolvedBranchId).first();
+      if (dup) return json({ error: 'A client with this phone number already exists in this branch' }, 409);
+      const ref = 'BLC-' + Date.now().toString(36).toUpperCase();
+      const res = await env.DB.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, email_address, residential_address, state, city, next_of_kin, notes, preferred_channel, status, assigned_branch_id, created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(ref, full_name, phone_number, email_address || null, residential_address || null, state || null, city || null, next_of_kin || null, notes || null, preferred_channel || null, status || 'Prospect', resolvedBranchId, actor.id, actor.id, null, agreed_purchase_price ? Number(agreed_purchase_price) : null, interested_property_id || null).run();
+      const newId = res.meta.last_row_id;
+      await env.DB.prepare("INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by) VALUES (?, ?, ?, ?, ?)").bind(newId, actor.id, resolvedBranchId, null, actor.id).run();
+      await env.DB.prepare("INSERT INTO client_status_history (client_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)").bind(newId, null, status || 'Prospect', actor.id).run();
+      await audit(env, actor.id, 'client.create', 'client', String(newId), { full_name, phone_number, branch_id: resolvedBranchId });
+      try { await env.TASKS.send({ type: 'client.registered', client_id: newId }); } catch (e) {}
+      return json({ ok: true, id: newId, client_reference: ref });
+    }
+
+    // ---- Client details ----
+    const clientParts = path.split('/');
+    if (clientParts.length === 4 && clientParts[1] === 'api' && clientParts[2] === 'clients' && request.method === 'GET') {
+      const id = clientParts[3];
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      const c = await env.DB.prepare("SELECT c.*, u.full_name AS created_by_name, m.full_name AS original_marketer_name, b.name AS branch_name FROM clients c LEFT JOIN users u ON u.id=c.created_by LEFT JOIN users m ON m.id=c.original_marketer_id LEFT JOIN branches b ON b.id=c.assigned_branch_id WHERE c.id=? AND c.is_deleted=0").bind(id).first();
+      if (!c) return json({ error: 'Not found' }, 404);
+      if (!canManageClient(actor, c)) return json({ error: 'Forbidden' }, 403);
+      const { results: assignments } = await env.DB.prepare("SELECT ca.*, u.full_name AS manager_name FROM client_assignments ca LEFT JOIN users u ON u.id=ca.relationship_manager_id WHERE ca.client_id=? ORDER BY ca.assigned_at DESC").bind(id).all();
+      const { results: statusHistory } = await env.DB.prepare("SELECT csh.*, u.full_name AS changed_by_name FROM client_status_history csh LEFT JOIN users u ON u.id=csh.changed_by WHERE csh.client_id=? ORDER BY csh.changed_at DESC").bind(id).all();
+      const { results: notes } = await env.DB.prepare("SELECT cn.*, u.full_name AS created_by_name FROM client_notes cn LEFT JOIN users u ON u.id=cn.created_by WHERE cn.client_id=? ORDER BY cn.created_at DESC").bind(id).all();
+      return json({ client: c, assignments, status_history: statusHistory, notes });
+    }
+
+    // ---- Update client ----
+    if (clientParts.length === 4 && clientParts[1] === 'api' && clientParts[2] === 'clients' && request.method === 'PUT') {
+      const id = clientParts[3];
+      if (!csrfOk(request)) return json({ error: 'CSRF check failed' }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      const c = await env.DB.prepare("SELECT * FROM clients WHERE id=? AND is_deleted=0").bind(id).first();
+      if (!c) return json({ error: 'Not found' }, 404);
+      if (!canManageClient(actor, c)) return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const fields = ['full_name','phone_number','email_address','residential_address','state','city','next_of_kin','notes','preferred_channel','agreed_purchase_price','interested_property_id'];
+      const realSets = []; const vals = [];
+      for (const f of fields) { if (body[f] !== undefined) { realSets.push(f + ' = ?'); vals.push(body[f]); } }
+      if (realSets.length === 0) return json({ error: 'No fields' }, 400);
+      realSets.push('updated_at = datetime(\'now\')');
+      vals.push(id);
+      await env.DB.prepare('UPDATE clients SET ' + realSets.join(',') + ' WHERE id = ?').bind(...vals).run();
+      await audit(env, actor.id, 'client.update', 'client', id, body);
+      return json({ ok: true });
+    }
+
+    // ---- Client status change ----
+    if (clientParts.length === 5 && clientParts[1] === 'api' && clientParts[2] === 'clients' && clientParts[4] === 'status' && request.method === 'POST') {
+      const id = clientParts[3];
+      if (!csrfOk(request)) return json({ error: 'CSRF check failed' }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      const c = await env.DB.prepare("SELECT status FROM clients WHERE id=? AND is_deleted=0").bind(id).first();
+      if (!c) return json({ error: 'Not found' }, 404);
+      if (!canManageClient(actor, c)) return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const newStatus = body.status;
+      const validStatuses = ['Prospect','Interested','Negotiation','Reserved','Active Buyer','Completed','Cancelled','Inactive'];
+      if (!validStatuses.includes(newStatus)) return json({ error: 'Invalid status' }, 400);
+      await env.DB.prepare("UPDATE clients SET status=?, updated_at=datetime('now') WHERE id=?").bind(newStatus, id).run();
+      await env.DB.prepare("INSERT INTO client_status_history (client_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)").bind(id, c.status, newStatus, actor.id).run();
+      await audit(env, actor.id, 'client.status', 'client', id, { from: c.status, to: newStatus });
+      try { await env.TASKS.send({ type: 'client.status_changed', client_id: id, status: newStatus }); } catch (e) {}
+      return json({ ok: true });
+    }
+
+    // ---- Client assignment ----
+    if (clientParts.length === 5 && clientParts[1] === 'api' && clientParts[2] === 'clients' && clientParts[4] === 'assign' && request.method === 'POST') {
+      const id = clientParts[3];
+      if (!csrfOk(request)) return json({ error: 'CSRF check failed' }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      if (!['Managing Director','Branch Manager'].includes(actor.role_name)) return json({ error: 'Forbidden' }, 403);
+      const c = await env.DB.prepare("SELECT * FROM clients WHERE id=? AND is_deleted=0").bind(id).first();
+      if (!c) return json({ error: 'Not found' }, 404);
+      if (!canManageClient(actor, c)) return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const { relationship_manager_id, branch_id, team_lead_id, reason } = body || {};
+      if (!relationship_manager_id || !branch_id) return json({ error: 'Relationship manager and branch are required' }, 400);
+      const mgr = await env.DB.prepare("SELECT id, role_id, branch_id FROM users WHERE id=? AND is_active=1").bind(relationship_manager_id).first();
+      if (!mgr) return json({ error: 'Relationship manager not found or inactive' }, 404);
+      const br = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(branch_id).first();
+      if (!br) return json({ error: 'Branch not found' }, 400);
+      if (actor.role_name === 'Branch Manager' && br.id !== actor.branch_id) return json({ error: 'Cross-branch forbidden' }, 403);
+      if (c.assigned_branch_id !== br.id && actor.role_name === 'Branch Manager') return json({ error: 'Cross-branch forbidden' }, 403);
+      await env.DB.prepare("UPDATE client_assignments SET is_primary=0 WHERE client_id=?").bind(id).run();
+      await env.DB.prepare("INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by, is_primary) VALUES (?, ?, ?, ?, ?, 1)").bind(id, relationship_manager_id, branch_id, team_lead_id || null, actor.id).run();
+      await env.DB.prepare("UPDATE clients SET assigned_branch_id=?, team_lead_id=?, updated_at=datetime('now') WHERE id=?").bind(branch_id, team_lead_id || null, id).run();
+      await env.DB.prepare("INSERT INTO client_assignment_history (client_id, previous_manager_id, new_manager_id, previous_branch_id, new_branch_id, previous_team_lead_id, new_team_lead_id, authorized_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, c.created_by, relationship_manager_id, c.assigned_branch_id, branch_id, c.team_lead_id, team_lead_id || null, actor.id, reason || null).run();
+      await audit(env, actor.id, 'client.assign', 'client', id, { new_manager: relationship_manager_id, new_branch: branch_id });
+      try { await env.TASKS.send({ type: 'client.assigned', client_id: id, manager_id: relationship_manager_id }); } catch (e) {}
+      return json({ ok: true });
+    }
+
+    // ---- Client reassignment ----
+    if (clientParts.length === 5 && clientParts[1] === 'api' && clientParts[2] === 'clients' && clientParts[4] === 'reassign' && request.method === 'POST') {
+      const id = clientParts[3];
+      if (!csrfOk(request)) return json({ error: 'CSRF check failed' }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      if (actor.role_name !== 'Managing Director') return json({ error: 'Forbidden' }, 403);
+      const c = await env.DB.prepare("SELECT * FROM clients WHERE id=? AND is_deleted=0").bind(id).first();
+      if (!c) return json({ error: 'Not found' }, 404);
+      const body = await request.json();
+      const { relationship_manager_id, branch_id, team_lead_id, reason } = body || {};
+      if (!relationship_manager_id || !branch_id) return json({ error: 'Relationship manager and branch are required' }, 400);
+      const mgr = await env.DB.prepare("SELECT id, branch_id FROM users WHERE id=? AND is_active=1").bind(relationship_manager_id).first();
+      if (!mgr) return json({ error: 'Relationship manager not found or inactive' }, 404);
+      const br = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(branch_id).first();
+      if (!br) return json({ error: 'Branch not found' }, 400);
+      // Find current primary assignment
+      const cur = await env.DB.prepare("SELECT relationship_manager_id, branch_id, team_lead_id FROM client_assignments WHERE client_id=? AND is_primary=1 ORDER BY assigned_at DESC LIMIT 1").bind(id).first();
+      await env.DB.prepare("UPDATE client_assignments SET is_primary=0 WHERE client_id=?").bind(id).run();
+      await env.DB.prepare("INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by, is_primary) VALUES (?, ?, ?, ?, ?, 1)").bind(id, relationship_manager_id, branch_id, team_lead_id || null, actor.id).run();
+      await env.DB.prepare("UPDATE clients SET assigned_branch_id=?, team_lead_id=?, updated_at=datetime('now') WHERE id=?").bind(branch_id, team_lead_id || null, id).run();
+      await env.DB.prepare("INSERT INTO client_assignment_history (client_id, previous_manager_id, new_manager_id, previous_branch_id, new_branch_id, previous_team_lead_id, new_team_lead_id, authorized_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, cur ? cur.relationship_manager_id : null, relationship_manager_id, cur ? cur.branch_id : null, branch_id, cur ? cur.team_lead_id : null, team_lead_id || null, actor.id, reason || null).run();
+      await audit(env, actor.id, 'client.reassign', 'client', id, { new_manager: relationship_manager_id, new_branch: branch_id });
+      try { await env.TASKS.send({ type: 'client.reassigned', client_id: id, manager_id: relationship_manager_id }); } catch (e) {}
+      return json({ ok: true });
+    }
+    // ---- Status history ----
+    if (clientParts.length === 5 && clientParts[1] === 'api' && clientParts[2] === 'clients' && clientParts[4] === 'status-history' && request.method === 'GET') {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      const id = clientParts[3];
+      const c = await env.DB.prepare("SELECT id FROM clients WHERE id=? AND is_deleted=0").bind(id).first();
+      if (!c) return json({ error: 'Not found' }, 404);
+      if (!canManageClient(actor, c)) return json({ error: 'Forbidden' }, 403);
+      const { results } = await env.DB.prepare("SELECT csh.*, u.full_name AS changed_by_name FROM client_status_history csh LEFT JOIN users u ON u.id=csh.changed_by WHERE csh.client_id=? ORDER BY csh.changed_at DESC").bind(id).all();
+      return json({ history: results });
+    }
+    // ---- Assignment history ----
+    if (clientParts.length === 5 && clientParts[1] === 'api' && clientParts[2] === 'clients' && clientParts[4] === 'assignment-history' && request.method === 'GET') {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      const id = clientParts[3];
+      const c = await env.DB.prepare("SELECT id FROM clients WHERE id=? AND is_deleted=0").bind(id).first();
+      if (!c) return json({ error: 'Not found' }, 404);
+      if (!canManageClient(actor, c)) return json({ error: 'Forbidden' }, 403);
+      const { results } = await env.DB.prepare("SELECT h.*, u.full_name AS authorized_by_name FROM client_assignment_history h LEFT JOIN users u ON u.id=h.authorized_by WHERE h.client_id=? ORDER BY h.changed_at DESC").bind(id).all();
+      return json({ history: results });
+    }
+
+
+    // ---- Client notes ----
+    if (clientParts.length === 5 && clientParts[1] === 'api' && clientParts[2] === 'clients' && clientParts[4] === 'notes' && request.method === 'POST') {
+      const id = clientParts[3];
+      if (!csrfOk(request)) return json({ error: 'CSRF check failed' }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: 'Unauthenticated' }, 401);
+      const c = await env.DB.prepare("SELECT id, assigned_branch_id FROM clients WHERE id=? AND is_deleted=0").bind(id).first();
+      if (!c) return json({ error: 'Not found' }, 404);
+      if (!canManageClient(actor, c)) return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const { note } = body || {};
+      if (!note) return json({ error: 'Note is required' }, 400);
+      const res = await env.DB.prepare("INSERT INTO client_notes (client_id, note, created_by) VALUES (?, ?, ?)").bind(id, note, actor.id).run();
+      await audit(env, actor.id, 'client.note', 'client', id, { note });
+      return json({ ok: true, id: res.meta.last_row_id });
     }
 
     return env.ASSETS.fetch(request);

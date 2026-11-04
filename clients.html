@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clients | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy"></div>
+      <div class="section-label">Clients</div>
+      <a href="#" class="active">All Clients</a>
+      <a href="client-register.html">Register Client</a>
+      <div class="section-label">Account</div>
+      <a href="#" id="logoutBtn">Logout</a>
+    </aside>
+    <main class="dash-main">
+      <div class="dash-top">
+        <div><h1>Manage Clients</h1><p>Track and manage client relationships.</p></div>
+        <a class="btn btn-green" href="client-register.html">Register Client</a>
+      </div>
+      <div class="kpi-grid">
+        <div class="kpi"><div class="label">Total</div><div class="value" id="kpiTotal">-</div></div>
+        <div class="kpi"><div class="label">Active</div><div class="value" id="kpiActive">-</div></div>
+        <div class="kpi"><div class="label">Prospect</div><div class="value" id="kpiProspect">-</div></div>
+        <div class="kpi"><div class="label">Purchased</div><div class="value" id="kpiPurchased">-</div></div>
+      </div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+          <div class="filters" style="gap:8px">
+            <input id="searchInput" type="search" placeholder="Search clients...">
+            <select id="statusFilter"><option value="">All Statuses</option><option>Prospect</option><option>Interested</option><option>Negotiation</option><option>Reserved</option><option>Active Buyer</option><option>Completed</option><option>Cancelled</option><option>Inactive</option></select>
+            <select id="branchFilter"><option value="">All Branches</option></select>
+            <select id="marketerFilter"><option value="">All Marketers</option></select>
+          </div>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Reference</th><th>Client</th><th>Phone</th><th>Status</th><th>Branch</th><th>Marketer</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="clientTableBody"></tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/clients.js"></script>
+</body>
+</html>
