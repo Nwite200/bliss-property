@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Commission Management | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body data-page="commissions">
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <section class="role-hero">
+        <h1>Commission Management</h1>
+        <p>Configurable commission plans, verified-payment accrual, approval workflow, commission payments and traceable adjustments.</p>
+        <div class="role-hero-meta" id="heroMeta"></div>
+        <div class="hero-actions">
+          <button class="btn btn-green" type="button" id="newPlanBtn">+ New commission plan</button>
+          <button class="btn btn-outline-white" type="button" id="generateBtn">Generate commissions</button>
+          <a class="btn btn-outline-white" href="reports.html">Financial reports</a>
+        </div>
+      </section>
+
+      <div class="kpi-grid kpi-grid-5" id="commissionKpis"></div>
+
+      <div class="tabs">
+        <button class="tab-btn active" type="button" data-tab="entries">Commission entries</button>
+        <button class="tab-btn" type="button" data-tab="plans" id="plansTabBtn">Commission plans</button>
+      </div>
+
+      <section id="entriesTab">
+        <div class="card">
+          <div class="card-head"><h3>Commission register</h3><span class="small muted" id="entryCount"></span></div>
+          <div class="filters mb-16">
+            <select id="entryStatusFilter"><option value="">All statuses</option></select>
+            <select id="entryPlanFilter"><option value="">All plans</option></select>
+            <input type="date" id="entryFrom" title="From">
+            <input type="date" id="entryTo" title="To">
+            <select id="entryBranchFilter"><option value="">All branches</option></select>
+            <select id="entryMarketerFilter"><option value="">All marketers</option></select>
+            <button class="btn btn-green btn-sm" type="button" id="applyEntryFilters">Filter</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="resetEntryFilters">Reset</button>
+          </div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Commission</th><th>Recipient</th><th>Client</th><th>Plan</th><th>Basis</th><th>Earned</th><th>Paid</th><th>Outstanding</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="commissionBody"></tbody>
+          </table></div>
+          <div class="toolbar mt-16" style="justify-content:space-between">
+            <span class="small muted" id="entryPageLabel"></span>
+            <div class="toolbar">
+              <button class="btn btn-ghost btn-sm" type="button" id="entryPrev">← Previous</button>
+              <button class="btn btn-ghost btn-sm" type="button" id="entryNext">Next →</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="plansTab" style="display:none">
+        <div class="card">
+          <div class="card-head"><h3>Commission plans</h3><span class="small muted">No rates are assumed; all rules are configured by management.</span></div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Plan</th><th>Basis</th><th>Rules</th><th>Effective</th><th>Approval</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="planBody"></tbody>
+          </table></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="planModal">
+    <div class="modal-box modal-wide">
+      <div class="modal-header"><h3 id="planModalTitle">New commission plan</h3><button class="icon-btn" type="button" data-close-modal="planModal">✕</button></div>
+      <form id="planForm">
+        <input type="hidden" id="planId">
+        <div class="form-grid">
+          <div class="field-group full"><label class="field-label" for="planName">Plan name</label><input class="field-input" id="planName" required></div>
+          <div class="field-group"><label class="field-label" for="planBasis">Calculation basis</label><select class="field-input" id="planBasis"><option value="contract_value">Contract value</option><option value="verified_collections">Verified collections</option><option value="fixed">Fixed amount</option></select></div>
+          <div class="field-group"><label class="field-label" for="planActive">Status</label><select class="field-input" id="planActive"><option value="1">Active</option><option value="0">Inactive</option></select></div>
+          <div class="field-group"><label class="field-label" for="planFrom">Effective from</label><input class="field-input" type="date" id="planFrom"></div>
+          <div class="field-group"><label class="field-label" for="planTo">Effective to</label><input class="field-input" type="date" id="planTo"></div>
+          <div class="field-group"><label class="field-label" for="planApproval">Approval required</label><select class="field-input" id="planApproval"><option value="1">Yes</option><option value="0">No</option></select></div>
+          <div class="field-group"><label class="field-label" for="planSeparation">Separation of duties</label><select class="field-input" id="planSeparation"><option value="1">Recipient cannot approve own commission</option><option value="0">No restriction</option></select></div>
+          <div class="field-group full"><label class="field-label" for="planDescription">Description</label><textarea class="field-input" id="planDescription" rows="2"></textarea></div>
+        </div>
+        <div class="card-head mt-16"><h3>Eligibility rules</h3><button class="btn btn-ghost btn-sm" type="button" id="addRuleBtn">+ Add rule</button></div>
+        <div id="planRules"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+          <button class="btn btn-ghost" type="button" data-close-modal="planModal">Cancel</button>
+          <button class="btn btn-green" type="submit">Save plan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="generateModal">
+    <div class="modal-box">
+      <div class="modal-header"><h3>Generate commissions</h3><button class="icon-btn" type="button" data-close-modal="generateModal">✕</button></div>
+      <form id="generateForm">
+        <div class="form-grid">
+          <div class="field-group full"><label class="field-label" for="generatePlan">Commission plan</label><select class="field-input" id="generatePlan"></select></div>
+          <div class="field-group full"><label class="field-label" for="generateClient">Client (optional)</label><select class="field-input" id="generateClient"><option value="">All eligible clients</option></select></div>
+          <div class="field-group"><label class="field-label" for="generateFrom">From</label><input class="field-input" type="date" id="generateFrom"></div>
+          <div class="field-group"><label class="field-label" for="generateTo">To</label><input class="field-input" type="date" id="generateTo"></div>
+          <div class="field-group full"><label class="tag" style="display:flex;align-items:center;gap:8px;padding:10px"><input type="checkbox" id="generateDraft"> Generate as Draft</label></div>
+        </div>
+        <div class="route-note mb-16">Generation is idempotent. Duplicate plan/transaction combinations are skipped. Pending, failed and DEMO payments never generate commissions.</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn btn-ghost" type="button" data-close-modal="generateModal">Cancel</button>
+          <button class="btn btn-green" type="submit">Generate</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="commissionDetailModal">
+    <div class="modal-box modal-wide">
+      <div class="modal-header"><h3 id="commissionDetailTitle">Commission detail</h3><button class="icon-btn" type="button" data-close-modal="commissionDetailModal">✕</button></div>
+      <div id="commissionDetailBody"><div class="empty-state">Loading…</div></div>
+    </div>
+  </div>
+
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/commissions.js"></script>
+</body>
+</html>

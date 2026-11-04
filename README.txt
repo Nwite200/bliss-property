@@ -21,24 +21,29 @@ Demo staff logins use password123:
 
 Main screens
 ------------
-- dashboard.html — role-aware MD/BM/Team Lead/Marketer/Finance dashboard
-- performance.html — date-filtered contract, verified, leads, branch, marketer and team analytics
+- signup.html — public client self-registration with official logo and auto-login
+- dashboard.html — role-aware MD/BM/Team Lead/Marketer/Finance dashboard with commission summaries
+- performance.html — date/category-filtered contract, verified, commission, branch, marketer and team analytics
+- commissions.html — commission plans, generation, approvals, payments, adjustments and receipts
+- reports.html — role-scoped CSV/PDF financial reports stored privately in R2
 - staff-management.html — staff accounts, roles, branches, activation and teams (MD/BM)
 - leads.html — lead pipeline, follow-ups and conversion
 - activity-centre.html — role-scoped audit/activity feed
 - clients.html / properties.html / finance-dashboard.html / provider-config.html — Phases 1–5
-- client-dashboard.html — existing client portal
+- client-dashboard.html — client portal with multi-property allocations, verified payments, remaining balance and per-property progress
 
 Tests
 -----
 - npm run test:phase5  (62 tests)
-- npm run test:phase6  (19 tests)
-- npm test              (both suites, 83 tests)
+- npm run test:phase6  (21 tests)
+- npm run test:phase7  (26 tests)
+- npm test              (all suites, 109 tests)
 
 Documentation
 -------------
 - DEVELOPMENT_PLAN.md
 - PHASE6_WALKTHROUGH.md — role-by-role local testing walkthrough
+- PHASE7_WALKTHROUGH.md — commission and financial-report walkthrough
 
 Architecture and safety
 -----------------------

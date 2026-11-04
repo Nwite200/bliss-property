@@ -1,11 +1,12 @@
 # Bliss Legacy Limited — Development Plan
 
-## Current state (Phase 5 completed — local verification)
+## Current state (Phase 7 completed — local verification)
 
 - Cloudflare-only stack: Workers, Static Assets, D1, R2, KV, Queues and Cron Triggers.
 - Public landing page, property browsing, authentication/RBAC, property management and client management are complete (Phases 1–4).
 - Phase 5 client portal, finance ledger, receipts, installment plans, notifications and the ALAT by Wema Bank integration placeholder are implemented and verified locally.
 - Phase 6 staff dashboards, team management, lead pipeline, performance analytics and activity centre are implemented and verified locally.
+- Phase 7 commission management, approval/payment workflow, financial reports and business intelligence are implemented and verified locally.
 - No production deployment and no remote migration has been performed.
 
 ## Confirmed architecture
@@ -24,7 +25,8 @@
 4. Client registration, management and staff assignment — **completed**.
 5. Client portal, payments, finance, receipts, installments & ALAT Wema integration placeholder — **completed (local verification)**.
 6. Staff dashboards, team management, lead pipeline, performance analytics & activity centre — **completed (local verification)**.
-7. Production hardening, remote infrastructure, bank onboarding, commission calculations & extended reporting — **pending external approval**.
+7. Commission management, financial reporting & business intelligence — **completed (local verification)**.
+8. Production hardening, remote infrastructure and bank onboarding — **pending external approval**.
 
 ## Shared design rules
 
@@ -331,6 +333,78 @@ Phase 6 adds role-specific staff dashboards, staff/team management, the lead pip
 - Remote D1/R2/KV/Queue creation, remote migrations and production secrets — not performed.
 - ALAT/Wema onboarding and official credentials — unchanged Phase 5 boundary.
 - Real email/WhatsApp delivery adapters — queue records interface state only.
-- Commission calculations and extended Phase 7 reporting.
-- Browser screenshot capture/visual regression tooling is not installed; `PHASE6_WALKTHROUGH.md` provides the role-by-role local walkthrough.
+- Browser screenshot capture/visual regression tooling is not installed; `PHASE6_WALKTHROUGH.md` and `PHASE7_WALKTHROUGH.md` provide the role-by-role local walkthroughs.
+
+## Phase 7 — Completed (local verification)
+
+Phase 7 adds governed commission management, commission attribution and calculation, approval/payment workflow, private R2 commission receipts, financial reports and business intelligence without changing the Cloudflare-only architecture.
+
+### Files created
+- `migrations/0008_phase7_commissions_reports.sql`
+- `commissions.html`
+- `reports.html`
+- `signup.html`
+- `assets/js/commissions.js`
+- `assets/js/reports.js`
+- `test_phase7_suite.mjs`
+- `PHASE7_WALKTHROUGH.md`
+
+### Files modified
+- `src/index.js`
+- `dashboard.html`, `assets/js/dashboard.js`
+- `performance.html`, `assets/js/performance.js`
+- `assets/js/staff-shell.js`
+- `assets/js/client-register.js`, `client-register.html`
+- `assets/css/styles.css`
+- `package.json`, `.assetsignore`, `README.txt`, `DEVELOPMENT_PLAN.md`
+
+### Database migration
+- `0008_phase7_commissions_reports.sql` applied locally: 29 commands.
+- Added `clients.sale_type`, commission plans/rules, commission entries, attribution snapshots, approvals, payments, adjustments and financial report jobs.
+- Existing Phase 1–6 tables and data were preserved.
+
+### Commission rules implemented
+- Configurable plans: contract value, verified collections or fixed amount.
+- Multiple role rules per plan: Marketer, Team Lead, Branch Manager.
+- Optional property category, sales type, branch and team filters.
+- Effective start/end dates, approval requirement and separation of duties.
+- Contract-value commission uses the agreed client contract.
+- Collections commission accrues per verified successful NGN payment only.
+- Pending, failed and DEMO payments never generate commission.
+- Fixed commission is one amount per qualifying client/plan/rule.
+- Rate rules use integer basis points; commission amounts use integer kobo and half-up rounding.
+- Unique source keys prevent duplicate commissions.
+- Attribution snapshots preserve marketer, team lead, branch, team and relationship-manager attribution at creation. Reassigning a client does not move existing commission.
+
+### Approval and payment workflow
+- States: Draft, Calculated, Pending Approval, Approved, Partially Paid, Paid, Rejected, Reversed, Cancelled.
+- MD/Finance can submit, approve, reject, pay and adjust.
+- Recipients cannot approve their own commission when separation of duties is enabled.
+- Partial payments and final payments update status and outstanding liability.
+- Overpayment and duplicate idempotency keys are blocked.
+- Commission payments generate private R2 PDF receipts with the official logo.
+- Refunds/reversals of client payments create negative commission adjustments without overwriting the original entry.
+- Manual corrections are traceable signed adjustments.
+
+### Financial reports and analytics
+- MD/Finance: company-wide commission and financial analytics, category sales, refunds/reversals, commission liabilities and exports.
+- BM: branch commission summary, branch performance and branch-scoped reports.
+- Team Lead: team commission summary and team-scoped reports.
+- Marketer: personal commission summary/history and personal commission exports only.
+- Reports: sales, collections, outstanding, commission, branch performance, marketer performance, refunds and commission liability.
+- CSV exports are complete; PDF reports include the official logo, report reference, generation date, creator and filters.
+- Generated files are stored privately in R2. Public `/api/files/*` cannot serve reports or commission receipts.
+
+### Tests executed
+- Phase 5: **62 passed, 0 failed, 0 skipped**.
+- Phase 6: **21 passed, 0 failed, 0 skipped**.
+- Phase 7: **26 passed, 0 failed, 0 skipped**.
+- Combined total: **109 passed, 0 failed, 0 skipped**.
+- Phase 7 covers plan validation, contract/collection/fixed calculations, partial accrual, duplicate prevention, attribution snapshots, approvals/rejections, self-approval prevention, partial/final payment, double-payment prevention, receipts/R2, refund/reversal adjustments, manual corrections, commission-ledger liability reconciliation, role isolation, analytics, CSV/PDF reports, report ownership/R2 security, public client sign-up assignment injection, password hashing, session cookie/logout/expiry, client isolation, official logo consistency, ten-listing landing catalogue with land and demo labels, multi-property client/staff portfolios, per-property verified/outstanding/progress balances, current-assignment property visibility revocation and Phase 1–6 regression.
+
+### Remaining (production-only / external dependencies)
+- Remote D1/R2/KV/Queue creation, remote migrations and production secrets — not performed.
+- ALAT/Wema onboarding and real bank credentials — unchanged Phase 5 boundary.
+- Real email/WhatsApp delivery adapters — queue records interface state only.
+- No company commission rates are hard-coded; production rates must be configured and approved by management before use.
 

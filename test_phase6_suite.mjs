@@ -121,6 +121,7 @@ db.exec(`
   DELETE FROM property_status_history;
   DELETE FROM property_images;
   DELETE FROM property_documents;
+  DELETE FROM client_properties;
   DELETE FROM clients;
   DELETE FROM properties;
   DELETE FROM team_members;

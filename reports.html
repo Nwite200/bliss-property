@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Financial Reports | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body data-page="reports">
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <section class="role-hero">
+        <h1>Financial Reports</h1>
+        <p>Role-scoped sales, collections, outstanding balances, commissions, branch performance, marketer performance, refunds and commission liabilities. CSV and PDF reports are stored privately in R2.</p>
+        <div class="role-hero-meta" id="heroMeta"></div>
+      </section>
+
+      <div class="card">
+        <div class="card-head"><h3>Generate report</h3><span class="small muted">Official logo included in PDF reports</span></div>
+        <form id="reportForm" class="form-grid">
+          <div class="field-group"><label class="field-label" for="reportType">Report type</label><select class="field-input" id="reportType"></select></div>
+          <div class="field-group"><label class="field-label" for="reportFormat">Format</label><select class="field-input" id="reportFormat"><option value="csv">CSV</option><option value="pdf">PDF</option></select></div>
+          <div class="field-group"><label class="field-label" for="reportFrom">From</label><input class="field-input" type="date" id="reportFrom"></div>
+          <div class="field-group"><label class="field-label" for="reportTo">To</label><input class="field-input" type="date" id="reportTo"></div>
+          <div class="field-group" id="reportBranchGroup"><label class="field-label" for="reportBranch">Branch</label><select class="field-input" id="reportBranch"><option value="">All branches</option></select></div>
+          <div class="field-group" id="reportTeamGroup"><label class="field-label" for="reportTeam">Team</label><select class="field-input" id="reportTeam"><option value="">All teams</option></select></div>
+          <div class="field-group" id="reportMarketerGroup"><label class="field-label" for="reportMarketer">Marketer</label><select class="field-input" id="reportMarketer"><option value="">All marketers</option></select></div>
+          <div class="field-group full" style="display:flex;justify-content:flex-end"><button class="btn btn-green" type="submit" id="generateReportBtn">Generate report</button></div>
+        </form>
+        <div class="route-note mt-16">Reports use live verified NGN collections only. DEMO transactions are excluded. Contract value is never presented as cash received.</div>
+      </div>
+
+      <div class="card section-gap">
+        <div class="card-head"><h3>Generated reports</h3><span class="small muted" id="reportCount"></span></div>
+        <div class="filters mb-16">
+          <select id="reportFilterType"><option value="">All report types</option></select>
+          <button class="btn btn-ghost btn-sm" type="button" id="refreshReports">Refresh</button>
+        </div>
+        <div class="table-responsive"><table class="table">
+          <thead><tr><th>Reference</th><th>Type</th><th>Format</th><th>Requested by</th><th>Generated</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody id="reportBody"></tbody>
+        </table></div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/reports.js"></script>
+</body>
+</html>

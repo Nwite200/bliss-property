@@ -157,6 +157,30 @@
     return value;
   }
 
+  function renderCommission() {
+    const summary = dashboard.commission_summary || {};
+    const rows = dashboard.recent_commissions || [];
+    const title = me.role === 'Marketer' ? 'My commission' : me.role === 'Team Lead' ? 'Team commission' : me.role === 'Branch Manager' ? 'Branch commission' : 'Commission overview';
+    el('commissionCardTitle').textContent = title;
+    el('commissionKpis').innerHTML = [
+      ['Earned', summary.earned_kobo],
+      ['Awaiting approval', summary.pending_approval_kobo],
+      ['Approved', summary.approved_kobo],
+      ['Paid', summary.paid_kobo],
+      ['Outstanding', summary.outstanding_kobo]
+    ].map(([label, value]) => `<div class="kpi"><div class="label">${label}</div><div class="value">${money(value || 0)}</div></div>`).join('');
+    el('commissionTableBody').innerHTML = rows.length ? rows.map(row => `
+      <tr>
+        <td><strong>${S.escape(row.commission_ref)}</strong><div class="small muted">${S.escape(row.recipient_role || '')}</div></td>
+        <td>${S.escape(row.client_name || '-')}<div class="small muted">${S.escape(row.client_reference || '')}</div></td>
+        <td>${S.escape(row.plan_name || '-')}</td>
+        <td class="nowrap">${money(row.commission_kobo)}</td>
+        <td class="nowrap">${money(row.paid_kobo)}</td>
+        <td class="nowrap">${money(row.outstanding_kobo)}</td>
+        <td>${S.badge(row.status, S.statusTone(row.status))}</td>
+      </tr>`).join('') : '<tr><td colspan="7"><div class="empty-state">No commission entries in this scope.</div></td></tr>';
+  }
+
   function renderTrend() {
     const trends = dashboard.trends || [];
     el("trendRangeLabel").textContent = `${S.formatDate(dashboard.range.from)} – ${S.formatDate(dashboard.range.to)} · ${dashboard.range.granularity}`;
@@ -334,6 +358,7 @@
     renderHeader();
     renderSummary();
     renderPeriod();
+    renderCommission();
     renderTrend();
     renderPipeline();
     renderBranchTable();

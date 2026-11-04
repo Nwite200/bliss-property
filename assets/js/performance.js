@@ -32,12 +32,20 @@
     el("granularity").value = "day";
   }
 
+  async function loadCategories() {
+    try {
+      const data = await S.fetchJson('/api/property-categories');
+      el('categoryFilter').innerHTML = '<option value="">All categories</option>' + (data.categories || []).map(c => `<option value="${c.id}">${S.escape(c.name)}</option>`).join('');
+    } catch { /* optional */ }
+  }
+
   function query() {
     const params = new URLSearchParams();
     params.set("from", el("fromDate").value || S.daysAgo(29));
     params.set("to", el("toDate").value || S.today());
     params.set("granularity", el("granularity").value || "day");
     if (el("branchFilter").value) params.set("branch_id", el("branchFilter").value);
+    if (el("categoryFilter").value) params.set("property_category_id", el("categoryFilter").value);
     return params.toString();
   }
 
@@ -83,6 +91,26 @@
       periodCards.push(kpi("Conversions", p.conversions, `${p.conversion_rate}% conversion`));
     }
     el("periodKpis").innerHTML = periodCards.join("");
+
+    const commissions = s.commissions || {};
+    el("commissionKpis").innerHTML = [
+      kpi("Commission earned", money(commissions.earned_kobo), "Scoped commission entries"),
+      kpi("Awaiting approval", money(commissions.pending_approval_kobo), "Pending approval"),
+      kpi("Commission approved", money(commissions.approved_kobo), "Approved entries"),
+      kpi("Commission paid", money(commissions.paid_kobo), "Commission payments made"),
+      kpi("Commission outstanding", money(commissions.outstanding_kobo), "Approved/paid liability")
+    ].join("");
+  }
+
+  function renderCategoryRefunds() {
+    const categories = analytics.property_category_sales || [];
+    el("categoryBody").innerHTML = categories.length ? categories.map(row => `
+      <tr><td>${S.escape(row.category_name)}</td><td>${row.clients}</td><td class="nowrap">${money(row.contract_value_kobo)}</td><td class="nowrap">${money(row.verified_kobo)}</td></tr>
+    `).join("") : '<tr><td colspan="4"><div class="empty-state">No category sales in this period.</div></td></tr>';
+    const refunds = analytics.refund_summary || [];
+    el("refundBody").innerHTML = refunds.length ? refunds.map(row => `
+      <tr><td>${S.escape(row.adjustment_type)}</td><td>${row.count}</td><td class="nowrap">${money(row.amount_kobo)}</td></tr>
+    `).join("") : '<tr><td colspan="3"><div class="empty-state">No refunds or reversals in this period.</div></td></tr>';
   }
 
   function shortPeriod(period) {
@@ -188,6 +216,7 @@
     renderBranches();
     renderMarketers();
     renderTeams();
+    renderCategoryRefunds();
   }
 
   function exportCsv() {
@@ -221,9 +250,10 @@
     me = await S.initShell("performance");
     if (!me) return;
     setDefaults();
+    await loadCategories();
     if (["Managing Director", "Finance Officer"].includes(me.role)) await loadBranches();
     el("applyFilters").addEventListener("click", load);
-    el("resetFilters").addEventListener("click", () => { setDefaults(); el("branchFilter").value = ""; load(); });
+    el("resetFilters").addEventListener("click", () => { setDefaults(); el("branchFilter").value = ""; el("categoryFilter").value = ""; load(); });
     el("exportCsv").addEventListener("click", exportCsv);
     await load();
   });

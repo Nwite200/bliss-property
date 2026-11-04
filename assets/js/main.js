@@ -78,8 +78,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     // API not accessible; seamlessly fallback to static sample data
   }
 
-  if (!allProperties.length) {
-    allProperties = Bliss.properties();
+  // Blend live D1 records with the curated demonstration catalogue and cap the
+  // homepage at ten listings. Land opportunities are always represented.
+  const staticProperties = Bliss.properties().map(p => ({ ...p, isDemo: true }));
+  const seen = new Set(allProperties.map(p => `${String(p.name).toLowerCase()}|${String(p.location).toLowerCase()}`));
+  for (const item of staticProperties) {
+    const key = `${String(item.name).toLowerCase()}|${String(item.location).toLowerCase()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      allProperties.push(item);
+    }
+  }
+  allProperties = allProperties.slice(0, 10);
+  if (!allProperties.some(p => String(p.category).toLowerCase() === 'land')) {
+    const land = staticProperties.find(p => String(p.category).toLowerCase() === 'land');
+    if (land && !allProperties.some(p => p.name === land.name)) {
+      allProperties[allProperties.length - 1] = land;
+    }
   }
 
   // Populate dynamic filter options
@@ -180,6 +195,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             <div class="card-badges-top">
               <span class="status-badge status-${statusClass}">${p.status || 'Available'}</span>
               ${p.featured ? '<span class="status-badge badge-featured">Featured</span>' : ''}
+              ${p.isDemo ? '<span class="status-badge badge-gray" title="Demonstration listing">Sample</span>' : ''}
             </div>
             <div class="card-badges-bottom">
               <span class="category-pill">${p.category}</span>

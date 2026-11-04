@@ -499,6 +499,7 @@
 
         const client = data.client || {};
         const property = data.property;
+        const properties = Array.isArray(data.properties) && data.properties.length ? data.properties : (property ? [property] : []);
         const financials = data.financials || {};
         const nextPay = data.next_payment || {};
         const notifs = data.recent_notifications || [];
@@ -530,22 +531,35 @@
 
         // Render Property Section
         const propBox = document.getElementById('propertyContainer');
-        if (property) {
-          const imgUrl = (property.images && property.images[0]) || 'https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=400&q=80';
-          propBox.innerHTML = `
-            <div class="mini-prop-card">
-              <img src="${imgUrl}" alt="${property.title}" class="mini-prop-img">
-              <div class="mini-prop-info">
-                <h3>${property.title}</h3>
-                <p>📍 Location: ${property.location || 'Prime Estate'}</p>
-                <p>Ref: <strong>${property.reference || 'N/A'}</strong></p>
-                <div class="mini-prop-price">${Bliss.money(property.agreed_purchase_price)}</div>
+        if (properties.length) {
+          propBox.innerHTML = properties.map((item, index) => {
+            const imgUrl = (item.images && item.images[0]) || 'https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=400&q=80';
+            const progressValue = Number(item.progress || 0);
+            return `
+              <div class="mini-prop-card" style="${index ? 'margin-top:16px' : ''}">
+                <img src="${imgUrl}" alt="${item.title}" class="mini-prop-img">
+                <div class="mini-prop-info">
+                  <h3>${item.title}</h3>
+                  <p>📍 Location: ${item.location || 'Prime Estate'}${item.category_name ? ` · ${item.category_name}` : ''}</p>
+                  <p>Ref: <strong>${item.reference || 'N/A'}</strong></p>
+                  <div class="mini-prop-price">${Bliss.money(item.agreed_purchase_price)}</div>
+                </div>
               </div>
-            </div>
-            <p style="font-size:13px;color:var(--muted);margin-top:12px;line-height:1.6">
-              ${(property.description || '').slice(0, 140)}...
-            </p>
-          `;
+              <div style="margin-top:10px;padding:0 2px">
+                <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:5px">
+                  <span>Paid: <strong style="color:var(--green)">${Bliss.money(item.verified_ngn)}</strong></span>
+                  <span>Remaining: <strong>${Bliss.money(item.outstanding_ngn)}</strong></span>
+                </div>
+                <div class="progress-bar-track" style="height:8px">
+                  <div class="progress-bar-fill" style="width:${progressValue}%"></div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px">
+                  <span>${item.verified_payments_count || 0} verified payment(s)</span>
+                  <strong style="color:var(--green)">${progressValue}%</strong>
+                </div>
+              </div>
+            `;
+          }).join('');
         } else {
           propBox.innerHTML = `
             <div class="no-schedule-msg">

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <title>Create Client Account | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <style>
+    body { background: var(--soft); min-height: 100vh; display: flex; justify-content: center; align-items: flex-start; padding: 28px 16px 40px; }
+    .signup-card { width: 100%; max-width: 540px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 30px 30px 26px; box-shadow: var(--shadow-md); }
+    .signup-header { text-align: center; margin-bottom: 22px; }
+    .signup-logo { width: 190px; height: auto; display: block; margin: 0 auto 14px; }
+    .signup-title { font-size: 24px; font-weight: 800; color: var(--ink); }
+    .signup-subtitle { font-size: 13px; color: var(--muted); margin-top: 5px; line-height: 1.55; }
+    .signup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .signup-grid .full { grid-column: 1 / -1; }
+    .signup-grid label { display: block; font-size: 12px; font-weight: 700; color: var(--charcoal); margin-bottom: 6px; }
+    .signup-grid input, .signup-grid select { width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: 13px; background: #fff; }
+    .signup-msg { margin-top: 12px; font-size: 12px; line-height: 1.5; min-height: 18px; }
+    .signup-msg.error { color: #B91C1C; }
+    .signup-msg.success { color: var(--green-dark); }
+    .signup-links { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 16px; font-size: 12px; }
+    .signup-links a { color: var(--green-dark); font-weight: 700; }
+    @media (max-width: 520px) { .signup-grid { grid-template-columns: 1fr; } .signup-card { padding: 24px 20px; } }
+  </style>
+</head>
+<body>
+  <div class="signup-card">
+    <div class="signup-header">
+      <a href="index.html"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy Limited Official Logo" class="signup-logo" onerror="this.src='assets/images/bliss-legacy-logo.png'"></a>
+      <span class="badge badge-green">Client Self-Service Portal</span>
+      <h1 class="signup-title">Create your client account</h1>
+      <p class="signup-subtitle">Register to track your property interest, verified payments, receipts and account information.</p>
+    </div>
+
+    <form id="signupForm">
+      <div class="signup-grid">
+        <div class="full">
+          <label for="fullName">Full name *</label>
+          <input id="fullName" type="text" autocomplete="name" required>
+        </div>
+        <div>
+          <label for="email">Email address *</label>
+          <input id="email" type="email" autocomplete="email" required>
+        </div>
+        <div>
+          <label for="phone">Phone number *</label>
+          <input id="phone" type="tel" autocomplete="tel" placeholder="08012345678" required>
+        </div>
+        <div class="full">
+          <label for="property">Interested property</label>
+          <select id="property"><option value="">No property selected</option></select>
+        </div>
+        <div class="full">
+          <div class="route-note" style="font-size:11px">New accounts are reviewed by our client team. Branch, marketer and team assignment is completed by authorised Bliss Legacy staff.</div>
+        </div>
+        <div>
+          <label for="password">Password *</label>
+          <input id="password" type="password" minlength="8" autocomplete="new-password" required>
+        </div>
+        <div>
+          <label for="confirmPassword">Confirm password *</label>
+          <input id="confirmPassword" type="password" minlength="8" autocomplete="new-password" required>
+        </div>
+        <div class="full">
+          <label style="display:flex;align-items:flex-start;gap:8px;font-weight:500;color:var(--muted);line-height:1.5">
+            <input id="consent" type="checkbox" required style="width:auto;height:auto;margin-top:2px">
+            <span>I confirm the information provided is accurate and consent to Bliss Legacy Limited contacting me about my enquiry.</span>
+          </label>
+        </div>
+      </div>
+
+      <button class="btn btn-green btn-block mt-16" type="submit" id="signupBtn">Create Account</button>
+      <div class="signup-msg" id="signupMsg"></div>
+    </form>
+
+    <div class="signup-links">
+      <a href="client-login.html">← Already have an account? Sign in</a>
+      <a href="index.html">Public website</a>
+    </div>
+  </div>
+
+  <script>
+    (async () => {
+      const propertySelect = document.getElementById('property');
+      try {
+        const properties = await fetch('/api/properties?limit=50').then(r => r.json());
+        propertySelect.innerHTML = '<option value="">No property selected</option>' + (properties.properties || []).map(p => `<option value="${p.id}">${p.reference} — ${p.title}</option>`).join('');
+      } catch { /* optional */ }
+    })();
+
+    document.getElementById('signupForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const msg = document.getElementById('signupMsg');
+      const btn = document.getElementById('signupBtn');
+      msg.textContent = '';
+      msg.className = 'signup-msg';
+      const password = document.getElementById('password').value;
+      const confirm = document.getElementById('confirmPassword').value;
+      if (password !== confirm) {
+        msg.textContent = 'Passwords do not match.';
+        msg.className = 'signup-msg error';
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'Creating account…';
+      try {
+        const res = await fetch('/api/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            full_name: document.getElementById('fullName').value.trim(),
+            email: document.getElementById('email').value.trim(),
+            phone_number: document.getElementById('phone').value.trim(),
+            interested_property_id: document.getElementById('property').value ? Number(document.getElementById('property').value) : null,
+            password
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msg.textContent = data.error || 'Unable to create your account.';
+          msg.className = 'signup-msg error';
+          btn.disabled = false;
+          btn.textContent = 'Create Account';
+          return;
+        }
+        msg.textContent = `Account created. Your client reference is ${data.client_reference}. Redirecting to your portal…`;
+        msg.className = 'signup-msg success';
+        setTimeout(() => { window.location.href = '/client-dashboard.html'; }, 1200);
+      } catch {
+        msg.textContent = 'Network error. Please try again.';
+        msg.className = 'signup-msg error';
+        btn.disabled = false;
+        btn.textContent = 'Create Account';
+      }
+    });
+  </script>
+</body>
+</html>

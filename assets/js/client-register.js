@@ -43,6 +43,7 @@ async function onSubmit(e) {
     next_of_kin: document.getElementById("next_of_kin").value,
     notes: document.getElementById("notes").value,
     preferred_channel: document.getElementById("preferred_channel").value,
+    sale_type: document.getElementById("sale_type").value,
     status: document.getElementById("status").value,
     interested_property_id: document.getElementById("interested_property_id").value,
     agreed_purchase_price: window.__blissCanSetClientPrice && document.getElementById("agreed_purchase_price").value

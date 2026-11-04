@@ -133,6 +133,8 @@
       { href: "staff-management.html", label: "👔 Staff & Teams", page: "staff", roles: ["Managing Director", "Branch Manager"] },
       { href: "activity-centre.html", label: "🕘 Activity Centre", page: "activity", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Finance" },
+      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
+      { href: "reports.html", label: "📄 Financial Reports", page: "reports", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
       { href: "finance-dashboard.html", label: "💳 Finance & Ledger", page: "finance", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
       { href: "provider-config.html", label: "🏦 Payment Provider", page: "provider", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
       { section: "Account" },
@@ -198,10 +200,10 @@
 
   BlissStaff.statusTone = function (value) {
     const status = String(value || "").toLowerCase();
-    if (["active", "verified", "completed", "sold", "converted", "ready"].includes(status)) return "green";
-    if (["reserved", "pending", "negotiation", "inspection scheduled", "interested", "configured"].includes(status)) return "amber";
-    if (["failed", "lost", "reversed", "refunded", "unavailable", "inactive"].includes(status)) return "red";
-    if (["available", "published", "new lead", "contacted"].includes(status)) return "blue";
+    if (["active", "verified", "completed", "sold", "converted", "ready", "approved", "paid"].includes(status)) return "green";
+    if (["reserved", "pending", "pending approval", "partially paid", "calculated", "negotiation", "inspection scheduled", "interested", "configured"].includes(status)) return "amber";
+    if (["failed", "lost", "reversed", "refunded", "rejected", "cancelled", "unavailable", "inactive"].includes(status)) return "red";
+    if (["available", "published", "new lead", "contacted", "draft"].includes(status)) return "blue";
     return "gray";
   };
 

@@ -31,12 +31,14 @@
           <select class="field-input" id="granularity"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option><option value="year">Yearly</option></select>
         </div>
         <div class="field-group" id="branchFilterGroup" style="display:none"><label class="field-label" for="branchFilter">Branch</label><select class="field-input" id="branchFilter"><option value="">All branches</option></select></div>
+        <div class="field-group"><label class="field-label" for="categoryFilter">Property category</label><select class="field-input" id="categoryFilter"><option value="">All categories</option></select></div>
         <button class="btn btn-green btn-sm" type="button" id="applyFilters">Apply</button>
         <button class="btn btn-ghost btn-sm" type="button" id="resetFilters">Last 30 days</button>
       </div>
 
       <div class="kpi-grid kpi-grid-3" id="summaryKpis"></div>
       <div class="kpi-grid kpi-grid-5" id="periodKpis"></div>
+      <div class="kpi-grid kpi-grid-5" id="commissionKpis"></div>
 
       <div class="card chart-card section-gap">
         <div class="card-head"><h3>Sales, collections and lead trend</h3><span class="small muted" id="trendRangeLabel"></span></div>
@@ -76,6 +78,23 @@
           <thead><tr><th>#</th><th>Team</th><th>Lead</th><th>Members</th><th>Clients</th><th>Leads</th><th>Converted</th><th>Contract</th><th>Verified</th><th>Conversion</th></tr></thead>
           <tbody id="teamBody"></tbody>
         </table></div>
+      </div>
+
+      <div class="split-grid section-gap">
+        <div class="card" id="categoryCard">
+          <div class="card-head"><h3>Sales by property category</h3><span class="small muted">Period contract and verified collections</span></div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Category</th><th>Clients</th><th>Contract</th><th>Verified</th></tr></thead>
+            <tbody id="categoryBody"></tbody>
+          </table></div>
+        </div>
+        <div class="card" id="refundCard">
+          <div class="card-head"><h3>Refunds and reversals</h3><span class="small muted">Financial adjustments in period</span></div>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Type</th><th>Count</th><th>Amount</th></tr></thead>
+            <tbody id="refundBody"></tbody>
+          </table></div>
+        </div>
       </div>
     </main>
   </div>

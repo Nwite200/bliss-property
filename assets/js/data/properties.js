@@ -332,5 +332,69 @@ window.BLIS_PROPERTIES = [
     status: "Available",
     featured: false,
     isDemo: true
+  },
+  {
+    id: "prop-009",
+    name: "Emerald Ridge Terraces",
+    slug: "emerald-ridge-terraces",
+    images: [
+      "https://images.unsplash.com/photo-1580587771525-78b9dba3b914?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1200&q=80"
+    ],
+    description: "A limited collection of contemporary 4-bedroom terrace homes in a secure, professionally managed estate along the Lekki-Epe corridor. Each home features premium finishes, private parking, solar-ready wiring, and access to landscaped communal gardens, a residents' clubhouse and a children's play area.",
+    location: "Lekki, Lagos",
+    branch: "Ajah",
+    category: "Residential",
+    price: 72000000,
+    units: 8,
+    totalUnits: 18,
+    bedrooms: 4,
+    bathrooms: 4,
+    size: "310 sqm",
+    features: [
+      "4 En-Suite Bedrooms",
+      "Private Garden & Patio",
+      "Solar-Ready Wiring",
+      "Residents' Clubhouse",
+      "24/7 Estate Security",
+      "Paved Internal Roads",
+      "Water Treatment Plant",
+      "Flexible Payment Plan"
+    ],
+    status: "Available",
+    featured: true,
+    isDemo: true
+  },
+  {
+    id: "prop-010",
+    name: "Riverside Garden Plots",
+    slug: "riverside-garden-plots",
+    images: [
+      "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1200&q=80"
+    ],
+    description: "Prime riverside land in a fast-growing residential belt, ideal for holiday homes, retirement builds or long-term land banking. The scheme offers dry, surveyed plots with registered survey plans, deed of assignment, graded access roads and a planned riverside green corridor.",
+    location: "Ihama, Benin City",
+    branch: "Ihama",
+    category: "Land",
+    price: 12000000,
+    units: 20,
+    totalUnits: 40,
+    bedrooms: 0,
+    bathrooms: 0,
+    size: "550 sqm / Plot",
+    features: [
+      "Registered Survey Plan",
+      "Deed of Assignment",
+      "100% Dry Buildable Land",
+      "Graded Access Roads",
+      "Riverside Green Corridor",
+      "Immediate Allocation",
+      "Flexible Installments",
+      "Free from Encumbrances"
+    ],
+    status: "Available",
+    featured: false,
+    isDemo: true
   }
 ];

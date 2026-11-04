@@ -22,7 +22,48 @@ async function load() {
   document.getElementById("detailBranch").textContent = c.branch_name || "-";
   document.getElementById("detailMarketer").textContent = c.original_marketer_name || "-";
   document.getElementById("detailPrice").textContent = money(c.agreed_purchase_price);
-  document.getElementById("detailProperty").textContent = c.interested_property_id || "-";
+  const properties = Array.isArray(data.properties) ? data.properties : [];
+  const financials = data.financials || {};
+  document.getElementById("detailProperty").textContent = properties.length ? properties[0].title : (c.interested_property_id || "-");
+
+  const portfolio = document.getElementById("propertyPortfolio");
+  const summary = document.getElementById("portfolioSummary");
+  if (summary) {
+    summary.innerHTML = `Contract: <strong>${money(financials.agreed_price_ngn)}</strong><br>
+      Verified: <strong style="color:var(--green-dark)">${money(financials.total_verified_ngn)}</strong><br>
+      Outstanding: <strong>${money(financials.outstanding_balance_ngn)}</strong>`;
+  }
+  if (portfolio) {
+    if (!properties.length) {
+      portfolio.innerHTML = `<p style="color:var(--muted);font-size:13px">No property allocation recorded for this client.</p>`;
+    } else {
+      portfolio.innerHTML = properties.map(p => `
+        <div style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <div>
+              <strong>${p.title}</strong>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">${p.reference} · ${p.category_name || "Property"} · ${p.location || ""}</div>
+            </div>
+            <div style="font-size:11px;color:var(--muted);text-align:right">
+              ${p.verified_payments_count || 0} verified payment(s)<br>
+              ${p.last_payment_at ? "Last: " + new Date(p.last_payment_at).toLocaleDateString() : "No verified payments"}
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:10px;font-size:12px">
+            <div><span style="color:var(--muted)">Agreed</span><br><strong>${money(p.agreed_purchase_price)}</strong></div>
+            <div><span style="color:var(--muted)">Paid</span><br><strong style="color:var(--green-dark)">${money(p.verified_ngn)}</strong></div>
+            <div><span style="color:var(--muted)">Remaining</span><br><strong>${money(p.outstanding_ngn)}</strong></div>
+          </div>
+          <div style="height:8px;background:var(--line);border-radius:99px;margin-top:10px;overflow:hidden">
+            <div style="height:100%;width:${Number(p.progress || 0)}%;background:var(--green)"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px">
+            <span>${p.allocation_status || p.status || "Active"}</span>
+            <strong style="color:var(--green-dark)">${Number(p.progress || 0)}% complete</strong>
+          </div>
+        </div>`).join("");
+    }
+  }
   document.getElementById("statusSelect").value = c.status;
   document.getElementById("saveStatus").onclick = async () => {
     await fetchJson("/clients/" + id + "/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: document.getElementById("statusSelect").value }) });
