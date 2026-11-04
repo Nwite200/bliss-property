@@ -19,7 +19,7 @@ async function load() {
     await fetch("/api/logout", { method: "POST", credentials: "include" });
     window.location.href = "/login.html";
   });
-  const me = await fetchJson("/api/me");
+  const me = await fetchJson("/me");
   if (!me.ok) window.location.href = "/login.html";
 }
 

@@ -327,6 +327,11 @@
         grid-template-columns: 1fr;
       }
     }
+    @media (max-width: 640px) {
+      .financial-kpi-grid { grid-template-columns: 1fr; }
+      .portal-main { padding: 20px 16px; }
+      .kpi-amt { font-size: 22px; }
+    }
   </style>
 </head>
 <body>
@@ -484,6 +489,9 @@
   <script src="assets/js/data/properties.js"></script>
   <script src="assets/js/components.js"></script>
   <script>
+    const esc = (value) => String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     document.addEventListener('DOMContentLoaded', async () => {
       try {
         const res = await fetch('/api/client/dashboard');
@@ -539,9 +547,9 @@
               <div class="mini-prop-card" style="${index ? 'margin-top:16px' : ''}">
                 <img src="${imgUrl}" alt="${item.title}" class="mini-prop-img">
                 <div class="mini-prop-info">
-                  <h3>${item.title}</h3>
-                  <p>📍 Location: ${item.location || 'Prime Estate'}${item.category_name ? ` · ${item.category_name}` : ''}</p>
-                  <p>Ref: <strong>${item.reference || 'N/A'}</strong></p>
+                  <h3>${esc(item.title)}</h3>
+                  <p>📍 Location: ${esc(item.location || 'Prime Estate')}${item.category_name ? ` · ${esc(item.category_name)}` : ''}</p>
+                  <p>Ref: <strong>${esc(item.reference || 'N/A')}</strong></p>
                   <div class="mini-prop-price">${Bliss.money(item.agreed_purchase_price)}</div>
                 </div>
               </div>
@@ -579,14 +587,14 @@
                 Due Date: <strong>${nextPay.next_due_date.slice(0, 10)}</strong> (${nextPay.status})
               </p>
               <p class="next-pay-meta" style="margin-top:6px">
-                ${nextPay.payment_instruction || ''}
+                ${esc(nextPay.payment_instruction || '')}
               </p>
             </div>
           `;
         } else {
           nextBox.innerHTML = `
             <div class="no-schedule-msg">
-              <p>${nextPay.message || 'Your next payment information will appear here once your payment schedule has been configured.'}</p>
+              <p>${esc(nextPay.message || 'Your next payment information will appear here once your payment schedule has been configured.')}</p>
             </div>
           `;
         }
@@ -602,8 +610,8 @@
           }
           notifBox.innerHTML = notifs.map(n => `
             <div class="notif-item ${n.is_read ? '' : 'unread'}">
-              <span class="notif-title">${n.title}</span>
-              <p style="font-size:12px;color:var(--muted);line-height:1.4">${n.message}</p>
+              <span class="notif-title">${esc(n.title)}</span>
+              <p style="font-size:12px;color:var(--muted);line-height:1.4">${esc(n.message)}</p>
               <span class="notif-time">${(n.created_at || '').slice(0, 16)}</span>
             </div>
           `).join('');
@@ -630,5 +638,6 @@
       });
     });
   </script>
+  <script src="assets/js/mobile-nav.js"></script>
 </body>
 </html>

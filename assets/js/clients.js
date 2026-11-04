@@ -46,7 +46,7 @@ function render(clients) {
   });
 }
 async function load() {
-  const me = await fetchJson("/api/me");
+  const me = await fetchJson("/me");
   if (!me.ok) { window.location.href = "/login.html"; return; }
   await loadBranches();
   await loadMarketers();

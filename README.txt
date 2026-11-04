@@ -37,18 +37,28 @@ Tests
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm test              (all suites, 109 tests)
+- npm run test:phase8  (17 tests)
+- npm test              (all suites, 126 tests)
 
 Documentation
 -------------
 - DEVELOPMENT_PLAN.md
 - PHASE6_WALKTHROUGH.md — role-by-role local testing walkthrough
 - PHASE7_WALKTHROUGH.md — commission and financial-report walkthrough
+- PHASE8_FINAL_AUDIT.md — Phase 8 integration/security audit
+- PRODUCTION_READINESS_CHECKLIST.md
+- CLOUDFLARE_DEPLOYMENT_GUIDE.md
+- API_DOCUMENTATION.md
+- SECURITY_AUDIT.md
+- KNOWN_LIMITATIONS.md
+- BLISS_LEGACY_OPERATIONAL_WORKFLOW.md
+- ROLE_AND_ONBOARDING_AUDIT.md
 
 Architecture and safety
 -----------------------
-- Bindings are unchanged: DB, FILES, CACHE, TASKS, ASSETS.
+- Bindings: DB, FILES, CACHE, TASKS, ASSETS.
 - No Supabase, Firebase or alternative primary backend.
-- No remote migration, production secret, deployment, commit or push is performed by the local setup.
+- Cloudflare demo deployment: https://bliss-legacy-limited.easterntechexpo.workers.dev
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
+- There is no separate Super Admin role; the Managing Director is the highest implemented role.

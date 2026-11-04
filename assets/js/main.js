@@ -51,7 +51,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const data = await res.json();
       if (data && data.properties && data.properties.length > 0) {
         allProperties = data.properties.map(p => ({
-          id: p.reference || String(p.id),
+          id: String(p.id),
           slug: p.slug || (p.reference ? p.reference.toLowerCase() : String(p.id)),
           name: p.title || p.name,
           location: p.city ? `${p.city}, ${p.state || 'Lagos'}` : (p.state || 'Lagos'),
@@ -269,24 +269,42 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Initial property render
   renderProperties();
 
-  // Contact Form Submission Handler (simulates professional lead capture)
+  // Contact Form Submission Handler — creates a real lead through the worker.
   const contactForm = document.getElementById('contactForm');
   const formSuccess = document.getElementById('formSuccess');
   if (contactForm) {
-    contactForm.addEventListener('submit', (e) => {
+    contactForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const submitBtn = contactForm.querySelector('button[type="submit"]');
+      const originalLabel = submitBtn ? submitBtn.textContent : '';
       if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Submitting Enquiry...';
       }
-
-      setTimeout(() => {
+      try {
+        const res = await fetch('/api/public/enquiries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            full_name: document.getElementById('contactFullName').value.trim(),
+            phone_number: document.getElementById('contactPhoneInput').value.trim(),
+            email_address: document.getElementById('contactEmailInput').value.trim(),
+            branch_name: document.getElementById('contactBranchSelect').value,
+            message: document.getElementById('contactMessage').value.trim(),
+            source: 'Homepage contact form'
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Unable to submit your enquiry.');
         contactForm.style.display = 'none';
-        if (formSuccess) {
-          formSuccess.style.display = 'block';
+        if (formSuccess) formSuccess.style.display = 'block';
+      } catch (error) {
+        alert(error.message || 'Unable to submit your enquiry. Please try again.');
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = originalLabel;
         }
-      }, 700);
+      }
     });
   }
 

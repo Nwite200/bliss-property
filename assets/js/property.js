@@ -1,5 +1,5 @@
 // Bliss Legacy Limited — Dedicated Public Property Details Logic
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Render persistent site header and footer
   const headerSlot = document.getElementById('header-slot');
   const footerSlot = document.getElementById('footer-slot');
@@ -10,7 +10,39 @@ document.addEventListener('DOMContentLoaded', () => {
   const container = document.getElementById('propertyContainer');
   const params = new URLSearchParams(window.location.search);
   const propertyId = params.get('id');
-  const p = Bliss.findProperty(propertyId);
+  let p = Bliss.findProperty(propertyId);
+
+  // Live D1 listings use numeric IDs. Load them from the public API so the
+  // homepage never links a live property to a "Property Not Found" page.
+  if (!p && /^\d+$/.test(String(propertyId || ''))) {
+    try {
+      const response = await fetch(`/api/properties/${propertyId}`);
+      if (response.ok) {
+        const payload = await response.json();
+        const d = payload.property;
+        p = {
+          id: d.id,
+          name: d.title,
+          slug: d.reference,
+          images: (payload.images || []).map(img => `/api/files/${encodeURIComponent(img.r2_key)}`),
+          description: d.description || '',
+          location: [d.city, d.state].filter(Boolean).join(', '),
+          branch: (d.branch_name || 'Head Office').replace(/\s*Branch$/i, ''),
+          category: d.category_name || 'Residential',
+          price: Number(d.sale_price || 0),
+          units: d.available_units || 1,
+          totalUnits: d.total_units || 10,
+          bedrooms: d.bedrooms || 0,
+          bathrooms: d.bathrooms || 0,
+          size: d.land_size || '350 sqm',
+          features: (() => { try { return d.features ? JSON.parse(d.features) : []; } catch { return []; } })(),
+          status: d.status || 'Available',
+          featured: Boolean(d.is_featured),
+          isDemo: false
+        };
+      }
+    } catch { /* fall through to not found */ }
+  }
 
   if (!p) {
     container.innerHTML = `
@@ -269,18 +301,39 @@ document.addEventListener('DOMContentLoaded', () => {
   const resetBtn = document.getElementById('resetEnqFormBtn');
 
   if (enqForm) {
-    enqForm.addEventListener('submit', (e) => {
+    enqForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const submitBtn = enqForm.querySelector('button[type="submit"]');
+      const originalLabel = submitBtn ? submitBtn.textContent : '';
       if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Submitting Enquiry...';
       }
-
-      setTimeout(() => {
+      try {
+        const res = await fetch('/api/public/enquiries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            full_name: document.getElementById('enqName').value.trim(),
+            phone_number: document.getElementById('enqPhone').value.trim(),
+            email_address: document.getElementById('enqEmail').value.trim(),
+            acquisition_mode: document.getElementById('enqPlan').value,
+            message: document.getElementById('enqMsg').value.trim() || `I would like to enquire about ${p.name}.`,
+            property_reference: p.id,
+            source: 'Public property enquiry'
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Unable to submit your enquiry.');
         enqForm.style.display = 'none';
         if (enqSuccess) enqSuccess.style.display = 'block';
-      }, 600);
+      } catch (error) {
+        alert(error.message || 'Unable to submit your enquiry. Please try again.');
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = originalLabel;
+        }
+      }
     });
   }
 

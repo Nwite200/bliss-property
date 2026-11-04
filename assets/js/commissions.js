@@ -36,8 +36,8 @@
     el('entryMarketerFilter').innerHTML = '<option value="">All marketers</option>';
     if (canManage() || me.role === 'Branch Manager') {
       try {
-        const staff = await S.fetchJson('/api/staff?role=Marketer&limit=100');
-        el('entryMarketerFilter').innerHTML = '<option value="">All marketers</option>' + (staff.staff || []).filter(u => u.is_active).map(u => `<option value="${u.id}">${S.escape(u.full_name)}</option>`).join('');
+        const staff = await S.fetchJson('/api/users?role=Marketer');
+        el('entryMarketerFilter').innerHTML = '<option value="">All marketers</option>' + (staff.users || []).map(u => `<option value="${u.id}">${S.escape(u.full_name)}</option>`).join('');
       } catch { /* optional */ }
     }
     if (!canManage()) {

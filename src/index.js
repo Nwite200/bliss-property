@@ -123,6 +123,8 @@ async function audit(env, actorId, action, targetType, targetId, metadata, branc
 }
 
 function csrfOk(request) {
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  if (fetchSite && !["same-origin", "same-site", "none"].includes(fetchSite)) return false;
   const origin = request.headers.get("Origin");
   const host = request.headers.get("Host");
   if (!origin) return true;
@@ -132,6 +134,36 @@ function csrfOk(request) {
   } catch {
     return false;
   }
+}
+
+function sanitizeFilename(name, fallback = "document") {
+  const base = String(name || fallback)
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_{2,}/g, "_")
+    .slice(0, 160);
+  return base || fallback;
+}
+
+function detectFileType(bytes) {
+  if (!bytes || bytes.length < 4) return null;
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "image/gif";
+  if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return "application/pdf";
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+      && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+  return null;
+}
+
+function clientIp(request) {
+  return request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "local";
+}
+
+async function recentAuditCount(env, action, targetId, minutes) {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS c FROM audit_logs WHERE action=? AND target_id=? AND created_at >= datetime('now', ?)"
+  ).bind(action, targetId, `-${minutes} minutes`).first();
+  return row ? Number(row.c || 0) : 0;
 }
 
 // Financial integer kobo helpers. Decimal strings are parsed directly so
@@ -717,6 +749,18 @@ async function buildReportDataset(env, actor, scope, filters) {
   const clientBinds = [...clientScope.binds];
   const branchFilter = ["Managing Director", "Finance Officer"].includes(scope.role) && filters.branch_id ? " AND c.assigned_branch_id=?" : "";
   if (branchFilter) clientBinds.push(Number(filters.branch_id));
+  let clientExtraFilter = "";
+  const clientExtraBinds = [];
+  if (["Managing Director", "Finance Officer", "Branch Manager"].includes(scope.role)) {
+    if (filters.marketer_id) {
+      clientExtraFilter += " AND c.original_marketer_id=?";
+      clientExtraBinds.push(Number(filters.marketer_id));
+    }
+    if (filters.team_id) {
+      clientExtraFilter += " AND EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id=c.original_marketer_id AND tm.team_id=?)";
+      clientExtraBinds.push(Number(filters.team_id));
+    }
+  }
   const commissionBinds = [...commissionScope.binds];
   let commissionExtra = "";
   if (["Managing Director", "Finance Officer"].includes(scope.role)) {
@@ -738,10 +782,10 @@ async function buildReportDataset(env, actor, scope, filters) {
       LEFT JOIN branches b ON b.id=c.assigned_branch_id
       LEFT JOIN users m ON m.id=c.original_marketer_id
       WHERE c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%'
-        AND c.status NOT IN ('Cancelled','Inactive') AND ${clientScope.clause}${branchFilter}
+        AND c.status NOT IN ('Cancelled','Inactive') AND ${clientScope.clause}${branchFilter}${clientExtraFilter}
         AND date(c.created_at) BETWEEN date(?) AND date(?)
       ORDER BY c.created_at DESC
-    `).bind(...clientBinds, range.from, range.to).all();
+    `).bind(...clientBinds, ...clientExtraBinds, range.from, range.to).all();
     const total = results.reduce((sum, row) => sum + toKobo(row.agreed_purchase_price || 0), 0);
     return {
       title: "Sales Report",
@@ -759,10 +803,10 @@ async function buildReportDataset(env, actor, scope, filters) {
       FROM payments p JOIN clients c ON c.id=p.client_id
       LEFT JOIN branches b ON b.id=c.assigned_branch_id
       WHERE p.status='verified' AND p.is_demo=0 AND p.currency='NGN'
-        AND ${clientScope.clause}${branchFilter}
+        AND ${clientScope.clause}${branchFilter}${clientExtraFilter}
         AND date(p.verified_at) BETWEEN date(?) AND date(?)
       ORDER BY p.verified_at DESC
-    `).bind(...clientBinds, range.from, range.to).all();
+    `).bind(...clientBinds, ...clientExtraBinds, range.from, range.to).all();
     const total = results.reduce((sum, row) => sum + Number(row.amount_kobo || 0), 0);
     return {
       title: "Collections Report",
@@ -782,9 +826,9 @@ async function buildReportDataset(env, actor, scope, filters) {
       FROM clients c LEFT JOIN branches b ON b.id=c.assigned_branch_id
       WHERE c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%'
         AND c.agreed_purchase_price IS NOT NULL AND c.agreed_purchase_price > 0
-        AND ${clientScope.clause}${branchFilter}
+        AND ${clientScope.clause}${branchFilter}${clientExtraFilter}
       ORDER BY c.agreed_purchase_price DESC
-    `).bind(...clientBinds).all();
+    `).bind(...clientBinds, ...clientExtraBinds).all();
     const rows = results.map(row => {
       const contract = toKobo(row.agreed_purchase_price || 0);
       const verified = Number(row.verified_kobo || 0);
@@ -1710,6 +1754,7 @@ async function ensureReceiptPdf(env, row) {
   const receiptStatus = String(summary.status || "").toLowerCase();
   if (!["verified", "reversed", "refunded"].includes(receiptStatus)) return null;
   const key = row.r2_key || `receipts/${summary.client_reference}/${summary.receipt_ref}.pdf`;
+  if (!key.startsWith("receipts/")) return null;
   if (!env.FILES) return null;
   try {
     const existing = await env.FILES.get(key);
@@ -2045,6 +2090,7 @@ async function dispatchPaymentReminders(env) {
 
 export default {
   async fetch(request, env) {
+    try {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -2068,6 +2114,80 @@ export default {
     }
 
     // =========================================================================
+    // PUBLIC ENQUIRIES
+    // =========================================================================
+    if (path === "/api/public/enquiries" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const body = await request.json();
+      const fullName = String(body?.full_name || "").trim();
+      const phone = String(body?.phone_number || "").trim();
+      const email = String(body?.email_address || "").trim().toLowerCase();
+      const message = String(body?.message || "").trim();
+      const source = String(body?.source || "Website enquiry").trim().slice(0, 80);
+      const acquisitionMode = String(body?.acquisition_mode || "").trim().slice(0, 80);
+      const branchName = String(body?.branch_name || "").trim();
+      const propertyReference = String(body?.property_reference || "").trim();
+      if (!fullName || fullName.length > 160) return json({ error: "A valid full name is required" }, 400);
+      if (!/^[+0-9()\s-]{7,25}$/.test(phone)) return json({ error: "A valid phone number is required" }, 400);
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: "A valid email address is required" }, 400);
+      if (!message || message.length > 3000) return json({ error: "A message of up to 3,000 characters is required" }, 400);
+
+      const enquiryIp = clientIp(request);
+      if (await recentAuditCount(env, "enquiry.attempt", `ip:${enquiryIp}`, 60) >= 10) {
+        return json({ error: "Too many enquiries. Please try again later." }, 429);
+      }
+      await audit(env, null, "enquiry.attempt", "enquiry", `ip:${enquiryIp}`, { source });
+
+      let property = null;
+      if (propertyReference) {
+        property = await env.DB.prepare("SELECT id, title, reference, branch_id FROM properties WHERE reference=? AND is_published=1 LIMIT 1")
+          .bind(propertyReference).first();
+      } else if (body?.property_id) {
+        property = await env.DB.prepare("SELECT id, title, reference, branch_id FROM properties WHERE id=? AND is_published=1 LIMIT 1")
+          .bind(Number(body.property_id)).first();
+      }
+
+      let branch = null;
+      if (property && property.branch_id) {
+        branch = await env.DB.prepare("SELECT id, name FROM branches WHERE id=?").bind(property.branch_id).first();
+      }
+      if (!branch && branchName) {
+        branch = await env.DB.prepare("SELECT id, name FROM branches WHERE name=?").bind(branchName).first();
+      }
+      if (!branch) {
+        branch = await env.DB.prepare("SELECT id, name FROM branches ORDER BY CASE WHEN name='Head Office' THEN 0 ELSE 1 END, id LIMIT 1").first();
+      }
+      if (!branch) return json({ error: "Enquiries are temporarily unavailable" }, 503);
+
+      const system = await env.DB.prepare(`
+        SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+        WHERE r.name='Managing Director' AND u.is_active=1 ORDER BY u.id LIMIT 1
+      `).first();
+      if (!system) return json({ error: "Enquiries are temporarily unavailable" }, 503);
+
+      const notes = [
+        message,
+        acquisitionMode ? `Preferred acquisition mode: ${acquisitionMode}` : "",
+        property ? `Property: ${property.title} (${property.reference})` : (propertyReference ? `Property reference supplied: ${propertyReference}` : ""),
+        branchName ? `Preferred branch: ${branchName}` : "",
+        `Source: ${source}`
+      ].filter(Boolean).join("\n").slice(0, 4000);
+      const reference = "LEAD-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 6).toUpperCase();
+      const res = await env.DB.prepare(`
+        INSERT INTO leads (lead_reference, full_name, phone_number, email_address, source, status, property_id,
+          assigned_marketer_id, team_lead_id, branch_id, estimated_value_kobo, notes, created_by)
+        VALUES (?, ?, ?, ?, ?, 'New Lead', ?, NULL, NULL, ?, 0, ?, ?)
+      `).bind(
+        reference, fullName, phone, email || null, source, property ? property.id : null,
+        branch.id, notes, system.id
+      ).run();
+      await audit(env, system.id, "lead.public_enquiry", "lead", String(res.meta.last_row_id), {
+        reference, source, branch_id: branch.id, property_id: property ? property.id : null
+      }, branch.id);
+      return json({ ok: true, reference });
+    }
+
+    // =========================================================================
     // PUBLIC CLIENT SIGN-UP
     // =========================================================================
     if (path === "/api/signup" && request.method === "POST") {
@@ -2088,6 +2208,15 @@ export default {
       }
       const normalizedEmail = String(email).trim().toLowerCase();
       const normalizedPhone = String(phone_number).trim();
+      const signupIp = clientIp(request);
+      if (await recentAuditCount(env, "signup.attempt", `ip:${signupIp}`, 60) >= 5) {
+        return json({ error: "Too many registration attempts. Please try again later." }, 429);
+      }
+      if (await recentAuditCount(env, "signup.attempt", `email:${normalizedEmail}`, 1440) >= 3) {
+        return json({ error: "Too many registration attempts for this email. Please try again later." }, 429);
+      }
+      await audit(env, null, "signup.attempt", "signup", `ip:${signupIp}`, { email: normalizedEmail });
+      await audit(env, null, "signup.attempt", "signup", `email:${normalizedEmail}`, { ip: signupIp });
       const existingUser = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=?").bind(normalizedEmail).first();
       if (existingUser) return json({ error: "An account with this email already exists" }, 409);
       const existingClient = await env.DB.prepare(
@@ -2218,6 +2347,9 @@ export default {
         return json({ error: "Invalid credentials" }, 401);
       }
 
+      // Rotate away any pre-existing browser session to prevent fixation.
+      const priorSession = parseCookies(request)[SESSION_COOKIE];
+      if (priorSession) await env.DB.prepare("DELETE FROM sessions WHERE id=?").bind(priorSession).run();
       const sess = await createSession(env, user.id);
       await env.DB.prepare("UPDATE users SET last_login_at=datetime('now') WHERE id=?").bind(user.id).run();
       await audit(env, user.id, "login.success", "user", String(user.id), { role: user.role_name });
@@ -2318,6 +2450,11 @@ export default {
       const body = await request.json();
       const { email } = body || {};
       if (!email) return json({ error: "Email required" }, 400);
+      const resetIp = clientIp(request);
+      if (await recentAuditCount(env, "password.reset_request", `ip:${resetIp}`, 15) >= 5) {
+        return json({ error: "Too many reset requests. Please try again later." }, 429);
+      }
+      await audit(env, null, "password.reset_request", "password_reset", `ip:${resetIp}`, { email: String(email).toLowerCase().trim() });
       const user = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=?").bind(email.toLowerCase().trim()).first();
       if (user) {
         const token = crypto.randomUUID();
@@ -2376,7 +2513,7 @@ export default {
     if (path === "/api/users" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager", "Finance Officer"].includes(actor.role_name)) {
+      if (!["Managing Director", "Branch Manager", "Finance Officer", "Team Lead", "Marketer"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
       }
       let role = url.searchParams.get("role");
@@ -2386,6 +2523,11 @@ export default {
       if (role) { where.push("r.name = ?"); binds.push(role); }
       if (branch) { where.push("u.branch_id = ?"); binds.push(branch); }
       if (actor.role_name === "Branch Manager") { where.push("u.branch_id = ?"); binds.push(actor.branch_id); }
+      if (["Team Lead", "Marketer"].includes(actor.role_name)) {
+        where.push("u.branch_id = ?");
+        binds.push(actor.branch_id);
+        if (!role) where.push("r.name IN ('Marketer','Team Lead')");
+      }
       const sql = `SELECT u.id, u.email, u.full_name, r.name AS role_name, u.branch_id, b.name AS branch_name FROM users u JOIN roles r ON r.id=u.role_id LEFT JOIN branches b ON b.id=u.branch_id WHERE ${where.join(" AND ")} ORDER BY u.id`;
       const { results } = await env.DB.prepare(sql).bind(...binds).all();
       return json({ users: results });
@@ -2546,13 +2688,18 @@ export default {
       const status = url.searchParams.get("status") || "";
       const branch = url.searchParams.get("branch") || "";
       const featured = url.searchParams.get("featured");
-      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
-      const limit = Math.min(50, parseInt(url.searchParams.get("limit") || "20", 10));
+      const published = url.searchParams.get("is_published");
+      const parsedPage = parseInt(url.searchParams.get("page") || "1", 10);
+      const parsedLimit = parseInt(url.searchParams.get("limit") || "20", 10);
+      const page = Number.isFinite(parsedPage) ? Math.max(1, parsedPage) : 1;
+      const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(50, parsedLimit)) : 20;
       const offset = (page - 1) * limit;
 
       let where = [];
       const binds = [];
       if (!actor || ["Client", "Marketer"].includes(actor.role_name)) where.push("p.is_published=1");
+      if (published === "1") where.push("p.is_published=1");
+      if (published === "0") where.push("p.is_published=0");
       if (q) { where.push("(p.title LIKE ? OR p.city LIKE ? OR p.state LIKE ?)"); binds.push(`%${q}%`, `%${q}%`, `%${q}%`); }
       if (category) { where.push("pc.name=?"); binds.push(category); }
       if (location) { where.push("(p.city=? OR p.state=?)"); binds.push(location, location); }
@@ -2579,7 +2726,9 @@ export default {
       const { results: images } = await env.DB.prepare("SELECT id, r2_key, is_main, sort_order FROM property_images WHERE property_id=? ORDER BY is_main DESC, sort_order").bind(id).all();
       // Internal property documents are never exposed to anonymous or client callers.
       let documents = [];
-      if (actor && actor.role_name !== "Client") {
+      const canSeeDocuments = actor && actor.role_name !== "Client"
+        && !(actor.role_name === "Branch Manager" && Number(prop.branch_id) !== Number(actor.branch_id));
+      if (canSeeDocuments) {
         const result = await env.DB.prepare("SELECT id, r2_key, filename FROM property_documents WHERE property_id=?").bind(id).all();
         documents = result.results;
       }
@@ -2752,8 +2901,10 @@ export default {
       const allowed = ["image/jpeg", "image/png", "image/webp", "image/gif"];
       if (!allowed.includes(file.type)) return json({ error: "Invalid file type" }, 400);
       if (file.size > 5 * 1024 * 1024) return json({ error: "File too large (5MB max)" }, 400);
-      const key = `properties/${id}/${crypto.randomUUID()}-${String(file.name || "image").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-      await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type } });
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (detectFileType(bytes) !== file.type) return json({ error: "File contents do not match the declared image type" }, 400);
+      const key = `properties/${id}/${crypto.randomUUID()}-${sanitizeFilename(file.name, "image")}`;
+      await env.FILES.put(key, bytes, { httpMetadata: { contentType: file.type } });
       const isMain = formData.get("is_main") === "1" ? 1 : 0;
       if (isMain) await env.DB.prepare("UPDATE property_images SET is_main=0 WHERE property_id=?").bind(id).run();
       const res = await env.DB.prepare("INSERT INTO property_images (property_id, r2_key, is_main) VALUES (?,?,?)")
@@ -2784,14 +2935,104 @@ export default {
       return json({ ok: true });
     }
 
-    // Serve public property images from R2. Receipts and other private
-    // objects are never exposed through this anonymous route.
+    // Staff-only internal property document download. Documents are never
+    // served through the anonymous /api/files route.
+    const docDownloadMatch = path.match(/^\/api\/properties\/(\d+)\/documents\/(\d+)\/download$/);
+    if (docDownloadMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const propertyId = docDownloadMatch[1];
+      const documentId = docDownloadMatch[2];
+      const doc = await env.DB.prepare(`
+        SELECT d.*, p.branch_id, p.is_published FROM property_documents d
+        JOIN properties p ON p.id=d.property_id
+        WHERE d.id=? AND d.property_id=?
+      `).bind(documentId, propertyId).first();
+      if (!doc) return json({ error: "Not found" }, 404);
+      if (actor.role_name === "Branch Manager" && Number(doc.branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      if (["Team Lead", "Marketer"].includes(actor.role_name) && !doc.is_published) {
+        return json({ error: "Not found" }, 404);
+      }
+      if (!doc.r2_key.startsWith("property-documents/")) return json({ error: "Not found" }, 404);
+      const obj = await env.FILES.get(doc.r2_key);
+      if (!obj) return json({ error: "Not found" }, 404);
+      const headers = new Headers();
+      if (typeof obj.writeHttpMetadata === "function") obj.writeHttpMetadata(headers);
+      headers.set("Content-Disposition", `attachment; filename="${sanitizeFilename(doc.filename, "property-document")}"`);
+      headers.set("Cache-Control", "private, no-store");
+      headers.set("X-Content-Type-Options", "nosniff");
+      return new Response(obj.body, { headers });
+    }
+
+    const docDeleteMatch = path.match(/^\/api\/properties\/(\d+)\/documents\/(\d+)$/);
+    if (docDeleteMatch && request.method === "DELETE") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const propertyId = docDeleteMatch[1];
+      const documentId = docDeleteMatch[2];
+      const doc = await env.DB.prepare(`
+        SELECT d.*, p.branch_id FROM property_documents d
+        JOIN properties p ON p.id=d.property_id
+        WHERE d.id=? AND d.property_id=?
+      `).bind(documentId, propertyId).first();
+      if (!doc) return json({ error: "Not found" }, 404);
+      if (actor.role_name === "Branch Manager" && Number(doc.branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      if (env.FILES.delete) await env.FILES.delete(doc.r2_key);
+      await env.DB.prepare("DELETE FROM property_documents WHERE id=?").bind(doc.id).run();
+      await audit(env, actor.id, "property.document.delete", "property", propertyId, { key: doc.r2_key }, doc.branch_id);
+      return json({ ok: true });
+    }
+
+    // ---- Property document upload (private R2) ----
+    const docUploadMatch = path.match(/^\/api\/properties\/(\d+)\/documents$/);
+    if (docUploadMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const propertyId = docUploadMatch[1];
+      const property = await env.DB.prepare("SELECT branch_id FROM properties WHERE id=?").bind(propertyId).first();
+      if (!property) return json({ error: "Not found" }, 404);
+      if (actor.role_name === "Branch Manager" && Number(property.branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Cross-branch forbidden" }, 403);
+      }
+      const formData = await request.formData();
+      const file = formData.get("file");
+      if (!file || typeof file === "string") return json({ error: "No file" }, 400);
+      const allowed = ["application/pdf", "image/jpeg", "image/png"];
+      if (!allowed.includes(file.type)) return json({ error: "Only PDF, JPEG and PNG documents are accepted" }, 400);
+      if (file.size > 10 * 1024 * 1024) return json({ error: "File too large (10MB max)" }, 400);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (detectFileType(bytes) !== file.type) return json({ error: "File contents do not match the declared document type" }, 400);
+      const filename = sanitizeFilename(file.name, "property-document");
+      const key = `property-documents/${propertyId}/${crypto.randomUUID()}-${filename}`;
+      await env.FILES.put(key, bytes, { httpMetadata: { contentType: file.type } });
+      const res = await env.DB.prepare("INSERT INTO property_documents (property_id, r2_key, filename) VALUES (?,?,?)")
+        .bind(propertyId, key, filename).run();
+      await audit(env, actor.id, "property.document.upload", "property", propertyId, { key, filename }, property.branch_id);
+      return json({ ok: true, document_id: res.meta.last_row_id, filename, key });
+    }
+
+    // Serve public property images from R2. Receipts, reports and property
+    // documents are never exposed through this anonymous route.
     const fileMatch = path.match(/^\/api\/files\/(.+)$/);
     if (fileMatch && request.method === "GET") {
-      const key = decodeURIComponent(fileMatch[1]);
+      let key;
+      try {
+        key = decodeURIComponent(fileMatch[1]);
+      } catch {
+        return new Response("Not found", { status: 404 });
+      }
       if (!key.startsWith("properties/")) return new Response("Not found", { status: 404 });
       const registered = await env.DB.prepare(`
-        SELECT pi.id, p.is_published FROM property_images pi
+        SELECT pi.id, p.is_published, p.branch_id FROM property_images pi
         JOIN properties p ON p.id=pi.property_id
         WHERE pi.r2_key=? LIMIT 1
       `).bind(key).first();
@@ -2799,12 +3040,16 @@ export default {
       if (!registered.is_published) {
         const actor = await getSessionUser(env, request);
         if (!actor || actor.role_name === "Client") return new Response("Not found", { status: 404 });
+        if (actor.role_name === "Branch Manager" && Number(registered.branch_id) !== Number(actor.branch_id)) {
+          return new Response("Not found", { status: 404 });
+        }
+        if (["Team Lead", "Marketer"].includes(actor.role_name)) return new Response("Not found", { status: 404 });
       }
       const obj = await env.FILES.get(key);
       if (!obj) return new Response("Not found", { status: 404 });
       const headers = new Headers();
       if (typeof obj.writeHttpMetadata === "function") obj.writeHttpMetadata(headers);
-      headers.set("Cache-Control", "public, max-age=3600");
+      headers.set("Cache-Control", registered.is_published ? "public, max-age=3600" : "private, no-store");
       headers.set("X-Content-Type-Options", "nosniff");
       return new Response(obj.body, { headers });
     }
@@ -3660,7 +3905,7 @@ export default {
         status: 200,
         headers: {
           "Content-Type": "application/pdf",
-          "Content-Disposition": `attachment; filename="${row.receipt_ref}.pdf"`,
+          "Content-Disposition": `attachment; filename="${sanitizeFilename(row.receipt_ref, "receipt")}.pdf"`,
           "Cache-Control": "private, no-store"
         }
       });
@@ -3701,7 +3946,7 @@ export default {
         status: 200,
         headers: {
           "Content-Type": "application/pdf",
-          "Content-Disposition": `attachment; filename="${row.receipt_ref}.pdf"`,
+          "Content-Disposition": `attachment; filename="${sanitizeFilename(row.receipt_ref, "receipt")}.pdf"`,
           "Cache-Control": "private, no-store"
         }
       });
@@ -6003,6 +6248,7 @@ export default {
       `).bind(commissionReceiptMatch[1], ...scoped.binds).first();
       if (!payment) return json({ error: "Commission receipt not found" }, 404);
       let key = payment.r2_key;
+      if (key && !key.startsWith("commission-receipts/")) return json({ error: "Commission receipt unavailable" }, 404);
       if (!key) {
         const receiptRef = payment.receipt_ref || ("CRCP-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 6).toUpperCase());
         const logoBytes = await getReceiptLogoBytes(env);
@@ -6023,7 +6269,7 @@ export default {
         status: 200,
         headers: {
           "Content-Type": "application/pdf",
-          "Content-Disposition": `attachment; filename="${payment.receipt_ref || payment.commission_ref}.pdf"`,
+          "Content-Disposition": `attachment; filename="${sanitizeFilename(payment.receipt_ref || payment.commission_ref, "commission-receipt")}.pdf"`,
           "Cache-Control": "private, no-store"
         }
       });
@@ -6313,6 +6559,11 @@ export default {
 
     // Static Assets Fallback
     return env.ASSETS.fetch(request);
+    } catch (error) {
+      if (error instanceof SyntaxError) return json({ error: "Invalid JSON request body" }, 400);
+      console.error("Unhandled request error", error);
+      return json({ error: "Internal server error" }, 500);
+    }
   },
 
   // Cloudflare Queues consumer: records configurable email/WhatsApp delivery attempts.

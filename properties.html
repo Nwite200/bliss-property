@@ -52,18 +52,21 @@
             <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="publishedFilter"> Published</label>
           </div>
         </div>
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Reference</th><th>Title</th><th>Category</th><th>Price (₦)</th><th>Branch</th><th>Status</th><th>Featured</th><th>Published</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="propertyTableBody"></tbody>
-        </table>
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Reference</th><th>Title</th><th>Category</th><th>Price (₦)</th><th>Branch</th><th>Status</th><th>Featured</th><th>Published</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="propertyTableBody"></tbody>
+          </table>
+        </div>
         <div id="pagination" style="display:flex;justify-content:center;gap:6px;margin-top:12px"></div>
       </div>
     </main>
   </div>
   <script src="assets/js/properties.js"></script>
+  <script src="assets/js/mobile-nav.js"></script>
 </body>
 </html>

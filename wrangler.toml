@@ -1,6 +1,8 @@
 name = "bliss-legacy-limited"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
+workers_dev = true
+preview_urls = false
 
 [assets]
 directory = "./"
@@ -9,7 +11,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "bliss-legacy-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "f0252b4a-20ac-4706-a269-8281c3838db5"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
@@ -18,7 +20,7 @@ bucket_name = "bliss-legacy-files"
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "424f8f6d26624f0687508339b20b9004"
 
 [[queues.producers]]
 binding = "TASKS"
@@ -33,4 +35,8 @@ max_batch_timeout = 5
 crons = ["0 6 * * *"]
 
 [vars]
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
+DEMO_MODE_ENABLED = "0"
+
+[observability]
+enabled = true

@@ -6,6 +6,11 @@ async function fetchJson(path, opts = {}) {
   return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
 }
 function money(n) { return n != null ? "₦" + Number(n).toLocaleString("en-NG") : "-"; }
+function esc(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
 async function load() {
   const { data } = await fetchJson("/clients/" + id);
   if (!data.client) { document.body.innerHTML = "<p>Client not found.</p><a href='clients.html'>Back</a>"; return; }
@@ -41,8 +46,8 @@ async function load() {
         <div style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px">
           <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
             <div>
-              <strong>${p.title}</strong>
-              <div style="font-size:11px;color:var(--muted);margin-top:2px">${p.reference} · ${p.category_name || "Property"} · ${p.location || ""}</div>
+              <strong>${esc(p.title)}</strong>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(p.reference)} · ${esc(p.category_name || "Property")} · ${esc(p.location || "")}</div>
             </div>
             <div style="font-size:11px;color:var(--muted);text-align:right">
               ${p.verified_payments_count || 0} verified payment(s)<br>
@@ -58,7 +63,7 @@ async function load() {
             <div style="height:100%;width:${Number(p.progress || 0)}%;background:var(--green)"></div>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px">
-            <span>${p.allocation_status || p.status || "Active"}</span>
+            <span>${esc(p.allocation_status || p.status || "Active")}</span>
             <strong style="color:var(--green-dark)">${Number(p.progress || 0)}% complete</strong>
           </div>
         </div>`).join("");
@@ -66,9 +71,30 @@ async function load() {
   }
   document.getElementById("statusSelect").value = c.status;
   document.getElementById("saveStatus").onclick = async () => {
-    await fetchJson("/clients/" + id + "/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: document.getElementById("statusSelect").value }) });
+    const result = await fetchJson("/clients/" + id + "/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: document.getElementById("statusSelect").value }) });
+    if (!result.ok) {
+      alert(result.data.error || "Unable to update status.");
+      return;
+    }
     location.reload();
   };
+
+  const addNoteBtn = document.getElementById("addNoteBtn");
+  if (addNoteBtn) {
+    addNoteBtn.onclick = async () => {
+      const input = document.getElementById("noteInput");
+      const note = (input.value || "").trim();
+      if (!note) { alert("Enter a note first."); return; }
+      addNoteBtn.disabled = true;
+      const result = await fetchJson("/clients/" + id + "/notes", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ note })
+      });
+      addNoteBtn.disabled = false;
+      if (!result.ok) { alert(result.data.error || "Unable to add note."); return; }
+      input.value = "";
+      location.reload();
+    };
+  }
 
   // Assignment history
   const assignmentHistory = data.assignment_history || data.history;
@@ -77,8 +103,8 @@ async function load() {
     el.innerHTML = assignmentHistory.map(h => `
       <div style="padding:6px 0;border-bottom:1px solid var(--line)">
         <div style="font-size:11px;color:var(--muted)">${new Date(h.changed_at).toLocaleString()}</div>
-        <div><span style="color:var(--green-dark)">→</span> ${h.new_manager_name || "-"} · ${h.new_branch_id ? h.new_branch_id : "-"}</div>
-        <div style="font-size:11px">Authorized by ${h.authorized_by_name || "-"} · ${h.reason || ""}</div>
+        <div><span style="color:var(--green-dark)">→</span> ${esc(h.new_manager_name || "-")} · ${esc(h.new_branch_id || "-")}</div>
+        <div style="font-size:11px">Authorized by ${esc(h.authorized_by_name || "-")} · ${esc(h.reason || "")}</div>
       </div>`).join("");
   }
 
@@ -88,14 +114,14 @@ async function load() {
     el.innerHTML = data.status_history.map(h => `
       <div style="padding:6px 0;border-bottom:1px solid var(--line)">
         <div style="font-size:11px;color:var(--muted)">${new Date(h.changed_at).toLocaleString()}</div>
-        <div>${h.old_status || "-"} → <strong>${h.new_status}</strong> <span style="color:var(--muted);font-size:11px">by ${h.changed_by_name || "-"}</span></div>
+        <div>${esc(h.old_status || "-")} → <strong>${esc(h.new_status)}</strong> <span style="color:var(--muted);font-size:11px">by ${esc(h.changed_by_name || "-")}</span></div>
       </div>`).join("");
   }
 
   // Notes
   if (data.notes) {
     const el = document.getElementById("notesList");
-    el.innerHTML = data.notes.map(n => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="font-size:11px;color:var(--muted)">${new Date(n.created_at).toLocaleString()}</div><div style="padding-left:12px">${n.note}</div></div>`).join("");
+    el.innerHTML = data.notes.map(n => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="font-size:11px;color:var(--muted)">${new Date(n.created_at).toLocaleString()}</div><div style="padding-left:12px">${esc(n.note)}</div></div>`).join("");
   }
 
   document.getElementById("logoutBtn").addEventListener("click", async (e) => {

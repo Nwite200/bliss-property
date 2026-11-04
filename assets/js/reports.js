@@ -38,8 +38,8 @@
       } catch { el('reportTeamGroup').style.display = 'none'; }
       if (['Managing Director', 'Finance Officer', 'Branch Manager'].includes(me.role)) {
         try {
-          const staff = await S.fetchJson('/api/staff?role=Marketer&limit=100');
-          el('reportMarketer').innerHTML = '<option value="">All marketers</option>' + (staff.staff || []).filter(u => u.is_active).map(u => `<option value="${u.id}">${S.escape(u.full_name)}</option>`).join('');
+          const staff = await S.fetchJson('/api/users?role=Marketer');
+          el('reportMarketer').innerHTML = '<option value="">All marketers</option>' + (staff.users || []).map(u => `<option value="${u.id}">${S.escape(u.full_name)}</option>`).join('');
         } catch { el('reportMarketerGroup').style.display = 'none'; }
       } else {
         el('reportMarketerGroup').style.display = 'none';

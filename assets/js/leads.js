@@ -413,5 +413,7 @@
       page = 1;
       await loadLeads();
     }
+    const linkedLead = Number(S.query().get("lead") || 0);
+    if (linkedLead) await openLeadDetail(linkedLead);
   });
 })();

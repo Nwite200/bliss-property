@@ -73,11 +73,11 @@ Bliss.renderHeader = function(activePage) {
         <a href="${homePrefix}#about" class="${activePage === 'about' ? 'active' : ''}">About Us</a>
         <a href="${homePrefix}#branches" class="${activePage === 'branches' ? 'active' : ''}">Our Branches</a>
         <a href="${homePrefix}#contact" class="${activePage === 'contact' ? 'active' : ''}">Contact</a>
-        <a href="login.html" class="nav-login-mobile">Client Login</a>
+        <a href="client-login.html" class="nav-login-mobile">Client Login</a>
       </nav>
 
       <div class="nav-actions">
-        <a href="login.html" class="btn btn-login" title="Client & Marketer Portal">Client Login</a>
+        <a href="client-login.html" class="btn btn-login" title="Client Portal">Client Login</a>
         <a href="${homePrefix}#properties" class="btn btn-green btn-nav-cta">Explore Properties</a>
         <button class="menu-btn" id="menuBtn" aria-label="Toggle navigation menu" aria-expanded="false">
           <span class="menu-bar"></span>

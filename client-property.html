@@ -127,6 +127,10 @@
       .showcase-gallery { grid-template-columns: 1fr; height: 260px; }
       .purchase-parameters-grid { grid-template-columns: 1fr 1fr; }
     }
+    @media (max-width: 640px) {
+      .portal-main { padding: 20px 16px; }
+      .purchase-parameters-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -260,5 +264,6 @@
       });
     });
   </script>
+  <script src="assets/js/mobile-nav.js"></script>
 </body>
 </html>
