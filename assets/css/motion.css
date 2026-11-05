@@ -1,14 +1,13 @@
-/* Bliss Legacy Limited — logo intro and view transitions.
+/* Bliss Legacy Limited — branded logo intro.
    Front-end only. No worker, auth or data-loading behaviour is changed. */
 
 :root {
-  --bliss-motion-duration: 280ms;
-  --bliss-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --bliss-intro-in: 520ms;
-  --bliss-intro-out: 480ms;
+  --bliss-intro-in: 600ms;
+  --bliss-intro-out: 600ms;
+  --bliss-intro-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* The intro overlay is fixed and never changes document flow. */
+/* Fixed overlay: no document flow, no layout shift, no click blocking. */
 .bliss-intro {
   position: fixed;
   inset: 0;
@@ -45,11 +44,11 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  transform: scale(0.96);
   opacity: 0;
+  transform: scale(0.96);
   transition:
     opacity var(--bliss-intro-in) ease,
-    transform var(--bliss-intro-in) var(--bliss-motion-ease);
+    transform var(--bliss-intro-in) var(--bliss-intro-ease);
   will-change: transform, opacity;
 }
 
@@ -59,8 +58,8 @@
 }
 
 .bliss-intro.is-leaving .bliss-intro__stage {
-  opacity: 0.92;
-  transform: scale(1.012);
+  opacity: 0.94;
+  transform: scale(1.01);
 }
 
 .bliss-intro__logo {
@@ -72,6 +71,24 @@
   filter: drop-shadow(0 18px 38px rgba(34, 43, 36, 0.10));
 }
 
+.bliss-intro__fallback {
+  display: none;
+  font-family: var(--font-display, "Manrope", sans-serif);
+  font-size: clamp(22px, 5vw, 42px);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #00b522;
+  text-align: center;
+}
+
+.bliss-intro.has-logo-error .bliss-intro__logo {
+  display: none;
+}
+
+.bliss-intro.has-logo-error .bliss-intro__fallback {
+  display: block;
+}
+
 @media (max-width: 640px) {
   .bliss-intro__logo {
     width: min(80vw, 360px);
@@ -79,51 +96,15 @@
   }
 }
 
-/* Landing/public content transition. */
-main.bliss-view-enter {
-  animation: bliss-view-in var(--bliss-motion-duration) var(--bliss-motion-ease) both;
-}
-
-/* Dashboard: animate the main content children, never the sidebar.
-   .dash-top is the dashboard header and remains visually static. */
-.dash-main.bliss-view-enter > :not(.dash-top) {
-  animation: bliss-view-in var(--bliss-motion-duration) var(--bliss-motion-ease) both;
-}
-
-/* Client portal keeps its sidebar static and animates only the working area. */
-.portal-main.bliss-view-enter {
-  animation: bliss-view-in var(--bliss-motion-duration) var(--bliss-motion-ease) both;
-}
-
-@keyframes bliss-view-in {
-  from {
-    opacity: 0.01;
-    transform: translate3d(0, 5px, 0);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   :root {
-    --bliss-motion-duration: 1ms;
-    --bliss-intro-in: 1ms;
-    --bliss-intro-out: 1ms;
+    --bliss-intro-in: 120ms;
+    --bliss-intro-out: 120ms;
   }
 
-  .bliss-intro,
   .bliss-intro__stage,
-  .bliss-intro__logo {
-    transition: none !important;
-    animation: none !important;
+  .bliss-intro.is-visible .bliss-intro__stage,
+  .bliss-intro.is-leaving .bliss-intro__stage {
     transform: none !important;
-  }
-
-  main.bliss-view-enter,
-  .dash-main.bliss-view-enter > :not(.dash-top),
-  .portal-main.bliss-view-enter {
-    animation: none !important;
   }
 }

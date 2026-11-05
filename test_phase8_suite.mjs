@@ -403,18 +403,19 @@ await test('frontend integration has no /api/api paths and public enquiries are 
   }
 });
 
-await test('logo intro and page transitions are shared across every page', async () => {
+await test('single logo intro replays on navigation, refresh and Back/Forward', async () => {
   const motionJs = readFileSync('assets/js/motion.js', 'utf8');
   const motionCss = readFileSync('assets/css/motion.css', 'utf8');
-  assert(motionJs.includes('bliss_intro_played_v1'), 'intro session key missing');
-  assert(motionJs.includes('sessionStorage.setItem'), 'intro does not set its session flag at start');
-  assert(motionJs.includes('prefers-reduced-motion'), 'intro does not respect reduced motion');
-  assert(motionJs.includes('INTRO_LEAVE_AT = 1500') && motionJs.includes('INTRO_REMOVE_AT = 2010'), 'intro timing is not in the 1.8–2.5s window');
-  assert(motionJs.includes('finishIntro(true)'), 'intro cannot be dismissed immediately');
-  assert(motionJs.includes('removeChild'), 'intro overlay is not removed from the DOM');
-  assert(motionCss.includes('main.bliss-view-enter'), 'landing page transition selector missing');
-  assert(motionCss.includes('.dash-main.bliss-view-enter > :not(.dash-top)'), 'dashboard transition must exclude the static header');
-  assert(motionCss.includes('.portal-main.bliss-view-enter'), 'client portal transition selector missing');
+  assert(!motionJs.includes('sessionStorage'), 'persistent once-per-session intro logic must be removed');
+  assert(motionJs.includes('fadeIn: 600') && motionJs.includes('hold: 1400') && motionJs.includes('fadeOut: 600'), 'intro timing must be 600/1400/600 ms');
+  assert(motionJs.includes('failsafe: 3400'), 'intro failsafe timeout missing');
+  assert(motionJs.includes("addEventListener(\"pageshow\""), 'Back/Forward pageshow replay missing');
+  assert(motionJs.includes("addEventListener(\"popstate\""), 'Back/Forward popstate replay missing');
+  assert(motionJs.includes("event.key !== \"Escape\"") && motionJs.includes("event.key !== \"Enter\""), 'Escape/Enter skip missing');
+  assert(motionJs.includes('activeRun') && motionJs.includes('runCounter'), 'single-run navigation lock missing');
+  assert(motionJs.includes('has-logo-error'), 'logo failure fallback missing');
+  assert(!motionCss.includes('bliss-view-enter'), 'separate page-transition system must be removed');
+  assert(motionCss.includes('.bliss-intro') && motionCss.includes('has-logo-error'), 'intro visual/fallback styles missing');
   assert(motionCss.includes('@media (prefers-reduced-motion: reduce)'), 'CSS reduced-motion fallback missing');
   for (const file of readdirSync('.').filter(name => name.endsWith('.html'))) {
     const html = readFileSync(file, 'utf8');

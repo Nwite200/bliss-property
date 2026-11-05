@@ -1,15 +1,22 @@
-// Bliss Legacy Limited — premium logo intro and subtle view transitions.
-// Front-end only. This file does not touch auth, API calls, forms or data.
+// Bliss Legacy Limited — single global logo-intro animation.
+// Replays on every navigation/render of a page, Back/Forward restores, direct
+// URLs and refreshes. Front-end only: no auth, API or form behaviour is changed.
 (function () {
   "use strict";
 
-  var INTRO_KEY = "bliss_intro_played_v1";
   var LOGO_SRC = "assets/images/bliss-legacy-logo.png";
-  var INTRO_LEAVE_AT = 1500;
-  var INTRO_REMOVE_AT = 2010;
-  var INTRO_FAILSAFE_AT = 2900;
+  var TIMINGS = {
+    fadeIn: 600,
+    hold: 1400,
+    fadeOut: 600,
+    failsafe: 3400,
+    reducedFadeIn: 120,
+    reducedHold: 280,
+    reducedFadeOut: 120,
+    reducedFailsafe: 900,
+    skipFadeOut: 220
+  };
 
-  var root = document.documentElement;
   var reduceMotion = false;
   try {
     reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -17,69 +24,56 @@
     reduceMotion = false;
   }
 
-  var path = String(window.location.pathname || "/").replace(/\/+$/, "") || "/";
-  var authPage = /(?:^|\/)(login|client-login|signup|forgot-password|client-register)(?:\.html)?$/i.test(path);
-  var introEligible = !authPage;
+  var root = document.documentElement;
+  var activeRun = null;
+  var runCounter = 0;
+  var lastStartAt = 0;
+  var startedOnThisDocument = false;
 
-  var intro = null;
-  var introStarted = false;
-  var introFinished = false;
-  var introTimers = [];
-  var transitionTimer = null;
-  var interactionEvents = ["pointerdown", "touchstart", "keydown", "wheel"];
-
-  function storageGet() {
-    try {
-      return window.sessionStorage.getItem(INTRO_KEY) === "1";
-    } catch (error) {
-      return false;
-    }
+  function timing() {
+    return reduceMotion
+      ? {
+          fadeIn: TIMINGS.reducedFadeIn,
+          hold: TIMINGS.reducedHold,
+          fadeOut: TIMINGS.reducedFadeOut,
+          failsafe: TIMINGS.reducedFailsafe
+        }
+      : TIMINGS;
   }
 
-  function storageSet() {
-    try {
-      window.sessionStorage.setItem(INTRO_KEY, "1");
-    } catch (error) {
-      /* Private mode or blocked storage: intro may repeat; never break the page. */
-    }
-  }
-
-  function clearIntroTimers() {
-    introTimers.forEach(function (timer) { window.clearTimeout(timer); });
-    introTimers = [];
-  }
-
-  function removeInteractionListeners() {
-    interactionEvents.forEach(function (name) {
-      document.removeEventListener(name, onInteraction, true);
+  function clearRun(run, removeNow) {
+    if (!run) return;
+    run.timers.forEach(function (timer) { window.clearTimeout(timer); });
+    run.timers = [];
+    run.interactions.forEach(function (entry) {
+      document.removeEventListener(entry.name, entry.handler, { capture: true });
     });
+    run.interactions = [];
+    if (run.overlay && run.overlay.parentNode) {
+      if (removeNow) {
+        run.overlay.parentNode.removeChild(run.overlay);
+      } else {
+        run.overlay.classList.remove("is-visible");
+        run.overlay.classList.add("is-leaving");
+      }
+    }
   }
 
-  function schedule(fn, delay) {
-    var timer = window.setTimeout(fn, delay);
-    introTimers.push(timer);
-    return timer;
+  function finishRun(run, immediate) {
+    if (!run || run.finished) return;
+    run.finished = true;
+    var t = timing();
+    clearRun(run, false);
+    var delay = reduceMotion ? 1 : (immediate ? TIMINGS.skipFadeOut : t.fadeOut);
+    var timer = window.setTimeout(function () {
+      if (run.overlay && run.overlay.parentNode) run.overlay.parentNode.removeChild(run.overlay);
+      run.overlay = null;
+    }, delay);
+    run.timers.push(timer);
+    if (activeRun === run) activeRun = null;
   }
 
-  function finishIntro(immediate) {
-    if (!intro || introFinished) return;
-    introFinished = true;
-    clearIntroTimers();
-    removeInteractionListeners();
-    intro.classList.remove("is-visible");
-    intro.classList.add("is-leaving");
-    var delay = immediate ? 180 : 500;
-    schedule(function () {
-      if (intro && intro.parentNode) intro.parentNode.removeChild(intro);
-      intro = null;
-    }, reduceMotion ? 1 : delay);
-  }
-
-  function onInteraction() {
-    finishIntro(true);
-  }
-
-  function buildIntro() {
+  function createOverlay() {
     var overlay = document.createElement("div");
     overlay.className = "bliss-intro";
     overlay.setAttribute("aria-hidden", "true");
@@ -96,129 +90,150 @@
     image.height = 1024;
     image.decoding = "async";
     image.onerror = function () {
-      finishIntro(true);
+      overlay.classList.add("has-logo-error");
     };
 
+    var fallback = document.createElement("div");
+    fallback.className = "bliss-intro__fallback";
+    fallback.textContent = "BLISS LEGACY LIMITED";
+
     stage.appendChild(image);
+    stage.appendChild(fallback);
     overlay.appendChild(stage);
     return overlay;
   }
 
-  function startIntro() {
-    if (introStarted) return;
-    introStarted = true;
-    storageSet();
+  function skipOnInteraction(event) {
+    if (event && event.type === "keydown") {
+      if (event.key !== "Escape" && event.key !== "Enter") return;
+    }
+    if (activeRun) finishRun(activeRun, true);
+  }
 
-    intro = buildIntro();
-    root.appendChild(intro);
+  function addInteractionSkips(run) {
+    ["pointerdown", "touchstart", "keydown"].forEach(function (name) {
+      var handler = function (event) { skipOnInteraction(event); };
+      document.addEventListener(name, handler, { capture: true, passive: true });
+      run.interactions.push({ name: name, handler: handler });
+    });
+  }
 
-    // One frame after insertion so the opacity/scale transition starts cleanly.
+  function runIntro(options) {
+    var opts = options || {};
+    var now = Date.now();
+
+    // Router-level dedupe: pageshow + popstate can both fire for one Back
+    // navigation. If an intro just started, do not stack a second one.
+    if (opts.dedupe && activeRun && now - lastStartAt < 350) return;
+
+    // A newer navigation always wins. Cancel the previous run immediately.
+    if (activeRun) {
+      var previous = activeRun;
+      activeRun = null;
+      clearRun(previous, true);
+    }
+
+    var token = ++runCounter;
+    lastStartAt = now;
+    var t = timing();
+    var overlay = createOverlay();
+    var run = {
+      token: token,
+      overlay: overlay,
+      timers: [],
+      interactions: [],
+      finished: false
+    };
+    activeRun = run;
+    startedOnThisDocument = true;
+
+    root.appendChild(overlay);
+    run.interactions = [];
+
     window.requestAnimationFrame(function () {
-      if (!intro) return;
+      if (run.token !== runCounter || !run.overlay) return;
       window.requestAnimationFrame(function () {
-        if (intro) intro.classList.add("is-visible");
+        if (run.token === runCounter && run.overlay) run.overlay.classList.add("is-visible");
       });
     });
 
-    interactionEvents.forEach(function (name) {
-      document.addEventListener(name, onInteraction, { capture: true, passive: true });
-    });
+    addInteractionSkips(run);
 
-    schedule(function () {
-      if (intro) intro.classList.add("is-leaving");
-    }, INTRO_LEAVE_AT);
-
-    schedule(function () {
-      if (intro && intro.parentNode) intro.parentNode.removeChild(intro);
-      intro = null;
-      removeInteractionListeners();
-    }, INTRO_REMOVE_AT);
-
-    // Failsafe: the overlay always disappears even if an asset or animation fails.
-    schedule(function () {
-      finishIntro(true);
-    }, INTRO_FAILSAFE_AT);
-  }
-
-  function transitionTarget() {
-    return document.querySelector("main.dash-main") ||
-      document.querySelector("main.portal-main") ||
-      document.querySelector("main");
-  }
-
-  function runViewTransition() {
-    if (reduceMotion) return;
-    var target = transitionTarget();
-    if (!target) return;
-
-    if (transitionTimer) {
-      window.clearTimeout(transitionTimer);
-      transitionTimer = null;
+    function schedule(fn, delay) {
+      var timer = window.setTimeout(function () {
+        if (run.token !== runCounter || run.finished) return;
+        fn();
+      }, delay);
+      run.timers.push(timer);
     }
 
-    target.classList.remove("bliss-view-enter");
-    // Force a style flush so rapid clicks restart the same short transition
-    // instead of queuing animations.
-    void target.offsetWidth;
-    target.classList.add("bliss-view-enter");
+    schedule(function () {
+      if (run.overlay) run.overlay.classList.add("is-leaving");
+    }, t.fadeIn + t.hold);
 
-    transitionTimer = window.setTimeout(function () {
-      target.classList.remove("bliss-view-enter");
-      transitionTimer = null;
-    }, 340);
+    schedule(function () {
+      if (run.overlay && run.overlay.parentNode) run.overlay.parentNode.removeChild(run.overlay);
+      run.overlay = null;
+      if (activeRun === run) activeRun = null;
+    }, t.fadeIn + t.hold + t.fadeOut);
+
+    schedule(function () {
+      finishRun(run, true);
+    }, t.failsafe);
   }
 
   function isNonViewClick(target) {
-    if (!target || !target.closest) return false;
+    if (!target || !target.closest) return true;
     if (target.closest(".modal, .modal-backdrop, [role='dialog'], [data-close-modal]")) return true;
     if (target.closest("input, select, textarea, label")) return true;
     var button = target.closest("button");
-    if (button && (button.type === "submit" || button.getAttribute("data-no-transition") !== null)) return true;
+    if (button && (button.type === "submit" || button.hasAttribute("data-no-transition"))) return true;
     return false;
   }
 
   function onDocumentClick(event) {
-    if (introStarted) finishIntro(true);
     if (isNonViewClick(event.target)) return;
 
-    var tab = event.target.closest("[role='tab'], .tab, .tab-btn, .tab-link, [data-tab], [data-view]");
+    var tab = event.target.closest("[role='tab'], .tab, .tab-btn, .tab-link, [data-tab], [data-view], [data-section]");
     var pageControl = event.target.closest(".pagination a, .pagination button, #pagination a, #pagination button, [data-page]");
-    if (tab || pageControl) {
-      window.setTimeout(runViewTransition, 0);
+    var hashLink = event.target.closest("a[href]");
+    var isHashView = false;
+    if (hashLink) {
+      var href = hashLink.getAttribute("href") || "";
+      isHashView = href.charAt(0) === "#" && href.length > 1;
+    }
+
+    if (tab || pageControl || isHashView) {
+      // One animation for the click that changed the visible view.
+      window.setTimeout(function () { runIntro({ source: "view-change" }); }, 0);
     }
   }
 
-  function onDocumentKeydown(event) {
-    if (introStarted) finishIntro(true);
-  }
-
-  function onAnchorClick(event) {
-    var anchor = event.target.closest ? event.target.closest("a[href]") : null;
-    if (!anchor) return;
-    var href = anchor.getAttribute("href") || "";
-    if (href.charAt(0) === "#" && href.length > 1) {
-      window.setTimeout(runViewTransition, 0);
+  function onPageshow(event) {
+    if (event.persisted) {
+      // Back/Forward from the bfcache: the document scripts do not re-run.
+      runIntro({ source: "bfcache", dedupe: true });
+      return;
     }
+    if (!startedOnThisDocument) runIntro({ source: "pageshow", dedupe: true });
   }
 
-  if (introEligible && !reduceMotion && !storageGet()) {
-    startIntro();
+  function onPopstate() {
+    window.setTimeout(function () {
+      runIntro({ source: "popstate", dedupe: true });
+    }, 0);
   }
 
   document.addEventListener("click", onDocumentClick, true);
-  document.addEventListener("keydown", onDocumentKeydown, true);
-  document.addEventListener("click", onAnchorClick, true);
+  window.addEventListener("pageshow", onPageshow);
+  window.addEventListener("popstate", onPopstate);
 
-  if (!introStarted) {
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", runViewTransition, { once: true });
-    } else {
-      runViewTransition();
-    }
-  }
+  // First render, refresh or direct URL: one immediate run. Content is parsed
+  // underneath the fixed overlay and data loading is never blocked.
+  runIntro({ source: "initial" });
 
   window.BlissMotion = {
-    transition: runViewTransition,
-    finishIntro: finishIntro
+    replay: function () { runIntro({ source: "manual" }); },
+    timings: TIMINGS
   };
 })();
