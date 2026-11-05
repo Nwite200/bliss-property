@@ -403,25 +403,35 @@ await test('frontend integration has no /api/api paths and public enquiries are 
   }
 });
 
-await test('single logo intro replays on navigation, refresh and Back/Forward', async () => {
+await test('single global logo intro supports hype/classic, full/short replay and Back/Forward', async () => {
   const motionJs = readFileSync('assets/js/motion.js', 'utf8');
   const motionCss = readFileSync('assets/css/motion.css', 'utf8');
-  assert(!motionJs.includes('sessionStorage'), 'persistent once-per-session intro logic must be removed');
-  assert(motionJs.includes('fadeIn: 600') && motionJs.includes('hold: 1400') && motionJs.includes('fadeOut: 600'), 'intro timing must be 600/1400/600 ms');
-  assert(motionJs.includes('failsafe: 3400'), 'intro failsafe timeout missing');
+  const config = readFileSync('assets/js/intro-config.js', 'utf8');
+  assert(!motionJs.includes('bliss_intro_played'), 'once-per-session intro logic must be removed');
+  assert(config.includes('INTRO_STYLE: "hype"'), 'default intro style must be hype');
+  assert(config.includes('"classic"') && motionJs.includes('INTRO_STYLE === "classic"'), 'classic switch missing');
+  assert(config.includes('total: 3000') && config.includes('total: 1000'), 'full/short hype durations missing');
+  assert(config.includes('fadeIn: 600') && config.includes('hold: 1500') && config.includes('fadeOut: 600'), 'classic full timings missing');
+  assert(config.includes('failsafe: 3800') && config.includes('failsafe: 1800'), 'hype failsafe timings missing');
+  assert(config.includes('LOGO_SRC: "assets/images/bliss-legacy-logo.png"'), 'actual site logo path missing');
   assert(motionJs.includes("addEventListener(\"pageshow\""), 'Back/Forward pageshow replay missing');
   assert(motionJs.includes("addEventListener(\"popstate\""), 'Back/Forward popstate replay missing');
   assert(motionJs.includes("event.key !== \"Escape\"") && motionJs.includes("event.key !== \"Enter\""), 'Escape/Enter skip missing');
   assert(motionJs.includes('activeRun') && motionJs.includes('runCounter'), 'single-run navigation lock missing');
+  assert(motionJs.includes('markInternalNavigation') && motionJs.includes('consumeInternalMarker'), 'internal-navigation short/full distinction missing');
   assert(motionJs.includes('.pagination [data-page]') && !motionJs.includes('button, [data-page]'), 'generic data-page selectors would trigger the intro on every click');
   assert(motionJs.includes('has-logo-error'), 'logo failure fallback missing');
+  assert(motionJs.includes('lowPower') && motionCss.includes('.bliss-intro.low-power'), 'low-power handling missing');
   assert(!motionCss.includes('bliss-view-enter'), 'separate page-transition system must be removed');
   assert(motionCss.includes('.bliss-intro') && motionCss.includes('has-logo-error'), 'intro visual/fallback styles missing');
+  assert(motionCss.includes('.style-hype') && motionCss.includes('.style-classic'), 'both visual styles missing');
   assert(motionCss.includes('@media (prefers-reduced-motion: reduce)'), 'CSS reduced-motion fallback missing');
   for (const file of readdirSync('.').filter(name => name.endsWith('.html'))) {
     const html = readFileSync(file, 'utf8');
     assert(html.includes('assets/css/motion.css'), `${file} is missing motion.css`);
+    assert(html.includes('assets/js/intro-config.js'), `${file} is missing intro-config.js`);
     assert(html.includes('assets/js/motion.js'), `${file} is missing motion.js`);
+    assert(html.indexOf('intro-config.js') < html.indexOf('motion.js'), `${file} loads motion before intro config`);
   }
 });
 

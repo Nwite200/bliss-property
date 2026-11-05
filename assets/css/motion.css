@@ -1,13 +1,6 @@
-/* Bliss Legacy Limited — branded logo intro.
-   Front-end only. No worker, auth or data-loading behaviour is changed. */
+/* Bliss Legacy Limited — single global logo intro.
+   Hype and classic variants share one component. Front-end only. */
 
-:root {
-  --bliss-intro-in: 600ms;
-  --bliss-intro-out: 600ms;
-  --bliss-intro-ease: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* Fixed overlay: no document flow, no layout shift, no click blocking. */
 .bliss-intro {
   position: fixed;
   inset: 0;
@@ -15,51 +8,119 @@
   display: grid;
   place-items: center;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 50% 42%, #ffffff 0%, #f5f7f5 54%, #edf3ee 100%);
-  opacity: 0;
   pointer-events: none;
-  transition: opacity var(--bliss-intro-out) ease;
-  will-change: opacity;
-}
-
-.bliss-intro::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0;
-  height: 3px;
-  background: linear-gradient(90deg, transparent, #00b522, transparent);
-  opacity: 0.45;
-}
-
-.bliss-intro.is-visible {
   opacity: 1;
+  isolation: isolate;
 }
 
-.bliss-intro.is-leaving {
+.bliss-intro.style-hype {
+  background:
+    radial-gradient(circle at 50% 44%, #102218 0%, #08110b 55%, #040806 100%);
+}
+
+.bliss-intro.style-classic,
+.bliss-intro.style-reduced {
+  background:
+    radial-gradient(circle at 50% 42%, #ffffff 0%, #f5f7f5 56%, #edf3ee 100%);
+}
+
+.bliss-intro__halo {
+  position: absolute;
+  width: min(82vw, 660px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.98) 0%, rgba(245,247,245,0.92) 34%, rgba(0,181,34,0.14) 62%, transparent 73%);
+  filter: blur(22px);
+  opacity: 0.96;
+  z-index: 0;
+}
+
+.style-classic .bliss-intro__halo,
+.style-reduced .bliss-intro__halo {
+  display: none;
+}
+
+.bliss-intro__streak {
+  position: absolute;
+  top: -12%;
+  left: 50%;
+  width: 2px;
+  height: 124%;
+  z-index: 1;
+  opacity: 0;
+  background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.9) 28%, rgba(92,255,120,0.95) 50%, rgba(255,255,255,0.8) 72%, transparent 100%);
+  box-shadow: 0 0 16px rgba(92,255,120,0.7);
+  transform: translate3d(-42vw, 0, 0) rotate(8deg);
+}
+
+.bliss-intro__sweep {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  opacity: 0;
+  background: linear-gradient(105deg, transparent 38%, rgba(255,255,255,0.18) 48%, rgba(255,255,255,0.28) 50%, rgba(255,255,255,0.18) 52%, transparent 62%);
+  mix-blend-mode: screen;
+  transform: translate3d(-120%, 0, 0);
+}
+
+.bliss-intro__lines {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  opacity: 0;
+}
+
+.bliss-intro__lines span {
+  position: absolute;
+  display: block;
+  height: 1px;
+  width: clamp(120px, 28vw, 360px);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.34), transparent);
+  filter: blur(0.2px);
+}
+
+.bliss-intro__lines span:nth-child(1) { left: 8%; top: 32%; }
+.bliss-intro__lines span:nth-child(2) { right: 6%; top: 48%; width: clamp(90px, 20vw, 270px); }
+.bliss-intro__lines span:nth-child(3) { left: 14%; bottom: 28%; width: clamp(100px, 24vw, 300px); }
+
+.bliss-intro__ring {
+  position: absolute;
+  z-index: 4;
+  width: 190px;
+  height: 190px;
+  border: 2px solid rgba(92,255,120,0.8);
+  border-radius: 50%;
+  opacity: 0;
+  box-shadow: 0 0 34px rgba(0,181,34,0.24);
+}
+
+.bliss-intro__flash {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(255,255,255,0.12);
   opacity: 0;
 }
 
 .bliss-intro__stage {
+  position: relative;
+  z-index: 3;
   display: grid;
   place-items: center;
   padding: 24px;
+}
+
+.bliss-intro__camera {
+  display: grid;
+  place-items: center;
+  transform-origin: center;
+}
+
+.bliss-intro__logo-wrap {
+  display: grid;
+  place-items: center;
+  transform-origin: center;
   opacity: 0;
-  transform: scale(0.96);
-  transition:
-    opacity var(--bliss-intro-in) ease,
-    transform var(--bliss-intro-in) var(--bliss-intro-ease);
-  will-change: transform, opacity;
-}
-
-.bliss-intro.is-visible .bliss-intro__stage {
-  opacity: 1;
-  transform: scale(1);
-}
-
-.bliss-intro.is-leaving .bliss-intro__stage {
-  opacity: 0.94;
-  transform: scale(1.01);
 }
 
 .bliss-intro__logo {
@@ -68,13 +129,14 @@
   height: auto;
   max-height: 36vh;
   object-fit: contain;
-  filter: drop-shadow(0 18px 38px rgba(34, 43, 36, 0.10));
+  filter: drop-shadow(0 18px 38px rgba(34,43,36,0.10));
+  transform-origin: center;
 }
 
 .bliss-intro__fallback {
   display: none;
   font-family: var(--font-display, "Manrope", sans-serif);
-  font-size: clamp(22px, 5vw, 42px);
+  font-size: clamp(20px, 4.4vw, 38px);
   font-weight: 800;
   letter-spacing: 0.08em;
   color: #00b522;
@@ -89,22 +151,94 @@
   display: block;
 }
 
+.bliss-intro__tagline {
+  margin-top: 24px;
+  max-width: min(86vw, 560px);
+  text-align: center;
+  font-family: var(--font-display, "Manrope", sans-serif);
+  font-size: clamp(12px, 1.6vw, 16px);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255,255,255,0.82);
+  opacity: 0;
+}
+
+.style-classic .bliss-intro__tagline,
+.style-reduced .bliss-intro__tagline,
+.style-classic .bliss-intro__streak,
+.style-classic .bliss-intro__sweep,
+.style-classic .bliss-intro__lines,
+.style-classic .bliss-intro__ring,
+.style-classic .bliss-intro__flash,
+.style-reduced .bliss-intro__streak,
+.style-reduced .bliss-intro__sweep,
+.style-reduced .bliss-intro__lines,
+.style-reduced .bliss-intro__ring,
+.style-reduced .bliss-intro__flash {
+  display: none;
+}
+
+.style-classic .bliss-intro__logo,
+.style-reduced .bliss-intro__logo {
+  filter: drop-shadow(0 18px 38px rgba(34,43,36,0.10));
+}
+
+/* Glitch uses filter only for a few frames; transform remains owned by WAAPI. */
+.bliss-intro__logo.is-glitching {
+  animation: bliss-glitch 110ms steps(2, end) both;
+}
+
+@keyframes bliss-glitch {
+  0% { filter: drop-shadow(3px 0 rgba(255,45,90,0.55)) drop-shadow(-3px 0 rgba(0,220,255,0.45)); }
+  50% { filter: drop-shadow(-2px 0 rgba(255,45,90,0.45)) drop-shadow(2px 0 rgba(0,220,255,0.4)); }
+  100% { filter: drop-shadow(0 18px 38px rgba(34,43,36,0.10)); }
+}
+
 @media (max-width: 640px) {
   .bliss-intro__logo {
     width: min(80vw, 360px);
     max-height: 32vh;
   }
+  .bliss-intro__ring { width: 140px; height: 140px; }
+  .bliss-intro__tagline { margin-top: 18px; font-size: 12px; }
+}
+
+/* will-change only while the component is active. */
+.bliss-intro.is-running,
+.bliss-intro.is-running .bliss-intro__camera,
+.bliss-intro.is-running .bliss-intro__logo-wrap,
+.bliss-intro.is-running .bliss-intro__logo,
+.bliss-intro.is-running .bliss-intro__ring,
+.bliss-intro.is-running .bliss-intro__streak,
+.bliss-intro.is-running .bliss-intro__sweep {
+  will-change: transform, opacity;
+}
+
+/* Low-power heuristic disables the most expensive filter/glow work. */
+.bliss-intro.low-power .bliss-intro__logo {
+  filter: none !important;
+}
+.bliss-intro.low-power .bliss-intro__halo {
+  filter: none;
+}
+.bliss-intro.low-power .bliss-intro__streak,
+.bliss-intro.low-power .bliss-intro__sweep {
+  box-shadow: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root {
-    --bliss-intro-in: 120ms;
-    --bliss-intro-out: 120ms;
+  .bliss-intro__streak,
+  .bliss-intro__sweep,
+  .bliss-intro__lines,
+  .bliss-intro__ring,
+  .bliss-intro__flash,
+  .bliss-intro__tagline {
+    display: none !important;
   }
-
-  .bliss-intro__stage,
-  .bliss-intro.is-visible .bliss-intro__stage,
-  .bliss-intro.is-leaving .bliss-intro__stage {
+  .bliss-intro__logo,
+  .bliss-intro__logo-wrap,
+  .bliss-intro__camera {
     transform: none !important;
+    filter: none !important;
   }
 }
