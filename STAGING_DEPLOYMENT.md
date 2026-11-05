@@ -4,7 +4,7 @@
 
 **Staging URL:** `https://bliss-property.easterntechexpo.workers.dev`
 
-**Branch:** `staging` (`f3a1ed1`)
+**Branch:** `staging` (see the final response for the exact tip)
 
 **Environment:** `staging`
 
@@ -126,9 +126,18 @@ Until that dashboard step is completed, Git pushes will not automatically trigge
 
 ---
 
-## 7. Deployment version
+## 7. PWA and motion
 
-Current staging deployment version ID: `7181ac17-9d12-4a09-be00-3f6208d52d25`
+- `manifest.json` is served with HTTP 200 and Chrome reports no installability errors.
+- Service worker `sw.js` registers at scope `/` with cache `bliss-pwa-v3-static`.
+- Install UI supports Android `beforeinstallprompt` and iOS Safari **Add to Home Screen** instructions.
+- Offline fallback: `/offline`.
+- Logo intro replays on page loads, refresh, direct URLs, Back/Forward and dashboard tab view changes; non-navigation clicks do not replay it.
+- PWA icons are generated from the official `assets/images/bliss-legacy-logo.png` file.
+
+## 8. Deployment version
+
+Current staging deployment version ID: `03957d78-4bb6-4d00-8ccd-5c8ac3143f5c`
 
 ---
 
