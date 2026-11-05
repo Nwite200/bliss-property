@@ -93,7 +93,7 @@ async function getSessionUser(env, request) {
   const sid = cookies[SESSION_COOKIE];
   if (!sid) return null;
   const row = await env.DB.prepare(
-    "SELECT s.id AS sid, s.expires_at, u.id, u.email, u.full_name, u.role_id, u.branch_id, u.is_active, u.referral_code, r.name AS role_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.id=?"
+    "SELECT s.id AS sid, s.expires_at, u.id, u.email, u.full_name, u.role_id, u.branch_id, u.is_active, u.referral_code, u.commission_access, r.name AS role_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.id=?"
   ).bind(sid).first();
   if (!row) return null;
   if (parseDbDate(row.expires_at) < new Date()) {
@@ -324,6 +324,156 @@ async function alatpayRequest(env, path, options = {}) {
   return payload.data === undefined ? payload : payload.data;
 }
 
+async function hmacHex(secret, message, hash = "SHA-512") {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(String(secret || "")),
+    { name: "HMAC", hash }, false, ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(String(message || "")));
+  return [...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+const PAYMENT_PROVIDER_ADAPTERS = {
+  alatpay: {
+    key: "alatpay",
+    name: "ALATPay by Wema Bank",
+    requiresConfig: false,
+    webhookPath: "/api/webhooks/alatpay",
+    async createVirtualAccount(env, client, amountKobo, actorId) {
+      return createAlatpayVirtualAccount(env, client, amountKobo, actorId);
+    },
+    async verifyTransaction(env, reference) {
+      return alatpayRequest(env, `/bank-transfer/api/v1/bankTransfer/transactions/${encodeURIComponent(reference)}`);
+    },
+    async verifyWebhook(env, request, body) {
+      const source = body.data || body;
+      const transactionId = source.transactionId || source.transaction_id || source.id || body.transactionId;
+      if (!transactionId) {
+        throw Object.assign(new Error("Missing ALATPay transaction ID"), { status: 400 });
+      }
+      const remote = await this.verifyTransaction(env, transactionId);
+      return { remote, transactionId, source };
+    },
+    normalizeEvent(body, verification) {
+      const data = verification.remote.data || verification.remote;
+      const source = verification.source || body.data || body;
+      const statusText = String(data.status || data.transactionStatus || source.status || "").trim().toLowerCase();
+      const orderId = data.orderId || data.order_id || source.orderId || body.orderId;
+      const amountKobo = data.amount !== undefined ? toKobo(data.amount)
+        : (source.amount !== undefined ? toKobo(source.amount) : null);
+      const currency = String(data.currency || source.currency || SUPPORTED_CURRENCY).trim().toUpperCase();
+      const transactionId = verification.transactionId;
+      return {
+        providerKey: "alatpay",
+        eventId: `alatpay:${transactionId}:${statusText}:${amountKobo}`,
+        eventType: statusText,
+        reference: orderId,
+        providerReference: transactionId,
+        amountKobo,
+        currency,
+        success: SUCCESS_EVENT_STATUSES.has(statusText),
+        occurredAt: data.updatedAt || data.createdAt || source.updatedAt || source.createdAt || null,
+        payload: { body, remote: verification.remote }
+      };
+    }
+  },
+  wema_alat: {
+    key: "wema_alat",
+    name: "ALAT by Wema Bank",
+    requiresConfig: true,
+    webhookPath: "/api/webhooks/wema-alat",
+    async verifyWebhook(env, request, body) {
+      const conf = await env.DB.prepare("SELECT status, webhook_secret FROM provider_configs WHERE provider_key='wema_alat'").first();
+      if (!conf || !["Configured", "Active"].includes(conf.status)) {
+        throw Object.assign(new Error("Wema ALAT integration is not configured"), { status: 503 });
+      }
+      if (!conf.webhook_secret) {
+        throw Object.assign(new Error("Webhook verification is not configured"), { status: 503 });
+      }
+      const supplied = request.headers.get("X-Webhook-Secret") || "";
+      if (!secureCompare(supplied, conf.webhook_secret)) {
+        throw Object.assign(new Error("Invalid webhook signature"), { status: 401 });
+      }
+      return { conf };
+    },
+    normalizeEvent(body) {
+      const data = body.data || {};
+      const txRef = data.transaction_reference || data.tx_ref;
+      const amountKobo = data.amount_kobo !== undefined
+        ? Number(data.amount_kobo)
+        : (data.amount !== undefined ? toKobo(data.amount) : null);
+      const currency = String(data.currency || body.currency || SUPPORTED_CURRENCY).trim().toUpperCase();
+      const statusText = String(data.status || body.status || body.event || "").trim().toLowerCase();
+      const eventId = String(body.id || body.event_id || data.event_id || `${txRef}:${statusText}:${amountKobo || 0}`);
+      return {
+        providerKey: "wema_alat",
+        eventId,
+        eventType: body.event || statusText,
+        reference: txRef,
+        providerReference: data.provider_reference || data.transaction_id || txRef,
+        amountKobo,
+        currency,
+        success: SUCCESS_EVENT_STATUSES.has(statusText),
+        statusText,
+        occurredAt: body.timestamp ?? body.created_at ?? body.event_time ??
+          data.timestamp ?? data.created_at ?? data.event_time,
+        requireTimestamp: true,
+        payload: body
+      };
+    }
+  },
+  paystack: {
+    key: "paystack",
+    name: "Paystack",
+    requiresConfig: true,
+    webhookPath: "/api/webhooks/paystack",
+    async verifyWebhook(env, request, body, rawText) {
+      const conf = await env.DB.prepare("SELECT status, webhook_secret, config_json FROM provider_configs WHERE provider_key='paystack'").first();
+      if (!conf || !["Configured", "Active"].includes(conf.status)) {
+        throw Object.assign(new Error("Paystack integration is not configured"), { status: 503 });
+      }
+      let config = {};
+      try { config = conf.config_json ? JSON.parse(conf.config_json) : {}; } catch { config = {}; }
+      const secret = env.PAYSTACK_SECRET_KEY || config.secret_key || conf.webhook_secret;
+      if (!secret) throw Object.assign(new Error("Paystack webhook secret is not configured"), { status: 503 });
+      const supplied = request.headers.get("x-paystack-signature") || "";
+      const expected = await hmacHex(secret, rawText || JSON.stringify(body));
+      if (!secureCompare(supplied, expected)) {
+        throw Object.assign(new Error("Invalid webhook signature"), { status: 401 });
+      }
+      return { conf };
+    },
+    normalizeEvent(body) {
+      const data = body.data || {};
+      const eventName = String(body.event || data.status || "").toLowerCase();
+      const amountKobo = data.amount !== undefined ? Number(data.amount) : null;
+      return {
+        providerKey: "paystack",
+        eventId: `paystack:${data.id || data.reference}:${eventName}`,
+        eventType: eventName,
+        reference: data.reference,
+        providerReference: data.id ? String(data.id) : data.reference,
+        amountKobo,
+        currency: String(data.currency || "NGN").toUpperCase(),
+        success: eventName === "charge.success",
+        statusText: eventName,
+        occurredAt: data.paid_at || data.created_at || body.created_at || null,
+        payload: body
+      };
+    }
+  }
+};
+
+function getPaymentProviderAdapter(key) {
+  return PAYMENT_PROVIDER_ADAPTERS[String(key || "").trim().toLowerCase()] || null;
+}
+
+async function getDefaultPaymentProvider(env) {
+  const row = await env.DB.prepare("SELECT provider_key, adapter_key FROM provider_configs WHERE is_default=1 ORDER BY provider_key LIMIT 1").first();
+  if (row) return row.adapter_key || row.provider_key;
+  return "wema_alat";
+}
+
 async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
   const settings = await getAlatpaySettings(env);
   if (!settings.ready) {
@@ -371,11 +521,11 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
   const expiresAt = data.expiredAt || data.expiresAt || null;
   await env.DB.prepare(`
     INSERT INTO virtual_accounts
-      (client_id, provider, bank_name, account_name, account_number, account_status,
+      (client_id, provider, provider_key, bank_name, account_name, account_number, account_status,
        provider_reference, transaction_id, order_id, expires_at, amount_kobo, metadata, updated_by, updated_at)
-    VALUES (?, 'wema_alat', ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    VALUES (?, 'alatpay', 'alatpay', ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(client_id) DO UPDATE SET
-      provider='wema_alat', bank_name=excluded.bank_name, account_name=excluded.account_name,
+      provider='alatpay', provider_key='alatpay', bank_name=excluded.bank_name, account_name=excluded.account_name,
       account_number=excluded.account_number, account_status='active',
       provider_reference=excluded.provider_reference, transaction_id=excluded.transaction_id,
       order_id=excluded.order_id, expires_at=excluded.expires_at, amount_kobo=excluded.amount_kobo,
@@ -574,12 +724,107 @@ const LEAD_STATUSES = [
   "Negotiation", "Converted", "Lost"
 ];
 const LEAD_OPEN_STATUSES = ["New Lead", "Contacted", "Interested", "Inspection Scheduled", "Negotiation"];
+
+function normalizeLeadStatus(value, fallback = null) {
+  const raw = String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  const map = {
+    "new": "New Lead", "new lead": "New Lead", "lead": "New Lead",
+    "contacted": "Contacted", "contact": "Contacted",
+    "interested": "Interested", "interest": "Interested",
+    "inspection": "Inspection Scheduled", "inspection scheduled": "Inspection Scheduled", "scheduled": "Inspection Scheduled",
+    "negotiation": "Negotiation", "negotiating": "Negotiation",
+    "converted": "Converted", "won": "Converted",
+    "lost": "Lost", "closed lost": "Lost"
+  };
+  return map[raw] || fallback;
+}
+
+function parseCsvLine(line) {
+  const cells = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quoted) {
+      if (char === '"' && line[index + 1] === '"') { current += '"'; index++; }
+      else if (char === '"') quoted = false;
+      else current += char;
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === ",") {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseLeadCsv(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n")
+    .filter(line => line.trim().length);
+  if (!lines.length) return [];
+  const headerCells = parseCsvLine(lines[0]).map(cell => cell.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""));
+  const known = ["full_name", "name", "phone", "phone_number", "email", "email_address", "source", "status", "property", "property_id", "marketer", "marketer_id", "owner", "assigned_marketer_id", "branch", "branch_id", "estimated_value", "value", "notes", "next_follow_up_date", "follow_up"];
+  const hasHeader = headerCells.some(cell => known.includes(cell));
+  const rows = [];
+  if (hasHeader) {
+    for (let index = 1; index < lines.length; index++) {
+      const cells = parseCsvLine(lines[index]);
+      const row = {};
+      headerCells.forEach((header, cellIndex) => { row[header] = cells[cellIndex] || ""; });
+      rows.push(row);
+    }
+  } else {
+    const defaults = ["full_name", "phone_number", "email_address", "source", "status", "assigned_marketer_id", "branch_id", "estimated_value", "notes"];
+    for (const line of lines) {
+      const cells = parseCsvLine(line);
+      const row = {};
+      defaults.forEach((key, index) => { row[key] = cells[index] || ""; });
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function normalizeLeadImportRow(raw) {
+  const row = {};
+  for (const [key, value] of Object.entries(raw || {})) {
+    row[String(key).trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")] = value;
+  }
+  const pick = (...keys) => {
+    for (const key of keys) {
+      if (row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== "") return String(row[key]).trim();
+    }
+    return "";
+  };
+  return {
+    full_name: pick("full_name", "name", "client_name", "lead_name"),
+    phone_number: pick("phone_number", "phone", "mobile", "telephone"),
+    email_address: pick("email_address", "email"),
+    source: pick("source", "campaign", "ad_campaign", "lead_source"),
+    status: pick("status", "stage"),
+    property_id: pick("property_id", "property"),
+    assigned_marketer_id: pick("assigned_marketer_id", "marketer_id", "marketer", "owner", "owner_marketer_id"),
+    team_lead_id: pick("team_lead_id", "team_lead"),
+    branch_id: pick("branch_id", "branch"),
+    estimated_value: pick("estimated_value", "value", "budget"),
+    notes: pick("notes", "note", "comments"),
+    next_follow_up_date: pick("next_follow_up_date", "follow_up_date", "follow_up")
+  };
+}
 const STAFF_ROLES = ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"];
 const GRANULARITIES = ["day", "week", "month", "year"];
 const COMMISSION_BASES = ["contract_value", "verified_collections", "fixed"];
 const COMMISSION_STATUSES = ["Draft", "Calculated", "Pending Approval", "Approved", "Partially Paid", "Paid", "Rejected", "Reversed", "Cancelled"];
 const COMMISSION_ROLES = ["Marketer", "Team Lead", "Branch Manager"];
 const SALE_TYPES = ["New Sale", "Resale", "Referral", "Other"];
+const PAYMENT_PLAN_TYPES = ["outright", "part_payment", "daily", "weekly", "bi_monthly", "monthly"];
+const EASY_BUY_PLAN_TYPES = ["daily", "weekly", "bi_monthly", "monthly"];
+const COMMISSIONABLE_MODES = ["full", "first_months", "percentage", "capped_amount"];
+const DEFAULT_FOLLOW_UP_STATUSES = ["contacted", "promised", "escalated"];
 const REPORT_TYPES = [
   "sales", "collections", "outstanding", "commission",
   "branch_performance", "marketer_performance", "refunds", "commission_liability"
@@ -756,6 +1001,13 @@ function canManageStaff(role) {
   return ["Managing Director", "Branch Manager"].includes(role);
 }
 
+function canAccessCommissions(actor) {
+  if (!actor) return false;
+  const actualRole = actor.actual_role_name || actor.role_name;
+  if (["Managing Director", "Super Admin", "Head Accountant"].includes(actualRole)) return true;
+  return Number(actor.commission_access || 0) === 1;
+}
+
 function commissionAmount(amountKobo, rateBps) {
   if (!Number.isInteger(amountKobo) || !Number.isInteger(rateBps) || rateBps <= 0) return 0;
   // Integer basis-point rounding: half-up to the nearest kobo.
@@ -898,6 +1150,80 @@ function withinCommissionPeriod(sourceDate, plan) {
   return true;
 }
 
+async function createCommissionPlanVersion(env, planId, versionNo, plan, rules, changeReason, actorId) {
+  const snapshot = (rules || []).map(rule => ({
+    id: rule.id || null,
+    role_name: rule.role_name,
+    rate_bps: Number(rule.rate_bps || 0),
+    fixed_amount_kobo: Number(rule.fixed_amount_kobo || 0),
+    property_category_id: rule.property_category_id || null,
+    sales_type: rule.sales_type || null,
+    branch_id: rule.branch_id || null,
+    team_id: rule.team_id || null,
+    is_active: Number(rule.is_active === undefined ? 1 : rule.is_active)
+  }));
+  const res = await env.DB.prepare(`
+    INSERT OR IGNORE INTO commission_plan_versions
+      (plan_id, version_no, name, description, calculation_basis, effective_from, effective_to,
+       commissionable_mode, commissionable_first_months, commissionable_percent_bps,
+       commissionable_cap_kobo, rules_json, change_reason, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  `).bind(
+    planId, versionNo, plan.name, plan.description || null, plan.calculation_basis,
+    plan.effective_from || null, plan.effective_to || null,
+    plan.commissionable_mode || "full",
+    Number(plan.commissionable_first_months === undefined ? 2 : plan.commissionable_first_months),
+    Number(plan.commissionable_percent_bps === undefined ? 10000 : plan.commissionable_percent_bps),
+    Number(plan.commissionable_cap_kobo || 0), JSON.stringify(snapshot),
+    changeReason || null, actorId
+  ).run();
+  return res.meta ? res.meta.last_row_id : null;
+}
+
+async function commissionableBasisForPayment(env, client, payment, plan) {
+  const paymentAmountKobo = Number(payment.amount_kobo || toKobo(payment.amount) || 0);
+  const schedule = await env.DB.prepare(`
+    SELECT * FROM payment_schedules WHERE client_id=? AND status='active'
+    ORDER BY id DESC LIMIT 1
+  `).bind(client.id).first();
+  const planType = normalizePlanType(schedule ? schedule.plan_type : "outright");
+  const easyBuy = isEasyBuyPlan(planType);
+  const mode = COMMISSIONABLE_MODES.includes(plan.commissionable_mode) ? plan.commissionable_mode : "full";
+  if (!easyBuy || mode === "full") {
+    return { commissionableKobo: paymentAmountKobo, paymentAmountKobo, planType, mode };
+  }
+  const startDate = dateOnly(schedule.start_date) || dateOnly(schedule.created_at) || todayOnly();  if (mode === "first_months") {
+    const months = Math.max(0, Number(plan.commissionable_first_months === undefined ? 2 : plan.commissionable_first_months));
+    const cutoff = addMonths(startDate, months);
+    const paidDate = String(payment.verified_at || "").slice(0, 10);
+    const within = paidDate && months > 0 && paidDate <= cutoff;
+    return { commissionableKobo: within ? paymentAmountKobo : 0, paymentAmountKobo, planType, mode, cutoff };
+  }
+  if (mode === "percentage") {
+    const bps = Math.min(10000, Math.max(0, Number(plan.commissionable_percent_bps === undefined ? 10000 : plan.commissionable_percent_bps)));
+    return {
+      commissionableKobo: Math.floor((paymentAmountKobo * bps + 5000) / 10000),
+      paymentAmountKobo, planType, mode, percent_bps: bps
+    };
+  }
+  if (mode === "capped_amount") {
+    const cap = Math.max(0, Number(plan.commissionable_cap_kobo || 0));
+    const priorRow = await env.DB.prepare(`
+      SELECT COALESCE(SUM(amount_kobo),0) AS prior FROM payments
+      WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+        AND (verified_at < ? OR (verified_at = ? AND id < ?))
+    `).bind(client.id, payment.verified_at || "", payment.verified_at || "", payment.id).first();
+    const prior = Number(priorRow ? priorRow.prior : 0);
+    const before = Math.min(cap, prior);
+    const after = Math.min(cap, prior + paymentAmountKobo);
+    return {
+      commissionableKobo: Math.max(0, after - before),
+      paymentAmountKobo, planType, mode, cap_kobo: cap, cumulative_before_kobo: prior
+    };
+  }
+  return { commissionableKobo: paymentAmountKobo, paymentAmountKobo, planType, mode };
+}
+
 async function generateCommissionEntries(env, actor, body) {
   const draft = isTruthy(body.draft);
   const planId = body.plan_id ? Number(body.plan_id) : null;
@@ -937,6 +1263,14 @@ async function generateCommissionEntries(env, actor, body) {
         SELECT * FROM commission_plan_rules WHERE plan_id=? AND is_active=1 ORDER BY id
       `).bind(plan.id).all();
       if (!planRules.length) continue;
+      const currentVersion = await env.DB.prepare(`
+        SELECT * FROM commission_plan_versions WHERE plan_id=? ORDER BY version_no DESC LIMIT 1
+      `).bind(plan.id).first();
+      const planVersionNo = Number(plan.current_version_no || (currentVersion ? currentVersion.version_no : 1) || 1);
+      const planVersionId = currentVersion ? currentVersion.id : null;
+      // A new plan version never retroactively commissions payments that were
+      // already covered by an earlier version.
+      const versionCutoff = planVersionNo > 1 && currentVersion ? currentVersion.created_at : null;
 
       const { results: verifiedPayments } = await env.DB.prepare(`
         SELECT id, amount_kobo, verified_at FROM payments
@@ -954,9 +1288,10 @@ async function generateCommissionEntries(env, actor, body) {
         if (rule.property_category_id && Number(rule.property_category_id) !== Number(client.category_id)) { skipped++; continue; }
         if (rule.sales_type && rule.sales_type !== clientSaleType) { skipped++; continue; }
 
-        const makeEntry = async ({ sourceType, sourceKey, paymentId, qualifyingKobo, sourceDate, metadata }) => {
+        const makeEntry = async ({ sourceType, sourceKey, paymentId, qualifyingKobo, sourceDate, metadata, paymentAmountKobo, commissionableMode }) => {
           if (from && String(sourceDate).slice(0, 10) < from) return;
           if (to && String(sourceDate).slice(0, 10) > to) return;
+          if (versionCutoff && sourceDate && parseDbDate(sourceDate) < parseDbDate(versionCutoff)) return;
           if (!withinCommissionPeriod(sourceDate, plan)) return;
           const fixed = plan.calculation_basis === "fixed";
           const amount = fixed ? Number(rule.fixed_amount_kobo || 0) : commissionAmount(qualifyingKobo, Number(rule.rate_bps || 0));
@@ -968,15 +1303,18 @@ async function generateCommissionEntries(env, actor, body) {
               commission_ref, plan_id, rule_id, client_id, property_id, payment_id,
               recipient_user_id, recipient_role, branch_id, team_id, marketer_id, team_lead_id,
               source_type, source_key, basis, qualifying_amount_kobo, rate_bps, commission_kobo,
-              status, approval_required, metadata, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              status, approval_required, metadata, created_by,
+              plan_version_id, plan_version_no, payment_amount_kobo, commissionable_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             commissionRef, plan.id, rule.id, client.id, client.interested_property_id || null, paymentId || null,
             recipient.userId, recipient.role, recipient.branchId, recipient.teamId || null,
             recipient.marketerId, recipient.teamLeadId, sourceType, sourceKey,
             plan.calculation_basis, qualifyingKobo, fixed ? 0 : Number(rule.rate_bps || 0), amount,
             status, plan.approval_required ? 1 : 0,
-            metadata ? JSON.stringify(metadata) : null, actor.id
+            metadata ? JSON.stringify(metadata) : null, actor.id,
+            planVersionId, planVersionNo, Number(paymentAmountKobo || qualifyingKobo || 0),
+            commissionableMode || plan.commissionable_mode || "full"
           ).run();
           if (!res.meta || Number(res.meta.changes) === 0) { skipped++; return; }
           const entryId = res.meta.last_row_id;
@@ -1024,13 +1362,23 @@ async function generateCommissionEntries(env, actor, body) {
           });
         } else if (plan.calculation_basis === "verified_collections") {
           for (const payment of verifiedPayments) {
+            const basis = await commissionableBasisForPayment(env, client, payment, plan);
+            if (!basis.commissionableKobo || basis.commissionableKobo <= 0) { skipped++; continue; }
             await makeEntry({
               sourceType: "payment",
               sourceKey: `plan:${plan.id}:rule:${rule.id}:payment:${payment.id}`,
               paymentId: payment.id,
-              qualifyingKobo: Number(payment.amount_kobo || 0),
+              qualifyingKobo: basis.commissionableKobo,
+              paymentAmountKobo: basis.paymentAmountKobo,
+              commissionableMode: basis.mode,
               sourceDate: payment.verified_at,
-              metadata: { payment_id: payment.id }
+              metadata: {
+                payment_id: payment.id,
+                plan_type: basis.planType,
+                payment_amount_kobo: basis.paymentAmountKobo,
+                commissionable_kobo: basis.commissionableKobo,
+                commissionable_mode: basis.mode
+              }
             });
           }
         }
@@ -1677,7 +2025,10 @@ async function buildAnalytics(env, actor, scope, url) {
   }
   teamRankings.sort((a, b) => b.verified_kobo - a.verified_kobo || b.contract_value_kobo - a.contract_value_kobo);
 
-  const commissionSummary = await getCommissionSummary(env, scope);
+  const commissionSummary = canAccessCommissions(actor)
+    ? await getCommissionSummary(env, scope)
+    : { total_count: 0, earned_kobo: 0, gross_earned_kobo: 0, draft_kobo: 0,
+        pending_approval_kobo: 0, approved_kobo: 0, paid_kobo: 0, outstanding_kobo: 0, adjusted_kobo: 0 };
 
   const { results: categoryClientRows } = await env.DB.prepare(`
     SELECT COALESCE(pc.name,'Uncategorised') AS category_name,
@@ -1838,6 +2189,148 @@ function validateScheduleInput({ totalKobo, depositKobo, installmentKobo, freque
   }
   if (status && !["active", "completed", "cancelled"].includes(status)) return { error: "Invalid schedule status" };
   return { ok: true };
+}
+
+function normalizePlanType(value, fallback = "outright") {
+  const raw = String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const aliases = {
+    "outright": "outright", "full": "outright", "full_payment": "outright",
+    "part": "part_payment", "part_payment": "part_payment", "partpay": "part_payment",
+    "daily": "daily", "weekly": "weekly", "bi_monthly": "bi_monthly",
+    "bimonthly": "bi_monthly", "bi_weekly": "bi_monthly", "fortnightly": "bi_monthly",
+    "monthly": "monthly"
+  };
+  return aliases[raw] || fallback;
+}
+
+function isEasyBuyPlan(planType) {
+  return EASY_BUY_PLAN_TYPES.includes(normalizePlanType(planType));
+}
+
+function addDays(dateText, days) {
+  const date = new Date(String(dateText).slice(0, 10) + "T00:00:00Z");
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10);
+}
+
+function addMonths(dateText, months) {
+  const date = new Date(String(dateText).slice(0, 10) + "T00:00:00Z");
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + Number(months || 0));
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return date.toISOString().slice(0, 10);
+}
+
+function diffDays(fromDate, toDate) {
+  const from = new Date(String(fromDate).slice(0, 10) + "T00:00:00Z");
+  const to = new Date(String(toDate).slice(0, 10) + "T00:00:00Z");
+  if (isNaN(from.getTime()) || isNaN(to.getTime())) return 0;
+  return Math.floor((to - from) / 86400000);
+}
+
+function planIntervalDays(planType, frequencyDays) {
+  const type = normalizePlanType(planType);
+  if (type === "daily") return 1;
+  if (type === "weekly") return 7;
+  if (type === "bi_monthly") return 15;
+  if (type === "monthly") return 30;
+  return Math.max(1, Number(frequencyDays || 30));
+}
+
+function buildPlanScheduleItems({ totalKobo, depositKobo, installmentKobo, planType, startDate, frequencyDays, numberOfInstallments }) {
+  const type = normalizePlanType(planType);
+  const start = dateOnly(startDate) || todayOnly();
+  const total = Math.max(0, Number(totalKobo || 0));
+  const deposit = Math.min(total, Math.max(0, Number(depositKobo || 0)));
+  const items = [];
+  if (total <= 0) return items;
+  if (type === "outright") {
+    items.push({ due_date: start, amount_kobo: total });
+    return items;
+  }
+  if (deposit > 0) items.push({ due_date: start, amount_kobo: deposit });
+  let remaining = total - deposit;
+  if (remaining <= 0) return items;
+  const requestedCount = Number(numberOfInstallments || 0);
+  const interval = planIntervalDays(type, frequencyDays);
+  const useCalendarMonths = type === "monthly";
+  const requestedInstalment = Number(installmentKobo || 0);
+  const count = requestedCount > 0
+    ? Math.min(1000, Math.max(1, Math.floor(requestedCount)))
+    : Math.max(1, Math.min(1000, Math.ceil(remaining / Math.max(1, requestedInstalment))));
+  const baseAmount = Math.floor(remaining / count);
+  let offset = deposit > 0 ? 1 : 0;
+  for (let index = 0; index < count && remaining > 0; index++) {
+    const amount = index === count - 1 ? remaining : Math.max(1, Math.min(remaining, baseAmount));
+    const due = useCalendarMonths
+      ? addMonths(start, offset + index)
+      : addDays(start, interval * (offset + index));
+    items.push({ due_date: due, amount_kobo: amount });
+    remaining -= amount;
+  }
+  return items;
+}
+
+function computeScheduleDefaulting(schedule, items, paidKobo, today = todayOnly()) {
+  const graceDays = Math.max(0, Number(schedule.grace_days || 0));
+  const threshold = addDays(today, -graceDays);
+  const dueItems = (items || []).filter(item => dateOnly(item.due_date) && String(item.due_date).slice(0, 10) <= today);
+  const overdueItems = (items || []).filter(item => String(item.due_date).slice(0, 10) < threshold);
+  const expectedToDateKobo = dueItems.reduce((sum, item) => sum + Number(item.amount_kobo || 0), 0);
+  const overdueExpectedKobo = overdueItems.reduce((sum, item) => sum + Number(item.amount_kobo || 0), 0);
+  const paid = Math.max(0, Number(paidKobo || 0));
+  const amountBehindKobo = Math.max(0, overdueExpectedKobo - paid);
+  const earliestOverdue = overdueItems
+    .map(item => String(item.due_date).slice(0, 10))
+    .sort()[0] || null;
+  const daysOverdue = amountBehindKobo > 0 && earliestOverdue ? Math.max(0, diffDays(earliestOverdue, today)) : 0;
+  const nextDue = (items || [])
+    .map(item => String(item.due_date).slice(0, 10))
+    .filter(date => date >= today)
+    .sort()[0] || null;
+  return {
+    plan_type: normalizePlanType(schedule.plan_type),
+    is_easy_buy: isEasyBuyPlan(schedule.plan_type),
+    grace_days: graceDays,
+    expected_to_date_kobo: expectedToDateKobo,
+    paid_to_date_kobo: paid,
+    amount_behind_kobo: amountBehindKobo,
+    amount_behind_ngn: fromKobo(amountBehindKobo),
+    days_overdue: daysOverdue,
+    status: amountBehindKobo > 0 ? "defaulting" : "performing",
+    next_due_date: nextDue,
+    next_installment_kobo: nextDue
+      ? Number((items || []).find(item => String(item.due_date).slice(0, 10) === nextDue)?.amount_kobo || 0)
+      : 0
+  };
+}
+
+async function replaceScheduleItems(env, scheduleId, items) {
+  await env.DB.prepare("DELETE FROM payment_schedule_items WHERE schedule_id=?").bind(scheduleId).run();
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
+    await env.DB.prepare(`
+      INSERT INTO payment_schedule_items (schedule_id, sequence_no, due_date, amount_kobo, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'expected', datetime('now'), datetime('now'))
+    `).bind(scheduleId, index + 1, item.due_date, item.amount_kobo).run();
+  }
+}
+
+async function ensureScheduleItems(env, schedule) {
+  const count = await env.DB.prepare("SELECT COUNT(*) AS c FROM payment_schedule_items WHERE schedule_id=?").bind(schedule.id).first();
+  if (Number(count ? count.c : 0) > 0) return;
+  const items = buildPlanScheduleItems({
+    totalKobo: Number(schedule.total_kobo || toKobo(schedule.total_amount)),
+    depositKobo: Number(schedule.deposit_kobo || toKobo(schedule.deposit_amount)),
+    installmentKobo: Number(schedule.installment_kobo || toKobo(schedule.installment_amount)),
+    planType: schedule.plan_type,
+    startDate: schedule.start_date || schedule.created_at,
+    frequencyDays: schedule.frequency_days,
+    numberOfInstallments: schedule.number_of_installments
+  });
+  if (items.length) await replaceScheduleItems(env, schedule.id, items);
 }
 
 // ---------------------------------------------------------------------------
@@ -2935,6 +3428,8 @@ export default {
         last_login_at: staffDetails ? staffDetails.last_login_at : null,
         team_names: staffDetails ? staffDetails.team_names : null,
         referral_code: user.role_name !== "Client" ? user.referral_code : null,
+        commission_access: Number(user.commission_access || 0) === 1,
+        can_access_commissions: canAccessCommissions(user),
         referral_link: user.role_name !== "Client" && user.referral_code
           ? `${new URL(request.url).origin}/signup?ref=${encodeURIComponent(user.referral_code)}`
           : null,
@@ -4035,10 +4530,35 @@ export default {
         WHERE cn.client_id=? ORDER BY cn.created_at DESC
       `).bind(id).all();
       const portfolio = await buildClientPropertyPortfolio(env, client);
+      const paymentPlanRow = await env.DB.prepare(`
+        SELECT * FROM payment_schedules WHERE client_id=? ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, id DESC LIMIT 1
+      `).bind(client.id).first();
+      let paymentPlan = null;
+      if (paymentPlanRow) {
+        await ensureScheduleItems(env, paymentPlanRow);
+        const { results: planItems } = await env.DB.prepare(
+          "SELECT * FROM payment_schedule_items WHERE schedule_id=? ORDER BY sequence_no"
+        ).bind(paymentPlanRow.id).all();
+        const paidRow = await env.DB.prepare(`
+          SELECT COALESCE(SUM(amount_kobo),0) AS paid_kobo FROM payments
+          WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+        `).bind(client.id).first();
+        paymentPlan = {
+          ...paymentPlanRow,
+          plan_type: normalizePlanType(paymentPlanRow.plan_type),
+          is_easy_buy: isEasyBuyPlan(paymentPlanRow.plan_type),
+          total_agreed_price: fromKobo(Number(paymentPlanRow.total_kobo || toKobo(paymentPlanRow.total_amount))),
+          deposit_amount: fromKobo(Number(paymentPlanRow.deposit_kobo || toKobo(paymentPlanRow.deposit_amount))),
+          installment_amount: fromKobo(Number(paymentPlanRow.installment_kobo || toKobo(paymentPlanRow.installment_amount))),
+          expected_items: planItems,
+          ...computeScheduleDefaulting(paymentPlanRow, planItems, Number(paidRow ? paidRow.paid_kobo : 0))
+        };
+      }
       return json({
         client,
         properties: portfolio.properties,
         financials: portfolio.financials,
+        payment_plan: paymentPlan,
         assignments,
         assignment_history: assignmentHistory,
         history: assignmentHistory,
@@ -4611,7 +5131,7 @@ export default {
       const settings = await getAlatpaySettings(env);
       const outstandingKobo = await outstandingForClient(env, client);
       let va = await env.DB.prepare(
-        "SELECT * FROM virtual_accounts WHERE client_id=? AND provider='wema_alat' ORDER BY id DESC LIMIT 1"
+        "SELECT * FROM virtual_accounts WHERE client_id=? AND provider IN ('alatpay','wema_alat') ORDER BY id DESC LIMIT 1"
       ).bind(client.id).first();
       if (va && va.account_status === "active" && va.expires_at && parseDbDate(va.expires_at) < new Date()) {
         await env.DB.prepare("UPDATE virtual_accounts SET account_status='expired', updated_at=datetime('now') WHERE id=?")
@@ -5379,10 +5899,11 @@ export default {
 
       let res;
       try {
+        const providerKey = body.provider ? String(body.provider) : await getDefaultPaymentProvider(env);
         res = await env.DB.prepare(`
-          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
-        `).bind(client_id, property_id || null, txRef, fromKobo(kobo), SUPPORTED_CURRENCY, method, kobo, demoFlag).run();
+          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, datetime('now'))
+        `).bind(client_id, property_id || null, txRef, fromKobo(kobo), SUPPORTED_CURRENCY, method, kobo, demoFlag, providerKey, txRef).run();
       } catch (err) {
         if (String(err && err.message || "").toUpperCase().includes("UNIQUE")) {
           return json({ error: "Duplicate transaction reference" }, 409);
@@ -5578,6 +6099,70 @@ export default {
       return json({ ok: true, status: "failed" });
     }
 
+    // Multi-provider registry. Provider secrets are read from Worker secrets /
+    // environment variables; this endpoint only manages non-secret settings.
+    if (path === "/api/finance/providers" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Finance Officer", "Branch Manager"].includes(actor.role_name)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const { results } = await env.DB.prepare(`
+        SELECT provider_key, provider_name, status, environment, is_default, webhook_path, adapter_key,
+               updated_at, CASE WHEN webhook_secret IS NULL OR webhook_secret='' THEN 0 ELSE 1 END AS has_db_secret
+        FROM provider_configs ORDER BY is_default DESC, provider_key
+      `).all();
+      const providers = results.map(row => ({
+        ...row,
+        env_secret_configured: row.provider_key === "alatpay"
+          ? Boolean(env.ALATPAY_SECRET_KEY)
+          : (row.provider_key === "paystack" ? Boolean(env.PAYSTACK_SECRET_KEY) : row.has_db_secret === 1),
+        adapter_registered: Boolean(getPaymentProviderAdapter(row.adapter_key || row.provider_key))
+      }));
+      return json({ providers, default_provider: await getDefaultPaymentProvider(env), adapters: Object.keys(PAYMENT_PROVIDER_ADAPTERS) });
+    }
+
+    if (path === "/api/finance/providers" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const body = await request.json();
+      const providerKey = String(body.provider_key || "").trim().toLowerCase();
+      const adapter = getPaymentProviderAdapter(body.adapter_key || providerKey);
+      if (!providerKey || !adapter) return json({ error: "Unknown provider adapter" }, 400);
+      const existing = await env.DB.prepare("SELECT * FROM provider_configs WHERE provider_key=?").bind(providerKey).first();
+      if (!existing) return json({ error: "Provider is not registered" }, 404);
+      const validStatuses = ["Not configured", "Awaiting onboarding", "Awaiting credentials", "Configured", "Active"];
+      if (body.status !== undefined && !validStatuses.includes(body.status)) {
+        return json({ error: "Invalid provider status" }, 400);
+      }
+      if (body.environment !== undefined && !["sandbox", "production"].includes(body.environment)) {
+        return json({ error: "Invalid environment" }, 400);
+      }
+      await env.DB.prepare(`
+        UPDATE provider_configs SET
+          status=COALESCE(?, status), environment=COALESCE(?, environment),
+          webhook_path=COALESCE(?, webhook_path), adapter_key=COALESCE(?, adapter_key),
+          updated_by=?, updated_at=datetime('now')
+        WHERE provider_key=?
+      `).bind(
+        body.status || null, body.environment || null,
+        body.webhook_path || adapter.webhookPath || null,
+        body.adapter_key || providerKey, actor.id, providerKey
+      ).run();
+      if (isTruthy(body.is_default)) {
+        await env.DB.prepare("UPDATE provider_configs SET is_default=0").run();
+        await env.DB.prepare("UPDATE provider_configs SET is_default=1 WHERE provider_key=?").bind(providerKey).run();
+      }
+      await audit(env, actor.id, "provider_config.update", "provider_config", providerKey, {
+        status: body.status || null, environment: body.environment || null, is_default: isTruthy(body.is_default)
+      });
+      return json({ ok: true, provider_key: providerKey, default_provider: await getDefaultPaymentProvider(env) });
+    }
+
     // 8. ALAT by Wema Bank Integration Configuration
     if (path === "/api/finance/provider-config" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
@@ -5752,9 +6337,9 @@ export default {
       let payment = await env.DB.prepare("SELECT * FROM payments WHERE transaction_ref=?").bind(String(orderId)).first();
       if (!payment) {
         await env.DB.prepare(`
-          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo)
-          VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Virtual Account', 'pending', ?, 0)
-        `).bind(client.id, client.interested_property_id || null, String(orderId), fromKobo(amountKobo), amountKobo).run();
+          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
+          VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Virtual Account', 'pending', ?, 0, 'alatpay', ?)
+        `).bind(client.id, client.interested_property_id || null, String(orderId), fromKobo(amountKobo), amountKobo, String(transactionId)).run();
         payment = await env.DB.prepare("SELECT * FROM payments WHERE transaction_ref=?").bind(String(orderId)).first();
       }
       if (!payment) return json({ error: "Unable to record ALATPay payment" }, 500);
@@ -5778,8 +6363,8 @@ export default {
 
       const now = new Date().toISOString();
       const updated = await env.DB.prepare(
-        "UPDATE payments SET status='verified', verified_at=?, verified_by=NULL WHERE id=? AND status='pending'"
-      ).bind(now, payment.id).run();
+        "UPDATE payments SET status='verified', verified_at=?, verified_by=NULL, provider='alatpay', provider_reference=COALESCE(provider_reference, ?) WHERE id=? AND status='pending'"
+      ).bind(now, String(transactionId), payment.id).run();
       if (updated.meta && Number(updated.meta.changes) === 0) {
         return json({ ok: true, already_processed: true });
       }
@@ -5930,8 +6515,8 @@ export default {
       }
 
       const now = new Date().toISOString();
-      const upd = await env.DB.prepare("UPDATE payments SET status='verified', verified_at=?, verified_by=NULL WHERE id=? AND status='pending'")
-        .bind(now, payment.id).run();
+      const upd = await env.DB.prepare("UPDATE payments SET status='verified', verified_at=?, verified_by=NULL, provider='wema_alat', provider_reference=COALESCE(provider_reference, ?) WHERE id=? AND status='pending'")
+        .bind(now, txRef, payment.id).run();
       if (upd.meta && Number(upd.meta.changes) === 0) {
         await recordEvent("duplicate", payment.id);
         return json({ ok: true, already_processed: true });
@@ -5965,6 +6550,159 @@ export default {
 
       await recordEvent("verified", payment.id);
       return json({ ok: true, status: "verified", receipt_ref: receipt.receipt_ref });
+    }
+
+    // Generic provider webhook: every additional provider only needs an adapter
+    // and a provider_configs row. Payment, receipt, attribution and idempotency
+    // logic lives here and is shared by all adapters.
+    const providerWebhookMatch = path.match(/^\/api\/webhooks\/([a-z0-9_]+)$/);
+    if (providerWebhookMatch && request.method === "POST") {
+      const providerKey = providerWebhookMatch[1];
+      const adapter = getPaymentProviderAdapter(providerKey);
+      if (!adapter || ["alatpay", "wema_alat"].includes(providerKey)) {
+        return json({ error: "Unknown payment provider" }, 404);
+      }
+      const rawText = await request.text();
+      let body;
+      try { body = rawText ? JSON.parse(rawText) : null; } catch { body = null; }
+      if (!body) return json({ error: "Invalid JSON payload" }, 400);
+      const recordEvent = async (eventId, eventType, reference, payload, result) => {
+        await env.DB.prepare(`
+          INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        `).bind(providerKey, eventId, eventType || null, reference || null, JSON.stringify(payload || {}).slice(0, 4000), result).run().catch(() => {});
+      };
+      let verification;
+      try {
+        verification = await adapter.verifyWebhook(env, request, body, rawText);
+      } catch (error) {
+        await audit(env, null, "webhook.rejected", providerKey, null, { reason: error.message });
+        return json({ error: error.message || "Webhook verification failed" }, error.status || 503);
+      }
+      const event = adapter.normalizeEvent(body, verification);
+      if (!event.reference) return json({ error: "Missing transaction reference" }, 400);
+      const seen = await env.DB.prepare("SELECT id, result FROM webhook_events WHERE provider=? AND event_id=?")
+        .bind(providerKey, event.eventId).first();
+      if (seen) return json({ ok: true, already_processed: true, result: seen.result });
+      if (!event.success) {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "received");
+        return json({ ok: true, status: "ignored", matched: false }, 202);
+      }
+      if (event.requireTimestamp) {
+        const eventTime = parseWebhookTimestamp(event.occurredAt);
+        if (!eventTime) {
+          await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "rejected");
+          return json({ error: "Webhook event timestamp is required" }, 400);
+        }
+        const age = Date.now() - eventTime.getTime();
+        if (age > WEBHOOK_MAX_AGE_MS) {
+          await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "expired");
+          return json({ error: "Webhook event has expired" }, 409);
+        }
+        if (age < -WEBHOOK_FUTURE_SKEW_MS) {
+          await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "rejected");
+          return json({ error: "Webhook event timestamp is in the future" }, 409);
+        }
+      }
+      if (!Number.isInteger(event.amountKobo) || event.amountKobo <= 0) {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "rejected");
+        return json({ error: "A positive payment amount is required" }, 400);
+      }
+      if (event.currency !== SUPPORTED_CURRENCY) {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "currency_mismatch");
+        return json({ error: "Unsupported payment currency" }, 409);
+      }
+      let payment = await env.DB.prepare(
+        "SELECT p.*, c.full_name AS client_name, c.client_reference, c.agreed_purchase_price FROM payments p JOIN clients c ON c.id=p.client_id WHERE p.transaction_ref=? OR (p.provider=? AND p.provider_reference=?) ORDER BY p.id DESC LIMIT 1"
+      ).bind(String(event.reference), providerKey, String(event.providerReference || event.reference)).first();
+      let client = null;
+      let va = null;
+      if (!payment) {
+        va = await env.DB.prepare(
+          "SELECT * FROM virtual_accounts WHERE order_id=? OR transaction_id=? OR provider_reference=? ORDER BY id DESC LIMIT 1"
+        ).bind(String(event.reference), String(event.providerReference || event.reference), String(event.providerReference || event.reference)).first();
+        if (!va) {
+          await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "unmatched");
+          return json({ ok: true, status: "logged", matched: false }, 202);
+        }
+        client = await env.DB.prepare(
+          "SELECT id, client_reference, interested_property_id, agreed_purchase_price FROM clients WHERE id=? AND is_deleted=0"
+        ).bind(va.client_id).first();
+        if (!client) return json({ error: "Client not found" }, 404);
+        await env.DB.prepare(`
+          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
+          VALUES (?, ?, ?, ?, 'NGN', ?, 'pending', ?, 0, ?, ?)
+        `).bind(
+          client.id, client.interested_property_id || null, String(event.reference),
+          fromKobo(event.amountKobo), adapter.name, event.amountKobo, providerKey,
+          String(event.providerReference || event.reference)
+        ).run();
+        payment = await env.DB.prepare(
+          "SELECT p.*, c.full_name AS client_name, c.client_reference, c.agreed_purchase_price FROM payments p JOIN clients c ON c.id=p.client_id WHERE p.transaction_ref=? ORDER BY p.id DESC LIMIT 1"
+        ).bind(String(event.reference)).first();
+      }
+      if (!payment) return json({ error: "Unable to record provider payment" }, 500);
+      if (payment.is_demo && !demoEnabled(env)) {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "rejected");
+        return json({ error: "Demo payment events are disabled in this environment" }, 403);
+      }
+      if (String(payment.currency || SUPPORTED_CURRENCY).toUpperCase() !== SUPPORTED_CURRENCY) {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "currency_mismatch");
+        return json({ error: "Only NGN payments can be verified" }, 409);
+      }
+      if (Number(event.amountKobo) !== Number(payment.amount_kobo || toKobo(payment.amount))) {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "amount_mismatch");
+        return json({ error: "Webhook amount does not match recorded payment" }, 409);
+      }
+      if (payment.status === "verified") {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "duplicate");
+        return json({ ok: true, already_processed: true });
+      }
+      if (payment.status !== "pending") {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "rejected");
+        return json({ error: `Payment cannot be verified from status ${payment.status}` }, 409);
+      }
+      const now = new Date().toISOString();
+      const updated = await env.DB.prepare(
+        "UPDATE payments SET status='verified', verified_at=?, verified_by=NULL, provider=?, provider_reference=COALESCE(provider_reference, ?) WHERE id=? AND status='pending'"
+      ).bind(now, providerKey, String(event.providerReference || event.reference), payment.id).run();
+      if (updated.meta && Number(updated.meta.changes) === 0) {
+        await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "duplicate");
+        return json({ ok: true, already_processed: true });
+      }
+      await stampPaymentAttribution(env, payment.id, payment.client_id);
+      const totalRow = await env.DB.prepare(
+        "SELECT COALESCE(SUM(amount_kobo),0) AS total_kobo FROM payments WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'"
+      ).bind(payment.client_id).first();
+      const remainingKobo = Math.max(0, toKobo(payment.agreed_purchase_price || 0) - Number(totalRow ? totalRow.total_kobo : 0));
+      let receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
+      if (!receipt) {
+        const receiptRef = newReceiptRef(false);
+        await env.DB.prepare(`
+          INSERT INTO receipts (payment_id, client_id, receipt_ref, amount, currency, amount_kobo, remaining_balance_kobo, is_demo, created_at)
+          VALUES (?, ?, ?, ?, 'NGN', ?, ?, 0, datetime('now'))
+        `).bind(payment.id, payment.client_id, receiptRef, fromKobo(event.amountKobo), event.amountKobo, remainingKobo).run();
+        receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
+      }
+      await ensureReceiptPdf(env, {
+        ...payment, ...receipt, payment_status: "verified", payment_date: now
+      }).catch(() => {});
+      if (va) {
+        await env.DB.prepare("UPDATE virtual_accounts SET account_status='used', updated_at=datetime('now') WHERE id=?").bind(va.id).run();
+      }
+      await recordEvent(event.eventId, event.eventType, event.reference, event.payload, "verified");
+      await createNotification(env, {
+        clientId: payment.client_id,
+        type: "payment.verified",
+        title: "Payment Successfully Verified",
+        message: `Your payment of ${formatNGN(event.amountKobo)} has been verified. Official Receipt #${receipt.receipt_ref} is now available.`,
+        metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, provider: providerKey }
+      });
+      await notifyPaymentVerified(env, payment, null);
+      await audit(env, null, "webhook.received", "payment", String(payment.id), {
+        provider: providerKey, event_id: event.eventId, reference: event.reference, result: "verified"
+      });
+      return json({ ok: true, status: "verified", provider: providerKey, receipt_ref: receipt.receipt_ref });
     }
 
     // ALAT Transaction Reconciliation Interface
@@ -6029,15 +6767,49 @@ export default {
         ORDER BY s.next_due_date ASC
       `;
       const { results } = await env.DB.prepare(sql).bind(...binds).all();
-      const schedules = results.map(s => ({
-        ...s,
-        total_kobo: Number(s.total_kobo || toKobo(s.total_amount)),
-        deposit_kobo: Number(s.deposit_kobo || toKobo(s.deposit_amount)),
-        installment_kobo: Number(s.installment_kobo || toKobo(s.installment_amount)),
-        total_agreed_price: fromKobo(Number(s.total_kobo || toKobo(s.total_amount))),
-        deposit_amount: fromKobo(Number(s.deposit_kobo || toKobo(s.deposit_amount))),
-        installment_amount: fromKobo(Number(s.installment_kobo || toKobo(s.installment_amount)))
-      }));
+      const scheduleIds = results.map(row => row.id);
+      const itemsBySchedule = new Map();
+      if (scheduleIds.length) {
+        const { results: itemRows } = await env.DB.prepare(`
+          SELECT * FROM payment_schedule_items WHERE schedule_id IN (${placeholders(scheduleIds)})
+          ORDER BY schedule_id, sequence_no
+        `).bind(...scheduleIds).all();
+        for (const item of itemRows) {
+          if (!itemsBySchedule.has(item.schedule_id)) itemsBySchedule.set(item.schedule_id, []);
+          itemsBySchedule.get(item.schedule_id).push(item);
+        }
+      }
+      const clientIds = [...new Set(results.map(row => row.client_id))];
+      const paidByClient = new Map();
+      if (clientIds.length) {
+        const { results: paidRows } = await env.DB.prepare(`
+          SELECT client_id, COALESCE(SUM(amount_kobo),0) AS paid_kobo
+          FROM payments WHERE status='verified' AND is_demo=0 AND currency='NGN'
+            AND client_id IN (${placeholders(clientIds)})
+          GROUP BY client_id
+        `).bind(...clientIds).all();
+        for (const paid of paidRows) paidByClient.set(paid.client_id, Number(paid.paid_kobo || 0));
+      }
+      const schedules = results.map(s => {
+        const items = itemsBySchedule.get(s.id) || [];
+        const defaulting = computeScheduleDefaulting(s, items, paidByClient.get(s.client_id) || 0);
+        return {
+          ...s,
+          total_kobo: Number(s.total_kobo || toKobo(s.total_amount)),
+          deposit_kobo: Number(s.deposit_kobo || toKobo(s.deposit_amount)),
+          installment_kobo: Number(s.installment_kobo || toKobo(s.installment_amount)),
+          total_agreed_price: fromKobo(Number(s.total_kobo || toKobo(s.total_amount))),
+          deposit_amount: fromKobo(Number(s.deposit_kobo || toKobo(s.deposit_amount))),
+          installment_amount: fromKobo(Number(s.installment_kobo || toKobo(s.installment_amount))),
+          plan_type: normalizePlanType(s.plan_type),
+          start_date: s.start_date || String(s.created_at || "").slice(0, 10),
+          is_easy_buy: isEasyBuyPlan(s.plan_type),
+          next_due_date: defaulting.next_due_date || s.next_due_date,
+          is_overdue: defaulting.status === "defaulting",
+          expected_items: items,
+          ...defaulting
+        };
+      });
       return json({ schedules });
     }
 
@@ -6059,6 +6831,46 @@ export default {
         "SELECT h.*, u.full_name AS changed_by_name FROM payment_schedule_history h LEFT JOIN users u ON u.id=h.changed_by WHERE h.schedule_id=? ORDER BY h.created_at DESC, h.id DESC"
       ).bind(schedule.id).all();
       return json({ schedule, history: results });
+    }
+
+    const installmentDetailMatch = path.match(/^\/api\/installments\/(\d+)$/);
+    if (installmentDetailMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Branch Manager", "Finance Officer", "Team Lead", "Marketer"].includes(actor.role_name)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const schedule = await env.DB.prepare(
+        "SELECT s.*, c.assigned_branch_id, c.full_name AS client_name, c.client_reference FROM payment_schedules s JOIN clients c ON c.id=s.client_id WHERE s.id=?"
+      ).bind(installmentDetailMatch[1]).first();
+      if (!schedule) return json({ error: "Schedule not found" }, 404);
+      if (["Branch Manager", "Team Lead", "Marketer"].includes(actor.role_name) && Number(schedule.assigned_branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Cross-branch forbidden" }, 403);
+      }
+      if (actor.role_name === "Marketer" && Number(schedule.created_by) !== Number(actor.id)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      await ensureScheduleItems(env, schedule);
+      const { results: items } = await env.DB.prepare(
+        "SELECT * FROM payment_schedule_items WHERE schedule_id=? ORDER BY sequence_no"
+      ).bind(schedule.id).all();
+      const paid = await env.DB.prepare(`
+        SELECT COALESCE(SUM(amount_kobo),0) AS paid_kobo FROM payments
+        WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+      `).bind(schedule.client_id).first();
+      const defaulting = computeScheduleDefaulting(schedule, items, Number(paid ? paid.paid_kobo : 0));
+      return json({
+        schedule: {
+          ...schedule,
+          plan_type: normalizePlanType(schedule.plan_type),
+          is_easy_buy: isEasyBuyPlan(schedule.plan_type),
+          total_agreed_price: fromKobo(Number(schedule.total_kobo || toKobo(schedule.total_amount))),
+          deposit_amount: fromKobo(Number(schedule.deposit_kobo || toKobo(schedule.deposit_amount))),
+          installment_amount: fromKobo(Number(schedule.installment_kobo || toKobo(schedule.installment_amount))),
+          ...defaulting
+        },
+        items
+      });
     }
 
     const installmentMatch = path.match(/^\/api\/installments\/(\d+)$/);
@@ -6083,9 +6895,23 @@ export default {
       const totalKobo = body.total_amount !== undefined ? toKobo(body.total_amount) : Number(schedule.total_kobo || toKobo(schedule.total_amount));
       const depositKobo = body.deposit_amount !== undefined ? toKobo(body.deposit_amount) : Number(schedule.deposit_kobo || toKobo(schedule.deposit_amount));
       const installmentKobo = body.installment_amount !== undefined ? toKobo(body.installment_amount) : Number(schedule.installment_kobo || toKobo(schedule.installment_amount));
-      const frequencyDays = Number(body.frequency_days !== undefined ? body.frequency_days : schedule.frequency_days);
-      const nextDue = body.next_due_date || schedule.next_due_date;
+      const planType = normalizePlanType(
+        body.plan_type || body.frequency || (body.frequency_days ? "part_payment" : schedule.plan_type),
+        normalizePlanType(schedule.plan_type)
+      );
+      const frequencyMap = { daily: 1, weekly: 7, bi_monthly: 15, bi_monthly_: 15, monthly: 30, quarterly: 90 };
+      const frequencyDays = Number(
+        body.frequency && frequencyMap[body.frequency] ? frequencyMap[body.frequency]
+          : (body.frequency_days !== undefined ? body.frequency_days
+            : (planType === "daily" ? 1 : planType === "weekly" ? 7 : planType === "bi_monthly" ? 15 : planType === "monthly" ? 30 : schedule.frequency_days))
+      );
+      const startDate = dateOnly(body.start_date) || schedule.start_date || String(schedule.next_due_date || "").slice(0, 10) || todayOnly();
+      const nextDue = dateOnly(body.next_due_date) || String(schedule.next_due_date || "").slice(0, 10) || startDate;
       const status = body.status || schedule.status;
+      const graceDays = body.grace_days !== undefined ? Math.max(0, Number(body.grace_days) || 0) : Number(schedule.grace_days || 0);
+      const numberOfInstallments = body.number_of_installments !== undefined
+        ? Math.max(1, Math.floor(Number(body.number_of_installments) || 1))
+        : Number(schedule.number_of_installments || 0) || null;
       const validation = validateScheduleInput({ totalKobo, depositKobo, installmentKobo, frequencyDays, nextDue, status });
       if (validation.error) return json({ error: validation.error }, 400);
 
@@ -6095,7 +6921,8 @@ export default {
         UPDATE payment_schedules
         SET property_id=?, total_amount=?, total_kobo=?, deposit_amount=?, deposit_kobo=?,
             installment_amount=?, installment_kobo=?, frequency_days=?, next_due_date=?,
-            status=?, notes=?, updated_at=?
+            status=?, notes=?, plan_type=?, start_date=?, grace_days=?, number_of_installments=?,
+            is_easy_buy=?, schedule_version=COALESCE(schedule_version,1)+1, updated_at=?
         WHERE id=?
       `).bind(
         body.property_id !== undefined ? (body.property_id || null) : schedule.property_id,
@@ -6104,8 +6931,16 @@ export default {
         fromKobo(installmentKobo), installmentKobo,
         frequencyDays, nextDue, status,
         body.notes !== undefined ? (body.notes || null) : schedule.notes,
-        updatedAt, scheduleId
+        planType, startDate, graceDays, numberOfInstallments,
+        isEasyBuyPlan(planType) ? 1 : 0, updatedAt, scheduleId
       ).run();
+
+      if (status === "active") {
+        const generated = buildPlanScheduleItems({
+          totalKobo, depositKobo, installmentKobo, planType, startDate, frequencyDays, numberOfInstallments
+        });
+        await replaceScheduleItems(env, scheduleId, generated);
+      }
 
       await env.DB.prepare(`
         INSERT INTO payment_schedule_history (schedule_id, action, previous_json, new_json, reason, changed_by, created_at)
@@ -6136,18 +6971,33 @@ export default {
         client_id, property_id, total_amount, deposit_amount, installment_amount,
         frequency_days, frequency, next_due_date, notes
       } = body || {};
-      if (!client_id || total_amount === undefined || installment_amount === undefined || (!frequency_days && !frequency) || !next_due_date) {
+      if (!client_id || total_amount === undefined || (!frequency_days && !frequency && !body.plan_type) || !next_due_date) {
         return json({ error: "Missing required fields for installment schedule" }, 400);
       }
+      if (normalizePlanType(body.plan_type || frequency, "part_payment") !== "outright" && installment_amount === undefined) {
+        return json({ error: "Installment amount is required for this plan type" }, 400);
+      }
 
-      const frequencyMap = { weekly: 7, monthly: 30, quarterly: 90 };
-      const resolvedFrequency = frequency && frequencyMap[frequency] ? frequencyMap[frequency] : Number(frequency_days);
+      const frequencyMap = { daily: 1, weekly: 7, bi_monthly: 15, monthly: 30, quarterly: 90 };
+      const planType = normalizePlanType(
+        body.plan_type || frequency || (Number(frequency_days) === 1 ? "daily" : Number(frequency_days) === 7 ? "weekly" : Number(frequency_days) === 15 ? "bi_monthly" : Number(frequency_days) === 30 ? "monthly" : "part_payment"),
+        "part_payment"
+      );
+      const resolvedFrequency = planType === "outright"
+        ? 1
+        : (frequency && frequencyMap[frequency] ? frequencyMap[frequency]
+          : (frequency_days ? Number(frequency_days) : planIntervalDays(planType)));
       const totalKobo = toKobo(total_amount);
       const depositKobo = toKobo(deposit_amount || 0);
-      const installmentKobo = toKobo(installment_amount);
+      const installmentKobo = planType === "outright" ? totalKobo : toKobo(installment_amount);
+      const startDate = dateOnly(body.start_date) || dateOnly(next_due_date) || todayOnly();
+      const graceDays = body.grace_days !== undefined ? Math.max(0, Number(body.grace_days) || 0) : Math.max(0, Number(env.DEFAULT_GRACE_DAYS || 0));
+      const numberOfInstallments = body.number_of_installments !== undefined
+        ? Math.max(1, Math.floor(Number(body.number_of_installments) || 1))
+        : null;
       const validation = validateScheduleInput({
         totalKobo, depositKobo, installmentKobo, frequencyDays: resolvedFrequency,
-        nextDue: next_due_date, status: "active"
+        nextDue: startDate, status: "active"
       });
       if (validation.error) return json({ error: validation.error }, 400);
 
@@ -6163,21 +7013,28 @@ export default {
 
       const res = await env.DB.prepare(`
         INSERT INTO payment_schedules (client_id, property_id, total_amount, total_kobo, deposit_amount, deposit_kobo,
-          installment_amount, installment_kobo, frequency_days, next_due_date, status, notes, created_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, datetime('now'), datetime('now'))
+          installment_amount, installment_kobo, frequency_days, next_due_date, status, notes, created_by, created_at, updated_at,
+          plan_type, start_date, grace_days, number_of_installments, is_easy_buy, schedule_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?, 1)
       `).bind(
         client_id, property_id || null,
         fromKobo(totalKobo), totalKobo,
         fromKobo(depositKobo), depositKobo,
         fromKobo(installmentKobo), installmentKobo,
-        resolvedFrequency, next_due_date, notes || null, actor.id
+        resolvedFrequency, startDate, notes || null, actor.id,
+        planType, startDate, graceDays, numberOfInstallments, isEasyBuyPlan(planType) ? 1 : 0
       ).run();
 
       const newId = res.meta.last_row_id;
+      const generated = buildPlanScheduleItems({
+        totalKobo, depositKobo, installmentKobo, planType, startDate,
+        frequencyDays: resolvedFrequency, numberOfInstallments
+      });
+      await replaceScheduleItems(env, newId, generated);
       await env.DB.prepare(`
         INSERT INTO payment_schedule_history (schedule_id, action, previous_json, new_json, reason, changed_by, created_at)
         VALUES (?, 'create', NULL, ?, ?, ?, datetime('now'))
-      `).bind(newId, JSON.stringify({ totalKobo, depositKobo, installmentKobo, resolvedFrequency, next_due_date, property_id: property_id || null, notes: notes || null }), body.reason || null, actor.id).run();
+      `).bind(newId, JSON.stringify({ totalKobo, depositKobo, installmentKobo, resolvedFrequency, planType, startDate, graceDays, next_due_date, property_id: property_id || null, notes: notes || null, schedule_items: generated }), body.reason || null, actor.id).run();
       await audit(env, actor.id, "installment.create", "installment", String(newId), body, client.assigned_branch_id);
 
       // Notify client
@@ -6185,11 +7042,11 @@ export default {
         clientId: client.id,
         type: "installment.created",
         title: "Installment Schedule Configured",
-        message: `An installment plan has been configured for your property. Installments of ${formatNGN(installmentKobo)} are scheduled every ${resolvedFrequency} days. First due date: ${next_due_date}.`,
-        metadata: { schedule_id: newId }
+        message: `A ${planType.replace(/_/g, " ")} payment plan has been configured. ${isEasyBuyPlan(planType) ? "This is an easy-buy plan. " : ""}Installments of ${formatNGN(installmentKobo)} are scheduled every ${resolvedFrequency} days. First due date: ${startDate}.`,
+        metadata: { schedule_id: newId, plan_type: planType }
       });
 
-      return json({ ok: true, id: newId });
+      return json({ ok: true, id: newId, plan_type: planType, schedule_items: generated.length });
     }
 
     const cancelMatch = path.match(/^\/api\/installments\/(\d+)\/cancel$/);
@@ -6224,6 +7081,224 @@ export default {
         metadata: { schedule_id: schedule.id }
       });
       return json({ ok: true, status: "cancelled" });
+    }
+
+    // =========================================================================
+    // DEFAULTING CLIENTS, PLAN STATUS AND FOLLOW-UP TOOLS
+    // =========================================================================
+    async function defaultingScheduleForActor(actor, scheduleId) {
+      const schedule = await env.DB.prepare(`
+        SELECT s.*, c.full_name AS client_name, c.client_reference, c.assigned_branch_id,
+               c.created_by, c.original_marketer_id, c.team_lead_id, b.name AS branch_name
+        FROM payment_schedules s
+        JOIN clients c ON c.id=s.client_id
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        WHERE s.id=? AND c.is_deleted=0
+      `).bind(scheduleId).first();
+      if (!schedule) return null;
+      const scope = await resolvePhase6Scope(env, actor);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (["Super Admin", "Managing Director", "Head Accountant", "Finance Officer"].includes(actualRole)) return schedule;
+      if (["Project Manager", "Branch Manager"].includes(actualRole)) {
+        return Number(schedule.assigned_branch_id) === Number(actor.branch_id) ? schedule : null;
+      }
+      if (actualRole === "Team Lead") {
+        return scope.memberIds.includes(Number(schedule.created_by)) ||
+          scope.memberIds.includes(Number(schedule.original_marketer_id)) ||
+          Number(schedule.team_lead_id) === Number(actor.id) ? schedule : null;
+      }
+      return Number(schedule.created_by) === Number(actor.id) ||
+        Number(schedule.original_marketer_id) === Number(actor.id) ? schedule : null;
+    }
+
+    if (path === "/api/defaulting-clients" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      const scope = await resolvePhase6Scope(env, actor);
+      const clientScope = clientScopeSql(scope, "c");
+      const clauses = ["c.is_deleted=0", "s.status='active'", clientScope.clause];
+      const binds = [...clientScope.binds];
+      const branchId = url.searchParams.get("branch_id");
+      const teamLeadId = url.searchParams.get("team_lead_id");
+      const staffId = url.searchParams.get("staff_id");
+      const planType = url.searchParams.get("plan_type");
+      const requestedStatus = url.searchParams.get("status");
+      const q = url.searchParams.get("q");
+      if (branchId) {
+        if (!["Super Admin", "Managing Director", "Head Accountant", "Finance Officer"].includes(actualRole) && Number(branchId) !== Number(actor.branch_id)) {
+          return json({ error: "Branch is outside your scope" }, 403);
+        }
+        clauses.push("c.assigned_branch_id=?");
+        binds.push(Number(branchId));
+      }
+      if (teamLeadId) { clauses.push("c.team_lead_id=?"); binds.push(Number(teamLeadId)); }
+      if (staffId) {
+        if (actualRole === "Marketer" && Number(staffId) !== Number(actor.id)) return json({ error: "Staff is outside your scope" }, 403);
+        if (actualRole === "Team Lead" && !scope.memberIds.includes(Number(staffId))) return json({ error: "Staff is outside your team" }, 403);
+        clauses.push("(c.created_by=? OR c.original_marketer_id=?)");
+        binds.push(Number(staffId), Number(staffId));
+      }
+      if (planType) { clauses.push("s.plan_type=?"); binds.push(normalizePlanType(planType)); }
+      if (q) {
+        clauses.push("(c.full_name LIKE ? OR c.client_reference LIKE ? OR c.phone_number LIKE ?)");
+        binds.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      }
+      const { results: schedules } = await env.DB.prepare(`
+        SELECT s.*, c.full_name AS client_name, c.client_reference, c.phone_number,
+               c.assigned_branch_id, b.name AS branch_name,
+               COALESCE(u.full_name, '') AS follow_up_owner_name
+        FROM payment_schedules s
+        JOIN clients c ON c.id=s.client_id
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        LEFT JOIN users u ON u.id=s.follow_up_owner_id
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY s.next_due_date ASC, s.id DESC
+      `).bind(...binds).all();
+      const scheduleIds = schedules.map(row => row.id);
+      const itemsBySchedule = new Map();
+      if (scheduleIds.length) {
+        const { results: itemRows } = await env.DB.prepare(`
+          SELECT * FROM payment_schedule_items WHERE schedule_id IN (${placeholders(scheduleIds)})
+          ORDER BY schedule_id, sequence_no
+        `).bind(...scheduleIds).all();
+        for (const item of itemRows) {
+          if (!itemsBySchedule.has(item.schedule_id)) itemsBySchedule.set(item.schedule_id, []);
+          itemsBySchedule.get(item.schedule_id).push(item);
+        }
+      }
+      const clientIds = [...new Set(schedules.map(row => row.client_id))];
+      const paidByClient = new Map();
+      if (clientIds.length) {
+        const { results: paidRows } = await env.DB.prepare(`
+          SELECT client_id, COALESCE(SUM(amount_kobo),0) AS paid_kobo FROM payments
+          WHERE status='verified' AND is_demo=0 AND currency='NGN'
+            AND client_id IN (${placeholders(clientIds)}) GROUP BY client_id
+        `).bind(...clientIds).all();
+        for (const paid of paidRows) paidByClient.set(paid.client_id, Number(paid.paid_kobo || 0));
+      }
+      const latestFollowUps = new Map();
+      if (scheduleIds.length) {
+        const { results: followUps } = await env.DB.prepare(`
+          SELECT f.*, u.full_name AS owner_name FROM defaulting_follow_ups f
+          LEFT JOIN users u ON u.id=f.owner_user_id
+          WHERE f.schedule_id IN (${placeholders(scheduleIds)})
+          ORDER BY f.created_at DESC, f.id DESC
+        `).bind(...scheduleIds).all();
+        for (const followUp of followUps) {
+          if (!latestFollowUps.has(followUp.schedule_id)) latestFollowUps.set(followUp.schedule_id, followUp);
+        }
+      }
+      let rows = schedules.map(schedule => {
+        const items = itemsBySchedule.get(schedule.id) || [];
+        const state = computeScheduleDefaulting(schedule, items, paidByClient.get(schedule.client_id) || 0);
+        return {
+          schedule_id: schedule.id,
+          client_id: schedule.client_id,
+          client_name: schedule.client_name,
+          client_reference: schedule.client_reference,
+          phone_number: schedule.phone_number,
+          branch_id: schedule.assigned_branch_id,
+          branch_name: schedule.branch_name,
+          plan_type: normalizePlanType(schedule.plan_type),
+          total_kobo: Number(schedule.total_kobo || toKobo(schedule.total_amount)),
+          installment_kobo: Number(schedule.installment_kobo || toKobo(schedule.installment_amount)),
+          expected_items_count: items.length,
+          follow_up_owner_id: schedule.follow_up_owner_id,
+          follow_up_owner_name: schedule.follow_up_owner_name || null,
+          follow_up_status: schedule.follow_up_status || null,
+          next_follow_up_date: schedule.next_follow_up_date || null,
+          latest_follow_up: latestFollowUps.get(schedule.id) || null,
+          ...state
+        };
+      });
+      const summaryRows = rows;
+      const summary = {
+        total: summaryRows.length,
+        defaulting: summaryRows.filter(row => row.status === "defaulting").length,
+        performing: summaryRows.filter(row => row.status === "performing").length,
+        amount_behind_kobo: summaryRows.reduce((sum, row) => sum + Number(row.amount_behind_kobo || 0), 0),
+        by_plan_type: PAYMENT_PLAN_TYPES.reduce((acc, type) => {
+          const matching = summaryRows.filter(row => row.plan_type === type);
+          acc[type] = {
+            total: matching.length,
+            defaulting: matching.filter(row => row.status === "defaulting").length
+          };
+          return acc;
+        }, {})
+      };
+      if (requestedStatus && ["performing", "defaulting"].includes(requestedStatus)) {
+        rows = rows.filter(row => row.status === requestedStatus);
+      }
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+      const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") || "50", 10)));
+      const total = rows.length;
+      const paged = rows.slice((page - 1) * limit, page * limit);
+      return json({ clients: paged, schedules: paged, summary, pagination: { page, limit, total } });
+    }
+
+    const defaultingFollowUpMatch = path.match(/^\/api\/defaulting-clients\/(\d+)\/follow-ups$/);
+    if (defaultingFollowUpMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const schedule = await defaultingScheduleForActor(actor, defaultingFollowUpMatch[1]);
+      if (!schedule) return json({ error: "Schedule not found" }, 404);
+      const { results } = await env.DB.prepare(`
+        SELECT f.*, u.full_name AS owner_name, c.full_name AS created_by_name
+        FROM defaulting_follow_ups f
+        LEFT JOIN users u ON u.id=f.owner_user_id
+        LEFT JOIN users c ON c.id=f.created_by
+        WHERE f.schedule_id=? ORDER BY f.created_at DESC, f.id DESC
+      `).bind(schedule.id).all();
+      return json({ follow_ups: results });
+    }
+
+    if (defaultingFollowUpMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const schedule = await defaultingScheduleForActor(actor, defaultingFollowUpMatch[1]);
+      if (!schedule) return json({ error: "Schedule not found" }, 404);
+      const body = await request.json();
+      const note = String(body.note || "").trim();
+      if (!note) return json({ error: "Call note is required" }, 400);
+      if (note.length > 4000) return json({ error: "Call note is too long" }, 400);
+      const status = body.status || "contacted";
+      if (!DEFAULT_FOLLOW_UP_STATUSES.includes(status)) return json({ error: "Follow-up status must be contacted, promised or escalated" }, 400);
+      const nextDate = body.next_follow_up_date ? dateOnly(body.next_follow_up_date) : null;
+      if (body.next_follow_up_date && !nextDate) return json({ error: "Invalid next follow-up date" }, 400);
+      const ownerId = body.owner_user_id ? Number(body.owner_user_id) : actor.id;
+      const owner = await env.DB.prepare(`
+        SELECT u.id, u.branch_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id
+        WHERE u.id=? AND u.is_active=1 AND r.name<>'Client'
+      `).bind(ownerId).first();
+      if (!owner) return json({ error: "Follow-up owner must be an active staff member" }, 400);
+      if (["Project Manager", "Branch Manager"].includes(actor.actual_role_name || actor.role_name) &&
+          Number(owner.branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Follow-up owner is outside your branch" }, 403);
+      }
+      const res = await env.DB.prepare(`
+        INSERT INTO defaulting_follow_ups (schedule_id, client_id, owner_user_id, note, next_follow_up_date, status, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(schedule.id, schedule.client_id, owner.id, note, nextDate, status, actor.id).run();
+      await env.DB.prepare(`
+        UPDATE payment_schedules SET follow_up_owner_id=?, follow_up_status=?, next_follow_up_date=?, updated_at=datetime('now')
+        WHERE id=?
+      `).bind(owner.id, status, nextDate, schedule.id).run();
+      await audit(env, actor.id, "defaulting.followup", "payment_schedule", String(schedule.id), {
+        client_id: schedule.client_id, owner_user_id: owner.id, status, next_follow_up_date: nextDate
+      }, schedule.assigned_branch_id);
+      if (Number(owner.id) !== Number(actor.id)) {
+        await createNotification(env, {
+          userId: owner.id,
+          type: "defaulting.followup",
+          title: "Defaulting Client Follow-up Assigned",
+          message: `${schedule.client_name} (${schedule.client_reference}) needs a follow-up call. Status: ${status}.`,
+          metadata: { schedule_id: schedule.id, client_id: schedule.client_id }
+        });
+      }
+      return json({ ok: true, id: res.meta.last_row_id, owner_user_id: owner.id, status, next_follow_up_date: nextDate });
     }
 
     // =========================================================================
@@ -6356,19 +7431,23 @@ export default {
       }
 
       const activityData = await queryActivities(env, scope, new URL("http://local/api/activity?limit=8"), 8);
-      const commissionScope = commissionScopeSql(scope, "ce");
-      const { results: recentCommissions } = await env.DB.prepare(`
-        SELECT ce.id, ce.commission_ref, ce.commission_kobo, ce.paid_kobo, ce.adjusted_kobo,
-               ce.status, ce.recipient_role, ce.created_at, ce.basis,
-               c.full_name AS client_name, c.client_reference,
-               cp.name AS plan_name, u.full_name AS recipient_name
-        FROM commission_entries ce
-        JOIN clients c ON c.id=ce.client_id
-        JOIN commission_plans cp ON cp.id=ce.plan_id
-        JOIN users u ON u.id=ce.recipient_user_id
-        WHERE ${commissionScope.clause}
-        ORDER BY ce.created_at DESC LIMIT 8
-      `).bind(...commissionScope.binds).all();
+      let recentCommissions = [];
+      if (canAccessCommissions(actor)) {
+        const commissionScope = commissionScopeSql(scope, "ce");
+        const result = await env.DB.prepare(`
+          SELECT ce.id, ce.commission_ref, ce.commission_kobo, ce.paid_kobo, ce.adjusted_kobo,
+                 ce.status, ce.recipient_role, ce.created_at, ce.basis,
+                 c.full_name AS client_name, c.client_reference,
+                 cp.name AS plan_name, u.full_name AS recipient_name
+          FROM commission_entries ce
+          JOIN clients c ON c.id=ce.client_id
+          JOIN commission_plans cp ON cp.id=ce.plan_id
+          JOIN users u ON u.id=ce.recipient_user_id
+          WHERE ${commissionScope.clause}
+          ORDER BY ce.created_at DESC LIMIT 8
+        `).bind(...commissionScope.binds).all();
+        recentCommissions = result.results;
+      }
       return json({
         me,
         scope: analytics.scope,
@@ -6429,7 +7508,7 @@ export default {
       const whereSql = "WHERE " + clauses.join(" AND ");
       const { results: staff } = await env.DB.prepare(`
         SELECT u.id, u.email, u.full_name, u.is_active, u.branch_id, u.role_id,
-               u.last_login_at, u.created_at, u.deactivated_at,
+               u.last_login_at, u.created_at, u.deactivated_at, u.commission_access,
                r.name AS role_name, b.name AS branch_name,
                sp.phone_number, sp.job_title, sp.date_joined, sp.notes,
                (SELECT GROUP_CONCAT(t.name, ', ') FROM team_members tm JOIN teams t ON t.id=tm.team_id
@@ -6490,6 +7569,10 @@ export default {
       const newId = res.meta.last_row_id;
       const managerId = await inferManagerId(env, role_name, resolvedBranch, team_id || null);
       await env.DB.prepare("UPDATE users SET manager_id=? WHERE id=?").bind(managerId, newId).run();
+      if (body.commission_access !== undefined && ["Managing Director", "Super Admin"].includes(actorActualRole)) {
+        await env.DB.prepare("UPDATE users SET commission_access=? WHERE id=?")
+          .bind(isTruthy(body.commission_access) ? 1 : 0, newId).run();
+      }
       await env.DB.prepare(`
         INSERT INTO staff_profiles (user_id, phone_number, job_title, date_joined, notes, updated_by, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -6627,6 +7710,13 @@ export default {
         body.notes !== undefined ? (body.notes || null) : null,
         actor.id
       ).run();
+      if (body.commission_access !== undefined) {
+        if (!["Managing Director", "Super Admin"].includes(actor.actual_role_name || actor.role_name)) {
+          return json({ error: "Only the MD or Super Admin can grant commission access" }, 403);
+        }
+        await env.DB.prepare("UPDATE users SET commission_access=? WHERE id=?")
+          .bind(isTruthy(body.commission_access) ? 1 : 0, target.id).run();
+      }
       if (body.branch_id !== undefined && Number(nextBranch) !== Number(target.branch_id)) {
         await env.DB.prepare(`
           DELETE FROM team_members WHERE user_id=? AND team_id IN (SELECT id FROM teams WHERE branch_id<>?)
@@ -6808,7 +7898,7 @@ export default {
       const q = url.searchParams.get("q");
       const from = dateOnly(url.searchParams.get("from"));
       const to = dateOnly(url.searchParams.get("to"));
-      if (status) { clauses.push("l.status=?"); binds.push(status); }
+      if (status) { clauses.push("l.status=?"); binds.push(normalizeLeadStatus(status, status)); }
       if (marketerId) { clauses.push("l.assigned_marketer_id=?"); binds.push(marketerId); }
       if (teamLeadId) { clauses.push("l.team_lead_id=?"); binds.push(teamLeadId); }
       if (q) { clauses.push("(l.full_name LIKE ? OR l.phone_number LIKE ? OR l.email_address LIKE ? OR l.lead_reference LIKE ?)"); binds.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
@@ -6845,7 +7935,7 @@ export default {
       const body = await request.json();
       const { full_name, phone_number, email_address, source, status, property_id, assigned_marketer_id, team_lead_id, branch_id, estimated_value, notes, next_follow_up_date } = body || {};
       if (!full_name || !phone_number) return json({ error: "Full name and phone number are required" }, 400);
-      const leadStatus = status || "New Lead";
+      const leadStatus = normalizeLeadStatus(status, "New Lead");
       if (!LEAD_STATUSES.includes(leadStatus) || leadStatus === "Converted") {
         return json({ error: "Invalid initial lead status" }, 400);
       }
@@ -7006,7 +8096,7 @@ export default {
         estimatedKobo = body.estimated_value === null || body.estimated_value === "" ? 0 : toKobo(body.estimated_value);
         if (!Number.isFinite(estimatedKobo) || estimatedKobo < 0) return json({ error: "Estimated value is invalid" }, 400);
       }
-      const nextStatus = body.status !== undefined ? body.status : lead.status;
+      const nextStatus = body.status !== undefined ? normalizeLeadStatus(body.status, body.status) : lead.status;
       if (body.status !== undefined) {
         if (!LEAD_STATUSES.includes(nextStatus) || nextStatus === "Converted") {
           return json({ error: "Use the conversion endpoint to convert a lead" }, 400);
@@ -7061,7 +8151,7 @@ export default {
       const lead = await env.DB.prepare("SELECT * FROM leads WHERE id=?").bind(leadStatusMatch[1]).first();
       if (!lead || lead.is_demo || !canAccessLeadScope(scope, lead)) return json({ error: "Lead not found" }, 404);
       const body = await request.json();
-      const status = body.status;
+      const status = normalizeLeadStatus(body.status, body.status);
       if (!LEAD_STATUSES.includes(status)) return json({ error: "Invalid lead status" }, 400);
       if (status === "Converted") return json({ error: "Use the conversion endpoint to convert a lead" }, 400);
       if (lead.converted_client_id || lead.status === "Converted") {
@@ -7148,6 +8238,200 @@ export default {
       return json({ ok: true });
     }
 
+    const leadInspectionMatch = path.match(/^\/api\/leads\/(\d+)\/inspection$/);
+    if (leadInspectionMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageLeads(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const scope = await resolvePhase6Scope(env, actor);
+      const lead = await env.DB.prepare("SELECT * FROM leads WHERE id=?").bind(leadInspectionMatch[1]).first();
+      if (!lead || lead.is_demo || !canAccessLeadScope(scope, lead)) return json({ error: "Lead not found" }, 404);
+      if (lead.converted_client_id) return json({ error: "Converted leads cannot be scheduled" }, 409);
+      const body = await request.json();
+      const inspectionDate = dateOnly(body.inspection_date);
+      if (!inspectionDate) return json({ error: "A valid inspection date is required" }, 400);
+      const inspectionTime = String(body.inspection_time || "").trim();
+      if (!/^\d{2}:\d{2}$/.test(inspectionTime)) return json({ error: "Inspection time must be HH:MM" }, 400);
+      const inspectionPropertyId = body.property_id || body.inspection_property_id || lead.property_id || null;
+      if (inspectionPropertyId) {
+        const property = await env.DB.prepare("SELECT id, branch_id FROM properties WHERE id=?").bind(inspectionPropertyId).first();
+        if (!property) return json({ error: "Property not found" }, 404);
+        if (property.branch_id && Number(property.branch_id) !== Number(lead.branch_id)) {
+          return json({ error: "Inspection property must belong to the lead branch" }, 400);
+        }
+      }
+      const notes = body.notes !== undefined ? (String(body.notes || "").trim() || null) : lead.inspection_notes;
+      await env.DB.prepare(`
+        UPDATE leads SET inspection_date=?, inspection_time=?, inspection_property_id=?, inspection_notes=?,
+          property_id=COALESCE(?, property_id), status='Inspection Scheduled',
+          last_contact_at=datetime('now'), updated_at=datetime('now') WHERE id=?
+      `).bind(inspectionDate, inspectionTime, inspectionPropertyId, notes, inspectionPropertyId, lead.id).run();
+      await audit(env, actor.id, "lead.inspection", "lead", String(lead.id), {
+        inspection_date: inspectionDate, inspection_time: inspectionTime, property_id: inspectionPropertyId
+      }, lead.branch_id);
+      await createNotification(env, {
+        userId: lead.assigned_marketer_id || actor.id,
+        type: "lead.inspection",
+        title: "Inspection Scheduled",
+        message: `Inspection for ${lead.full_name} (${lead.lead_reference}) is scheduled for ${inspectionDate} at ${inspectionTime}.`,
+        metadata: { lead_id: lead.id, inspection_date: inspectionDate, inspection_time: inspectionTime }
+      });
+      return json({ ok: true, status: "Inspection Scheduled", inspection_date: inspectionDate, inspection_time: inspectionTime, property_id: inspectionPropertyId });
+    }
+
+    if (path === "/api/inspections/summary" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageLeads(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const scope = await resolvePhase6Scope(env, actor);
+      const leadScope = leadScopeSql(scope, "l");
+      const today = todayOnly();
+      const weekEnd = addDays(today, 7);
+      const clauses = [leadScope.clause, "l.is_demo=0", "date(l.inspection_date) BETWEEN date(?) AND date(?)", "l.status='Inspection Scheduled'"];
+      const binds = [...leadScope.binds, today, weekEnd];
+      const branchId = url.searchParams.get("branch_id");
+      if (branchId) { clauses.push("l.branch_id=?"); binds.push(Number(branchId)); }
+      const marketerId = url.searchParams.get("marketer_id");
+      if (marketerId) { clauses.push("l.assigned_marketer_id=?"); binds.push(Number(marketerId)); }
+      const whereSql = clauses.join(" AND ");
+      const todayRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM leads l WHERE ${whereSql} AND date(l.inspection_date)=date(?)`)
+        .bind(...binds, today).first();
+      const weekRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM leads l WHERE ${whereSql}`)
+        .bind(...binds).first();
+      const { results: byBranch } = await env.DB.prepare(`
+        SELECT l.branch_id, b.name AS branch_name,
+          SUM(CASE WHEN date(l.inspection_date)=date(?) THEN 1 ELSE 0 END) AS today_count,
+          COUNT(*) AS week_count
+        FROM leads l LEFT JOIN branches b ON b.id=l.branch_id
+        WHERE ${whereSql} GROUP BY l.branch_id ORDER BY week_count DESC
+      `).bind(today, ...binds).all();
+      const { results: byMarketer } = await env.DB.prepare(`
+        SELECT l.assigned_marketer_id AS marketer_id, u.full_name AS marketer_name,
+          SUM(CASE WHEN date(l.inspection_date)=date(?) THEN 1 ELSE 0 END) AS today_count,
+          COUNT(*) AS week_count
+        FROM leads l LEFT JOIN users u ON u.id=l.assigned_marketer_id
+        WHERE ${whereSql} GROUP BY l.assigned_marketer_id ORDER BY week_count DESC
+      `).bind(today, ...binds).all();
+      const { results: upcoming } = await env.DB.prepare(`
+        SELECT l.id, l.lead_reference, l.full_name, l.phone_number, l.inspection_date, l.inspection_time,
+               l.inspection_property_id, p.title AS property_title, b.name AS branch_name,
+               m.full_name AS marketer_name
+        FROM leads l
+        LEFT JOIN properties p ON p.id=l.inspection_property_id
+        LEFT JOIN branches b ON b.id=l.branch_id
+        LEFT JOIN users m ON m.id=l.assigned_marketer_id
+        WHERE ${whereSql} ORDER BY l.inspection_date, l.inspection_time LIMIT 100
+      `).bind(...binds).all();
+      return json({
+        today: Number(todayRow ? todayRow.c : 0),
+        this_week: Number(weekRow ? weekRow.c : 0),
+        from: today,
+        to: weekEnd,
+        by_branch: byBranch,
+        by_marketer: byMarketer,
+        upcoming
+      });
+    }
+
+    const leadBulkMatch = path === "/api/leads/bulk" && request.method === "POST";
+    if (leadBulkMatch) {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageLeads(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const body = await request.json();
+      let rows = Array.isArray(body.rows) ? body.rows : [];
+      if (!rows.length && typeof body.csv === "string") {
+        rows = parseLeadCsv(body.csv);
+      }
+      if (!rows.length) return json({ error: "Provide rows or CSV/paste content" }, 400);
+      if (rows.length > 500) return json({ error: "A maximum of 500 leads can be imported at once" }, 400);
+      const created = [];
+      const skipped = [];
+      for (let index = 0; index < rows.length; index++) {
+        const row = normalizeLeadImportRow(rows[index]);
+        if (!row.full_name || !row.phone_number) {
+          skipped.push({ row: index + 1, reason: "Full name and phone number are required" });
+          continue;
+        }
+        const status = normalizeLeadStatus(row.status, "New Lead");
+        if (!LEAD_STATUSES.includes(status) || status === "Converted") {
+          skipped.push({ row: index + 1, reason: "Invalid lead status" });
+          continue;
+        }
+        const inferredMarketerId = row.assigned_marketer_id ? Number(row.assigned_marketer_id) : null;
+        let inferredBranchId = row.branch_id ? Number(row.branch_id) : null;
+        if (!inferredBranchId && inferredMarketerId) {
+          const marketerBranch = await env.DB.prepare("SELECT branch_id FROM users WHERE id=?").bind(inferredMarketerId).first();
+          if (marketerBranch && marketerBranch.branch_id) inferredBranchId = Number(marketerBranch.branch_id);
+        }
+        const branchId = actor.role_name === "Managing Director"
+          ? (inferredBranchId || actor.branch_id)
+          : actor.branch_id;
+        if (!branchId) {
+          skipped.push({ row: index + 1, reason: "Branch is required" });
+          continue;
+        }
+        let marketerId = inferredMarketerId;
+        if (!marketerId && actor.role_name === "Marketer") marketerId = actor.id;
+        if (marketerId) {
+          const marketer = await env.DB.prepare(`
+            SELECT u.id, u.branch_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id
+            WHERE u.id=? AND u.is_active=1
+          `).bind(marketerId).first();
+          if (!marketer || Number(marketer.branch_id) !== Number(branchId) || !["Marketer", "Team Lead", "Branch Manager"].includes(marketer.role_name)) {
+            skipped.push({ row: index + 1, reason: "Assigned marketer is not active in the branch" });
+            continue;
+          }
+        }
+        let teamLeadId = row.team_lead_id ? Number(row.team_lead_id) : null;
+        if (actor.role_name === "Team Lead") teamLeadId = actor.id;
+        if (teamLeadId) {
+          const teamLead = await env.DB.prepare(`
+            SELECT u.id, u.branch_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id
+            WHERE u.id=? AND u.is_active=1
+          `).bind(teamLeadId).first();
+          if (!teamLead || Number(teamLead.branch_id) !== Number(branchId) || !["Team Lead", "Branch Manager"].includes(teamLead.role_name)) {
+            skipped.push({ row: index + 1, reason: "Team lead is not active in the branch" });
+            continue;
+          }
+        }
+        const propertyId = row.property_id ? Number(row.property_id) : null;
+        if (propertyId) {
+          const property = await env.DB.prepare("SELECT id, branch_id FROM properties WHERE id=?").bind(propertyId).first();
+          if (!property || (property.branch_id && Number(property.branch_id) !== Number(branchId))) {
+            skipped.push({ row: index + 1, reason: "Property is not valid for the branch" });
+            continue;
+          }
+        }
+        const estimatedKobo = row.estimated_value !== undefined && row.estimated_value !== ""
+          ? toKobo(row.estimated_value) : 0;
+        if (!Number.isFinite(estimatedKobo) || estimatedKobo < 0) {
+          skipped.push({ row: index + 1, reason: "Estimated value is invalid" });
+          continue;
+        }
+        const ref = "LEAD-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+        const res = await env.DB.prepare(`
+          INSERT INTO leads (lead_reference, full_name, phone_number, email_address, source, status,
+            property_id, assigned_marketer_id, team_lead_id, branch_id, estimated_value_kobo,
+            notes, next_follow_up_date, created_by, is_demo, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+        `).bind(
+          ref, row.full_name, row.phone_number, row.email_address || null, row.source || body.source || "Bulk import",
+          status, propertyId, marketerId, teamLeadId, branchId, estimatedKobo,
+          row.notes || null, row.next_follow_up_date ? dateOnly(row.next_follow_up_date) : null, actor.id
+        ).run();
+        created.push({ id: res.meta.last_row_id, lead_reference: ref, full_name: row.full_name });
+      }
+      if (created.length) {
+        await audit(env, actor.id, "lead.bulk_import", "lead", null, {
+          created: created.length, skipped: skipped.length, source: body.source || "Bulk import"
+        }, actor.branch_id);
+      }
+      return json({ ok: true, created_count: created.length, skipped_count: skipped.length, created, skipped });
+    }
+
     const leadConvertMatch = path.match(/^\/api\/leads\/(\d+)\/convert$/);
     if (leadConvertMatch && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
@@ -7179,7 +8463,7 @@ export default {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         ref, lead.full_name, lead.phone_number, lead.email_address, lead.notes, clientStatus,
-        lead.branch_id, actor.id, marketerId, lead.team_lead_id || null,
+        lead.branch_id, marketerId, marketerId, lead.team_lead_id || null,
         agreedPrice, lead.property_id || null
       ).run();
       const clientId = res.meta.last_row_id;
@@ -7274,6 +8558,26 @@ export default {
       if (effectiveFrom && effectiveTo && effectiveFrom > effectiveTo) return { error: "Effective start date must be before the end date" };
       const ruleResult = await normalizeCommissionRules(env, basis, body.rules);
       if (ruleResult.error) return ruleResult;
+      const commissionableMode = body.commissionable_mode || "full";
+      if (!COMMISSIONABLE_MODES.includes(commissionableMode)) {
+        return { error: "Commissionable basis must be full, first_months, percentage or capped_amount" };
+      }
+      const firstMonths = body.commissionable_first_months === undefined ? 2 : Number(body.commissionable_first_months);
+      if (!Number.isInteger(firstMonths) || firstMonths < 0 || firstMonths > 120) {
+        return { error: "Commissionable first-months value must be between 0 and 120" };
+      }
+      const percentBps = body.commissionable_percent_bps !== undefined
+        ? Number(body.commissionable_percent_bps)
+        : Math.round(Number(body.commissionable_percent || 100) * 100);
+      if (!Number.isInteger(percentBps) || percentBps < 0 || percentBps > 10000) {
+        return { error: "Commissionable percentage must be between 0 and 100%" };
+      }
+      const capKobo = body.commissionable_cap_kobo !== undefined
+        ? Number(body.commissionable_cap_kobo)
+        : toKobo(body.commissionable_cap_amount || 0);
+      if (!Number.isInteger(capKobo) || capKobo < 0) {
+        return { error: "Commissionable cap amount is invalid" };
+      }
       return {
         plan: {
           name,
@@ -7283,7 +8587,11 @@ export default {
           effective_to: effectiveTo,
           approval_required: body.approval_required === undefined ? 1 : (isTruthy(body.approval_required) ? 1 : 0),
           separation_of_duties: body.separation_of_duties === undefined ? 1 : (isTruthy(body.separation_of_duties) ? 1 : 0),
-          is_active: body.is_active === undefined ? 1 : (isTruthy(body.is_active) ? 1 : 0)
+          is_active: body.is_active === undefined ? 1 : (isTruthy(body.is_active) ? 1 : 0),
+          commissionable_mode: commissionableMode,
+          commissionable_first_months: firstMonths,
+          commissionable_percent_bps: percentBps,
+          commissionable_cap_kobo: capKobo
         },
         rules: ruleResult.rules
       };
@@ -7292,7 +8600,7 @@ export default {
     if (path === "/api/commission-options" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const categories = await env.DB.prepare("SELECT id, name FROM property_categories ORDER BY name").all();
       const branches = await env.DB.prepare("SELECT id, name FROM branches ORDER BY name").all();
       const teams = await env.DB.prepare(`
@@ -7307,6 +8615,7 @@ export default {
         roles: COMMISSION_ROLES,
         sale_types: SALE_TYPES,
         bases: COMMISSION_BASES,
+        commissionable_modes: COMMISSIONABLE_MODES,
         statuses: COMMISSION_STATUSES
       });
     }
@@ -7314,7 +8623,7 @@ export default {
     if (path === "/api/commission-plans" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const { results: plans } = await env.DB.prepare(`
         SELECT p.*, u.full_name AS created_by_name,
           (SELECT COUNT(*) FROM commission_plan_rules r WHERE r.plan_id=p.id AND r.is_active=1) AS rule_count
@@ -7339,35 +8648,42 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
       const validated = await validateCommissionPlanBody(env, body);
       if (validated.error) return json({ error: validated.error }, 400);
       const plan = validated.plan;
       const res = await env.DB.prepare(`
         INSERT INTO commission_plans (name, description, calculation_basis, effective_from, effective_to,
-          approval_required, separation_of_duties, is_active, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          approval_required, separation_of_duties, is_active, created_by,
+          commissionable_mode, commissionable_first_months, commissionable_percent_bps,
+          commissionable_cap_kobo, current_version_no)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       `).bind(plan.name, plan.description, plan.calculation_basis, plan.effective_from, plan.effective_to,
-        plan.approval_required, plan.separation_of_duties, plan.is_active, actor.id).run();
+        plan.approval_required, plan.separation_of_duties, plan.is_active, actor.id,
+        plan.commissionable_mode, plan.commissionable_first_months, plan.commissionable_percent_bps,
+        plan.commissionable_cap_kobo).run();
       const planId = res.meta.last_row_id;
+      const createdRules = [];
       for (const rule of validated.rules) {
-        await env.DB.prepare(`
+        const ruleRes = await env.DB.prepare(`
           INSERT INTO commission_plan_rules (plan_id, role_name, rate_bps, fixed_amount_kobo,
             property_category_id, sales_type, branch_id, team_id, is_active)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(planId, rule.role_name, rule.rate_bps, rule.fixed_amount_kobo,
           rule.property_category_id, rule.sales_type, rule.branch_id, rule.team_id, rule.is_active).run();
+        createdRules.push({ id: ruleRes.meta.last_row_id, ...rule });
       }
-      await audit(env, actor.id, "commission_plan.create", "commission_plan", String(planId), { name: plan.name, basis: plan.calculation_basis }, null);
-      return json({ ok: true, id: planId });
+      await createCommissionPlanVersion(env, planId, 1, plan, createdRules, body.change_reason || "Initial version", actor.id);
+      await audit(env, actor.id, "commission_plan.create", "commission_plan", String(planId), { name: plan.name, basis: plan.calculation_basis, version: 1 }, null);
+      return json({ ok: true, id: planId, version_no: 1 });
     }
 
     const commissionPlanMatch = path.match(/^\/api\/commission-plans\/(\d+)$/);
     if (commissionPlanMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const plan = await env.DB.prepare("SELECT * FROM commission_plans WHERE id=?").bind(commissionPlanMatch[1]).first();
       if (!plan) return json({ error: "Commission plan not found" }, 404);
       const rules = await env.DB.prepare(`
@@ -7378,26 +8694,34 @@ export default {
         LEFT JOIN teams t ON t.id=r.team_id
         WHERE r.plan_id=? ORDER BY r.id
       `).bind(plan.id).all();
-      return json({ plan: { ...plan, rules: rules.results } });
+      const versions = await env.DB.prepare(
+        "SELECT id, version_no, change_reason, created_at, effective_from, effective_to FROM commission_plan_versions WHERE plan_id=? ORDER BY version_no DESC"
+      ).bind(plan.id).all();
+      return json({ plan: { ...plan, rules: rules.results, versions: versions.results } });
     }
 
     if (commissionPlanMatch && request.method === "PUT") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const existing = await env.DB.prepare("SELECT * FROM commission_plans WHERE id=?").bind(commissionPlanMatch[1]).first();
       if (!existing) return json({ error: "Commission plan not found" }, 404);
       const body = await request.json();
       const validated = await validateCommissionPlanBody(env, body);
       if (validated.error) return json({ error: validated.error }, 400);
       const plan = validated.plan;
+      const nextVersionNo = Number(existing.current_version_no || 1) + 1;
       await env.DB.prepare(`
         UPDATE commission_plans SET name=?, description=?, calculation_basis=?, effective_from=?, effective_to=?,
-          approval_required=?, separation_of_duties=?, is_active=?, updated_by=?, updated_at=datetime('now')
+          approval_required=?, separation_of_duties=?, is_active=?, updated_by=?, updated_at=datetime('now'),
+          commissionable_mode=?, commissionable_first_months=?, commissionable_percent_bps=?,
+          commissionable_cap_kobo=?, current_version_no=?
         WHERE id=?
       `).bind(plan.name, plan.description, plan.calculation_basis, plan.effective_from, plan.effective_to,
-        plan.approval_required, plan.separation_of_duties, plan.is_active, actor.id, existing.id).run();
+        plan.approval_required, plan.separation_of_duties, plan.is_active, actor.id,
+        plan.commissionable_mode, plan.commissionable_first_months, plan.commissionable_percent_bps,
+        plan.commissionable_cap_kobo, nextVersionNo, existing.id).run();
       const keptRuleIds = [];
       for (const rule of validated.rules) {
         if (rule.id) {
@@ -7423,8 +8747,15 @@ export default {
         await env.DB.prepare(`UPDATE commission_plan_rules SET is_active=0 WHERE plan_id=? AND id NOT IN (${placeholders(keptRuleIds)})`)
           .bind(existing.id, ...keptRuleIds).run();
       }
-      await audit(env, actor.id, "commission_plan.update", "commission_plan", String(existing.id), { name: plan.name, basis: plan.calculation_basis }, null);
-      return json({ ok: true });
+      const { results: currentRules } = await env.DB.prepare(
+        "SELECT * FROM commission_plan_rules WHERE plan_id=? AND is_active=1 ORDER BY id"
+      ).bind(existing.id).all();
+      await createCommissionPlanVersion(env, existing.id, nextVersionNo, plan, currentRules,
+        body.change_reason || `Plan edited to version ${nextVersionNo}`, actor.id);
+      await audit(env, actor.id, "commission_plan.update", "commission_plan", String(existing.id), {
+        name: plan.name, basis: plan.calculation_basis, version_no: nextVersionNo
+      }, null);
+      return json({ ok: true, version_no: nextVersionNo });
     }
 
     const commissionPlanStatusMatch = path.match(/^\/api\/commission-plans\/(\d+)\/status$/);
@@ -7432,7 +8763,7 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
       if (body.is_active === undefined) return json({ error: "Active state is required" }, 400);
       const active = isTruthy(body.is_active) ? 1 : 0;
@@ -7445,7 +8776,7 @@ export default {
     if (path === "/api/commissions" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
       const scoped = commissionScopeSql(scope, "ce");
       const clauses = [scoped.clause];
@@ -7493,7 +8824,7 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
       try {
         const result = await generateCommissionEntries(env, actor, body || {});
@@ -7509,6 +8840,7 @@ export default {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Commission access is required" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
       const scoped = commissionScopeSql(scope, "ce");
       const payment = await env.DB.prepare(`
@@ -7555,7 +8887,7 @@ export default {
     if (commissionMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
       const scoped = commissionScopeSql(scope, "ce");
       const entry = await env.DB.prepare(`
@@ -7592,7 +8924,7 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const action = commissionActionMatch[2];
       const entry = await env.DB.prepare(`
         SELECT ce.*, cp.name AS plan_name, cp.separation_of_duties
@@ -7726,6 +9058,9 @@ export default {
       if (actor.role_name === "Marketer" && !["commission", "commission_liability"].includes(reportType)) {
         return json({ error: "Marketers may export only their own commission reports" }, 403);
       }
+      if (["commission", "commission_liability"].includes(reportType) && !canAccessCommissions(actor)) {
+        return json({ error: "Commission access is required" }, 403);
+      }
       if (actor.role_name === "Team Lead" && reportType === "branch_performance") {
         return json({ error: "Branch reports are not available to Team Leads" }, 403);
       }
@@ -7787,7 +9122,7 @@ export default {
     if (path === "/api/reports" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const admin = ["Managing Director", "Finance Officer"].includes(actor.role_name);
       const clauses = [];
       const binds = [];

@@ -5,14 +5,16 @@
   BlissStaff.roles = {
     "Super Admin": "SA",
     "Managing Director": "MD",
+    "Project Manager": "PM",
     "Branch Manager": "BM",
     "Team Lead": "TL",
     "Marketer": "MK",
-    "Finance Officer": "FIN"
+    "Finance Officer": "FIN",
+    "Head Accountant": "HA"
   };
 
   BlissStaff.isStaffRole = function (role) {
-    return ["Super Admin", "Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"].includes(role);
+    return ["Super Admin", "Managing Director", "Project Manager", "Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant"].includes(role);
   };
 
   BlissStaff.fetchJson = async function (path, options = {}) {
@@ -128,6 +130,7 @@
       { href: "dashboard.html", label: "📊 Overview", page: "dashboard", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "performance.html", label: "📈 Performance", page: "performance", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "revenue.html", label: "💰 Revenue Drill-down", page: "revenue", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "defaulting.html", label: "⚠️ Defaulting Clients", page: "defaulting", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "properties.html", label: "🏡 Properties", page: "properties", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "clients.html", label: "👥 Clients", page: "clients", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Sales & Teams" },
@@ -135,7 +138,7 @@
       { href: "staff-management.html", label: "👔 Staff & Teams", page: "staff", roles: ["Managing Director", "Branch Manager"] },
       { href: "activity-centre.html", label: "🕘 Activity Centre", page: "activity", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Finance" },
-      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
+      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], requiresCommissionAccess: true },
       { href: "reports.html", label: "📄 Financial Reports", page: "reports", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
       { href: "finance-dashboard.html", label: "💳 Finance & Ledger", page: "finance", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
       { href: "provider-config.html", label: "🏦 Payment Provider", page: "provider", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
@@ -146,14 +149,15 @@
       { href: "index.html", label: "🌐 Public Website", page: "public", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "#", label: "🚪 Logout", page: "logout", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"], id: "logoutBtn" }
     ];
-    let items = links.filter(item => !item.roles || item.roles.includes(role)).map(item => {
+    let items = links.filter(item => (!item.roles || item.roles.includes(role)) &&
+      (!item.requiresCommissionAccess || me.can_access_commissions)).map(item => {
       if (item.section) return `<div class="section-label">${item.section}</div>`;
       return `<a href="${item.href}" ${item.page === activePage ? 'class="active"' : ""} ${item.id ? `id="${item.id}"` : ""} ${item.page === "logout" ? 'style="color:#E74C3C"' : ""}>${item.label}</a>`;
     }).join("");
     if (["Super Admin", "Managing Director"].includes(me.actual_role || role)) {
       items += `<div class="section-label">System</div><a href="super-admin.html" class="${activePage === "super-admin" ? "active" : ""}">🛡️ System Administration</a>`;
     }
-    const scopeLabel = ["Managing Director", "Finance Officer"].includes(role)
+    const scopeLabel = ["Managing Director", "Finance Officer", "Head Accountant", "Super Admin"].includes(me.actual_role || role)
       ? "Company-wide"
       : (me.branch_name || "Branch");
     return `

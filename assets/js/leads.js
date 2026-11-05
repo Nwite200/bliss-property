@@ -137,10 +137,20 @@
         <td>${S.escape(lead.marketer_name || "-")}</td>
         <td>${S.escape(lead.branch_name || "-")}</td>
         <td>${S.escape(lead.property_title || "-")}</td>
+        <td>${lead.inspection_date ? `${S.formatDate(lead.inspection_date)}<div class="small muted">${S.escape(lead.inspection_time || "")}</div>` : "-"}</td>
         <td>${lead.next_follow_up_date ? S.formatDate(lead.next_follow_up_date) : "-"}</td>
         <td class="nowrap">${lead.estimated_value_kobo ? money(lead.estimated_value_kobo) : "-"}</td>
-        <td class="toolbar"><button class="btn btn-ghost btn-xs" type="button" data-edit-lead-id="${lead.id}">Edit</button><button class="btn btn-ghost btn-xs" type="button" data-lead-id="${lead.id}">Open</button></td>
-      </tr>`).join("") : '<tr><td colspan="8"><div class="empty-state">No leads match the current filter.</div></td></tr>';
+        <td class="toolbar">
+          ${["New Lead", "Contacted", "Interested", "Negotiation", "Inspection Scheduled"].includes(lead.status) && !lead.converted_client_id ? `<button class="btn btn-ghost btn-xs" type="button" data-inspect-lead-id="${lead.id}">Inspect</button>` : ""}
+          <button class="btn btn-ghost btn-xs" type="button" data-edit-lead-id="${lead.id}">Edit</button><button class="btn btn-ghost btn-xs" type="button" data-lead-id="${lead.id}">Open</button>
+        </td>
+      </tr>`).join("") : '<tr><td colspan="9"><div class="empty-state">No leads match the current filter.</div></td></tr>';
+    el("leadBody").querySelectorAll("[data-inspect-lead-id]").forEach(button => {
+      button.addEventListener("click", () => {
+        const lead = leads.find(item => Number(item.id) === Number(button.getAttribute("data-inspect-lead-id")));
+        if (lead) openInspectionModal(lead);
+      });
+    });
     el("leadBody").querySelectorAll("[data-lead-id]").forEach(button => {
       button.addEventListener("click", () => openLeadDetail(Number(button.getAttribute("data-lead-id"))));
     });
@@ -152,6 +162,80 @@
     });
   }
 
+  async function loadInspectionSummary() {
+    try {
+      const data = await S.fetchJson("/api/inspections/summary");
+      el("inspectionCount").textContent = `${data.today || 0} today · ${data.this_week || 0} in the next 7 days`;
+      el("inspectionKpis").innerHTML = [
+        ["Inspections today", data.today || 0],
+        ["Next 7 days", data.this_week || 0],
+        ["Branches with inspections", (data.by_branch || []).length],
+        ["Marketers with inspections", (data.by_marketer || []).length],
+        ["Upcoming listed", (data.upcoming || []).length]
+      ].map(([label, value]) => `<div class="kpi"><div class="kpi-label">${S.escape(label)}</div><div class="kpi-value">${value}</div></div>`).join("");
+      el("inspectionBody").innerHTML = (data.upcoming || []).length ? data.upcoming.map(row => `
+        <tr>
+          <td><strong>${S.escape(row.full_name)}</strong><div class="small muted">${S.escape(row.lead_reference)} · ${S.escape(row.phone_number || "")}</div></td>
+          <td>${S.formatDate(row.inspection_date)}</td>
+          <td>${S.escape(row.inspection_time || "-")}</td>
+          <td>${S.escape(row.property_title || "-")}</td>
+          <td>${S.escape(row.marketer_name || "-")}</td>
+          <td>${S.escape(row.branch_name || "-")}</td>
+        </tr>`).join("") : '<tr><td colspan="6"><div class="empty-state">No inspections scheduled in the next 7 days.</div></td></tr>';
+    } catch (error) {
+      el("inspectionBody").innerHTML = '<tr><td colspan="6"><div class="empty-state">Unable to load inspections.</div></td></tr>';
+    }
+  }
+
+  function openInspectionModal(lead) {
+    el("inspectionLeadId").value = lead.id;
+    el("inspectionTitle").textContent = `Schedule inspection: ${lead.full_name}`;
+    el("inspectionDate").value = lead.inspection_date ? String(lead.inspection_date).slice(0, 10) : S.today();
+    el("inspectionTime").value = lead.inspection_time || "10:00";
+    el("inspectionNotes").value = lead.inspection_notes || "";
+    el("inspectionProperty").innerHTML = '<option value="">Use lead property / no property</option>' + properties.map(property => `<option value="${property.id}">${S.escape(property.reference)} — ${S.escape(property.title)}</option>`).join("");
+    el("inspectionProperty").value = lead.inspection_property_id || lead.property_id || "";
+    S.openModal("inspectionModal");
+  }
+
+  async function submitInspection(event) {
+    event.preventDefault();
+    const leadId = el("inspectionLeadId").value;
+    try {
+      await S.fetchJson(`/api/leads/${leadId}/inspection`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          inspection_date: el("inspectionDate").value,
+          inspection_time: el("inspectionTime").value,
+          property_id: el("inspectionProperty").value ? Number(el("inspectionProperty").value) : null,
+          notes: el("inspectionNotes").value.trim()
+        })
+      });
+      S.closeModal("inspectionModal");
+      S.toast("Inspection scheduled.");
+      await Promise.all([loadLeads(), loadPipeline(), loadInspectionSummary()]);
+    } catch (error) { S.toast(error.message, true); }
+  }
+
+  async function submitBulkImport() {
+    const text = el("bulkLeadText").value.trim();
+    if (!text && !el("bulkLeadFile").files.length) { S.toast("Paste CSV or choose a file first.", true); return; }
+    let csv = text;
+    if (!csv && el("bulkLeadFile").files.length) csv = await el("bulkLeadFile").files[0].text();
+    const button = el("bulkLeadSubmit");
+    button.disabled = true;
+    try {
+      const result = await S.fetchJson("/api/leads/bulk", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv, source: el("bulkLeadSource").value.trim() || null })
+      });
+      el("bulkLeadResult").textContent = `${result.created_count} lead(s) imported, ${result.skipped_count} skipped.`;
+      S.toast(`${result.created_count} lead(s) imported.`);
+      await Promise.all([loadLeads(), loadPipeline()]);
+    } catch (error) { S.toast(error.message, true); }
+    finally { button.disabled = false; }
+  }
+
   function openNewLead() {
     el("leadId").value = "";
     el("leadModalTitle").textContent = "Add lead";
@@ -160,6 +244,8 @@
     el("leadBranch").value = me.branch_id || "";
     el("leadMarketer").value = "";
     el("leadProperty").value = "";
+    el("leadInspectionDate").value = "";
+    el("leadInspectionTime").value = "";
     S.openModal("leadModal");
   }
 
@@ -176,6 +262,8 @@
     el("leadProperty").value = lead.property_id || "";
     el("leadEstimated").value = lead.estimated_value_kobo ? Number(lead.estimated_value_kobo) / 100 : "";
     el("leadFollowUp").value = lead.next_follow_up_date ? String(lead.next_follow_up_date).slice(0, 10) : "";
+    el("leadInspectionDate").value = lead.inspection_date ? String(lead.inspection_date).slice(0, 10) : "";
+    el("leadInspectionTime").value = lead.inspection_time || "";
     el("leadNotes").value = lead.notes || "";
     S.openModal("leadModal");
   }
@@ -202,12 +290,28 @@
     }
     if (body.status === "Converted") delete body.status;
     try {
-      if (id) await S.fetchJson(`/api/leads/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      else await S.fetchJson("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      let leadId = id;
+      if (id) {
+        await S.fetchJson(`/api/leads/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      } else {
+        const created = await S.fetchJson("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        leadId = created.id;
+      }
+      if (el("leadInspectionDate").value && el("leadInspectionTime").value) {
+        await S.fetchJson(`/api/leads/${leadId}/inspection`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            inspection_date: el("leadInspectionDate").value,
+            inspection_time: el("leadInspectionTime").value,
+            property_id: body.property_id || null
+          })
+        });
+      }
       S.closeModal("leadModal");
       S.toast(id ? "Lead updated." : "Lead added to the pipeline.");
       await loadLeads();
       await loadPipeline();
+      await loadInspectionSummary();
     } catch (error) { S.toast(error.message, true); }
   }
 
@@ -241,6 +345,7 @@
               <tr><td class="muted">Team lead</td><td>${S.escape(lead.team_lead_name || "-")}</td></tr>
               <tr><td class="muted">Branch</td><td>${S.escape(lead.branch_name || "-")}</td></tr>
               <tr><td class="muted">Property</td><td>${S.escape(lead.property_title || "-")}</td></tr>
+              <tr><td class="muted">Inspection</td><td>${lead.inspection_date ? `${S.formatDate(lead.inspection_date)} ${S.escape(lead.inspection_time || "")}` : "-"}</td></tr>
               <tr><td class="muted">Estimated value</td><td>${lead.estimated_value_kobo ? money(lead.estimated_value_kobo) : "-"}</td></tr>
               <tr><td class="muted">Next follow-up</td><td>${lead.next_follow_up_date ? S.formatDate(lead.next_follow_up_date) : "-"}</td></tr>
               <tr><td class="muted">Created</td><td>${S.formatDateTime(lead.created_at)}</td></tr>
@@ -255,6 +360,7 @@
             <div class="toolbar">
               <select class="field-input" id="detailStatus" ${lead.converted_client_id ? "disabled" : ""}>${statusOptions}</select>
               <button class="btn btn-green btn-sm" type="button" id="updateStatusBtn" ${lead.converted_client_id ? "disabled" : ""}>Update</button>
+              ${!lead.converted_client_id ? '<button class="btn btn-ghost btn-sm" type="button" id="detailInspectBtn">Schedule inspection</button>' : ""}
             </div>
             ${!lead.converted_client_id ? `
               <div class="mt-16">
@@ -287,6 +393,8 @@
           </div>`).join("") : '<div class="empty-state">No follow-ups recorded.</div>'}</div>
       </div>`;
     el("updateStatusBtn").addEventListener("click", updateDetailStatus);
+    const inspectBtn = el("detailInspectBtn");
+    if (inspectBtn) inspectBtn.addEventListener("click", () => openInspectionModal(lead));
     const convertBtn = el("convertLeadBtn");
     if (convertBtn) convertBtn.addEventListener("click", convertLead);
     el("followUpForm").addEventListener("submit", submitFollowUp);
@@ -393,7 +501,11 @@
     await loadProperties();
     await loadLeads();
     await loadPipeline();
+    await loadInspectionSummary();
     el("newLeadBtn").addEventListener("click", openNewLead);
+    el("bulkImportBtn").addEventListener("click", () => { el("bulkLeadResult").textContent = ""; S.openModal("bulkLeadModal"); });
+    el("bulkLeadSubmit").addEventListener("click", submitBulkImport);
+    el("inspectionForm").addEventListener("submit", submitInspection);
     el("leadForm").addEventListener("submit", submitLead);
     el("applyLeadFilters").addEventListener("click", () => { page = 1; loadLeads(); });
     el("resetLeadFilters").addEventListener("click", () => {

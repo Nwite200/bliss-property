@@ -37,8 +37,8 @@ Tests
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm run test:phase8  (25 tests)
-- npm test              (all suites, 134 tests)
+- npm run test:phase8  (30 tests)
+- npm test              (all suites, 139 tests)
 
 Documentation
 -------------
@@ -71,6 +71,12 @@ Architecture and safety
 - Staff chat: Cloudflare Durable Object ChatRoom + WebSockets, persisted to D1 chat_messages, UI at staff-chat.html
 - Hierarchical revenue: manager_id hierarchy, Project Manager and Head Accountant roles, immutable payment attribution snapshots, server-scoped /api/revenue APIs and revenue.html drill-down
 - Every dashboard shows live "Total paid today" in the signed-in user's revenue scope
+- Payment plans: outright, part payment, daily, weekly, bi-monthly, monthly with generated expected schedules
+- Defaulting clients view with grace periods, follow-up owner, call notes and statuses
+- Lead inspection scheduling, bulk CSV import and inspection counts
+- Versioned commission plans with easy-buy commissionable basis and restricted access
+- Multi-provider payment adapter layer (ALATPay first, Wema ALAT and Paystack registered)
+- See PAYMENT_PROVIDER_SECRETS.md for the provider secret checklist
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
 - There is no separate Super Admin role; the Managing Director is the highest implemented role.

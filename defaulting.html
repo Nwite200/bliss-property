@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Defaulting Clients | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/motion.css">
+  <script src="assets/js/intro-config.js"></script>
+  <script src="assets/js/motion.js"></script>
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Bliss Legacy">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/icons/icon-192.png">
+  <meta name="theme-color" content="#00B522" />
+</head>
+<body data-page="defaulting">
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <section class="role-hero">
+        <h1>Defaulting Clients</h1>
+        <p>Expected-to-date is compared with paid-to-date for each client's own plan. A client returns to performing automatically once caught up.</p>
+        <div class="role-hero-meta" id="defaultingMeta"></div>
+        <div class="hero-actions">
+          <a class="btn btn-outline-white" href="finance-dashboard.html">Payment plans</a>
+          <a class="btn btn-outline-white" href="revenue.html">Revenue</a>
+        </div>
+      </section>
+
+      <div class="kpi-grid kpi-grid-5" id="defaultingKpis"></div>
+
+      <div class="card section-gap">
+        <div class="card-head"><h3>Client payment health</h3><span class="small muted" id="defaultingCount"></span></div>
+        <div class="filters mb-16">
+          <input type="search" id="defaultingSearch" placeholder="Search client or reference…">
+          <select id="defaultingStatus"><option value="">All statuses</option><option value="defaulting">Defaulting</option><option value="performing">Performing</option></select>
+          <select id="defaultingPlan"><option value="">All plan types</option><option value="outright">Outright</option><option value="part_payment">Part payment</option><option value="daily">Daily (easy buy)</option><option value="weekly">Weekly (easy buy)</option><option value="bi_monthly">Bi-monthly (easy buy)</option><option value="monthly">Monthly (easy buy)</option></select>
+          <select id="defaultingBranch"><option value="">All branches</option></select>
+          <select id="defaultingTeamLead"><option value="">All team leads</option></select>
+          <select id="defaultingStaff"><option value="">All staff</option></select>
+          <button class="btn btn-green btn-sm" type="button" id="applyDefaulting">Filter</button>
+          <button class="btn btn-ghost btn-sm" type="button" id="resetDefaulting">Reset</button>
+        </div>
+        <div class="table-responsive"><table class="table">
+          <thead><tr><th>Client</th><th>Branch</th><th>Plan</th><th>Expected to date</th><th>Paid to date</th><th>Behind</th><th>Days overdue</th><th>Status</th><th>Follow-up</th><th></th></tr></thead>
+          <tbody id="defaultingBody"><tr><td colspan="10">Loading…</td></tr></tbody>
+        </table></div>
+        <div class="toolbar mt-16" style="justify-content:space-between">
+          <span class="small muted" id="defaultingPageLabel"></span>
+          <div class="toolbar">
+            <button class="btn btn-ghost btn-sm" type="button" id="defaultingPrev">← Previous</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="defaultingNext">Next →</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="followUpModal">
+    <div class="modal-box">
+      <div class="modal-header"><h3 id="followUpTitle">Log defaulting follow-up</h3><button class="icon-btn" type="button" data-close-modal="followUpModal">✕</button></div>
+      <form id="followUpForm">
+        <input type="hidden" id="followUpScheduleId">
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="followUpOwner">Follow-up owner</label><select class="field-input" id="followUpOwner"></select></div>
+          <div class="field-group"><label class="field-label" for="followUpStatus">Status</label><select class="field-input" id="followUpStatus"><option value="contacted">Contacted</option><option value="promised">Promised to pay</option><option value="escalated">Escalated</option></select></div>
+          <div class="field-group"><label class="field-label" for="followUpDate">Next follow-up date</label><input class="field-input" type="date" id="followUpDate"></div>
+          <div class="field-group full"><label class="field-label" for="followUpNote">Call notes</label><textarea class="field-input" id="followUpNote" rows="4" required placeholder="What was discussed, promised date, escalation reason…"></textarea></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+          <button class="btn btn-ghost" type="button" data-close-modal="followUpModal">Cancel</button>
+          <button class="btn btn-green" type="submit">Save follow-up</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/defaulting.js"></script>
+  <script src="assets/js/mobile-nav.js"></script>
+  <script src="assets/js/pwa.js"></script>
+</body>
+</html>

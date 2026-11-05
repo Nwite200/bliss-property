@@ -7,7 +7,15 @@
   let page = 1;
   let total = 0;
   let currentEntry = null;
-  const canManage = () => ["Managing Director", "Finance Officer"].includes(me.role);
+  const canManage = () => me && ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role);
+  const hasCommissionAccess = () => me && me.can_access_commissions === true;
+
+  function commissionableLabel(plan) {
+    if (plan.commissionable_mode === 'first_months') return `First ${Number(plan.commissionable_first_months || 2)} month(s) only`;
+    if (plan.commissionable_mode === 'percentage') return `${(Number(plan.commissionable_percent_bps || 0) / 100).toFixed(2)}% of each payment`;
+    if (plan.commissionable_mode === 'capped_amount') return `Up to ${S.money(plan.commissionable_cap_kobo || 0)} per sale`;
+    return '100% of each payment';
+  }
 
   const el = id => document.getElementById(id);
   const money = kobo => S.money(kobo);
@@ -58,6 +66,8 @@
         <tr>
           <td><strong>${S.escape(plan.name)}</strong><div class="small muted">${S.escape(plan.description || '')}</div></td>
           <td>${S.badge(plan.calculation_basis, 'blue')}</td>
+          <td>${commissionableLabel(plan)}</td>
+          <td>v${Number(plan.current_version_no || 1)}</td>
           <td>${plan.rule_count || (plan.rules || []).filter(r => r.is_active).length}</td>
           <td>${plan.effective_from ? S.formatDate(plan.effective_from) : 'Any'} – ${plan.effective_to ? S.formatDate(plan.effective_to) : 'Open'}</td>
           <td>${plan.approval_required ? 'Required' : 'Not required'}</td>
@@ -66,7 +76,7 @@
             <button class="btn btn-ghost btn-xs" type="button" data-edit-plan="${plan.id}">Edit</button>
             <button class="btn ${plan.is_active ? 'btn-danger' : 'btn-green'} btn-xs" type="button" data-plan-status="${plan.id}" data-active="${plan.is_active ? '1' : '0'}">${plan.is_active ? 'Deactivate' : 'Activate'}</button>
           </td>
-        </tr>`).join('') : '<tr><td colspan="7"><div class="empty-state">No commission plans configured.</div></td></tr>';
+        </tr>`).join('') : '<tr><td colspan="9"><div class="empty-state">No commission plans configured.</div></td></tr>';
       el('planBody').querySelectorAll('[data-edit-plan]').forEach(btn => btn.addEventListener('click', () => openPlanModal(Number(btn.getAttribute('data-edit-plan')))));
       el('planBody').querySelectorAll('[data-plan-status]').forEach(btn => btn.addEventListener('click', () => togglePlan(Number(btn.getAttribute('data-plan-status')), btn.getAttribute('data-active') === '1')));
       const activePlans = plans.filter(p => p.is_active);
@@ -161,6 +171,13 @@
     el('planRules').appendChild(ruleRow(rule || {}));
   }
 
+  function syncCommissionableFields() {
+    const mode = el('planCommissionableMode').value;
+    el('planFirstMonthsGroup').style.display = mode === 'first_months' ? '' : 'none';
+    el('planPercentGroup').style.display = mode === 'percentage' ? '' : 'none';
+    el('planCapGroup').style.display = mode === 'capped_amount' ? '' : 'none';
+  }
+
   function openPlanModal(id) {
     const plan = id ? plans.find(p => Number(p.id) === Number(id)) : null;
     el('planId').value = id || '';
@@ -173,6 +190,11 @@
     el('planApproval').value = plan ? String(plan.approval_required) : '1';
     el('planSeparation').value = plan ? String(plan.separation_of_duties) : '1';
     el('planDescription').value = plan ? (plan.description || '') : '';
+    el('planCommissionableMode').value = plan ? (plan.commissionable_mode || 'full') : 'full';
+    el('planFirstMonths').value = plan ? Number(plan.commissionable_first_months || 2) : 2;
+    el('planPercent').value = plan ? Number(plan.commissionable_percent_bps || 10000) / 100 : 100;
+    el('planCap').value = plan ? Number(plan.commissionable_cap_kobo || 0) / 100 : 0;
+    syncCommissionableFields();
     el('planRules').innerHTML = '';
     const rules = plan && plan.rules ? plan.rules.filter(r => r.is_active) : [{}];
     (rules.length ? rules : [{}]).forEach(addRule);
@@ -203,6 +225,10 @@
       approval_required: el('planApproval').value === '1',
       separation_of_duties: el('planSeparation').value === '1',
       is_active: el('planActive').value === '1',
+      commissionable_mode: el('planCommissionableMode').value,
+      commissionable_first_months: Number(el('planFirstMonths').value || 2),
+      commissionable_percent: Number(el('planPercent').value || 100),
+      commissionable_cap_amount: Number(el('planCap').value || 0),
       rules
     };
     try {
@@ -277,6 +303,8 @@
               <tr><td class="muted">Client</td><td>${S.escape(entry.client_name)} (${S.escape(entry.client_reference)})</td></tr>
               <tr><td class="muted">Property</td><td>${S.escape(entry.property_title || '-')}</td></tr>
               <tr><td class="muted">Basis</td><td>${S.escape(entry.basis)}${entry.rate_bps ? ' · ' + (entry.rate_bps / 100).toFixed(2) + '%' : ' · fixed'}</td></tr>
+              <tr><td class="muted">Plan version</td><td>v${Number(entry.plan_version_no || 1)}${entry.commissionable_mode ? ' · ' + S.escape(entry.commissionable_mode) : ''}</td></tr>
+              <tr><td class="muted">Payment amount</td><td>${money(entry.payment_amount_kobo || entry.qualifying_amount_kobo)}</td></tr>
               <tr><td class="muted">Qualifying amount</td><td>${money(entry.qualifying_amount_kobo)}</td></tr>
               <tr><td class="muted">Commission earned</td><td><strong>${money(entry.commission_kobo)}</strong></td></tr>
               <tr><td class="muted">Adjustments</td><td>${money(entry.adjusted_kobo)}</td></tr>
@@ -379,7 +407,12 @@
   document.addEventListener('DOMContentLoaded', async () => {
     me = await S.initShell('commissions');
     if (!me) return;
-    if (!["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"].includes(me.role)) {
+    if (!hasCommissionAccess()) {
+      S.toast('Commission access is restricted.', true);
+      window.location.href = 'dashboard.html';
+      return;
+    }
+    if (!["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer", "Head Accountant", "Super Admin"].includes(me.role)) {
       window.location.href = 'dashboard.html';
       return;
     }
@@ -399,6 +432,7 @@
     el('newPlanBtn').addEventListener('click', () => openPlanModal(null));
     el('generateBtn').addEventListener('click', () => S.openModal('generateModal'));
     el('addRuleBtn').addEventListener('click', () => addRule({}));
+    el('planCommissionableMode').addEventListener('change', syncCommissionableFields);
     el('planForm').addEventListener('submit', savePlan);
     el('generateForm').addEventListener('submit', submitGenerate);
     el('applyEntryFilters').addEventListener('click', () => { page = 1; loadEntries(); });

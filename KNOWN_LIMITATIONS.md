@@ -32,11 +32,15 @@ This is an honest list of what the current implementation does **not** provide. 
 
 ## 3. Payments and banking
 
-1. **No live ALAT/Wema integration.** Virtual-account provisioning is read-only and returns a pending message until official API access exists.
-2. No real bank payout or collection reconciliation integration.
-3. Provider webhook uses a shared secret header, not official provider HMAC signing (pending official documentation).
+1. **ALATPay dynamic virtual accounts are implemented** and verified live on staging. Permanent static NUBAN provisioning still requires ALATPay BVN/OTP onboarding.
+2. No real bank payout or bulk collection reconciliation integration.
+3. Provider webhooks use per-provider verification: ALATPay server re-query, Wema shared secret header, Paystack HMAC-SHA512. Additional providers need their own adapter and secret.
 4. No automated commission bank payouts.
-5. Payment receipts are generated manually/on verification; there is no bank-grade receipt verification service.
+5. Payment receipts are generated on verification; there is no bank-grade receipt verification service.
+6. Payment plans support outright, part payment, daily, weekly, bi-monthly and monthly. Schedule edits regenerate expected items and keep immutable history.
+7. Defaulting is calculated on read from the generated schedule and verified payments; it clears automatically on catch-up. It is not a nightly materialised balance table.
+8. Commission generation is explicit; it is not automatically triggered by every payment webhook.
+9. Commission plan edits create versions, and new versions do not retroactively commission payments from before the version was created.
 
 ---
 

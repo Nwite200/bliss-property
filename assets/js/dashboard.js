@@ -62,11 +62,27 @@
     }
   }
 
+  async function loadDefaulting() {
+    try {
+      const params = new URLSearchParams();
+      params.set("status", "defaulting");
+      params.set("limit", "1");
+      if (el("branchFilter") && el("branchFilter").value) params.set("branch_id", el("branchFilter").value);
+      const data = await S.fetchJson("/api/defaulting-clients?" + params.toString());
+      const summary = data.summary || {};
+      el("defaultingTotal").textContent = String(summary.defaulting || 0);
+      el("defaultingMeta").textContent = `${S.money(summary.amount_behind_kobo || 0)} behind across ${summary.total || 0} client plan(s)`;
+    } catch (error) {
+      el("defaultingTotal").textContent = "0";
+      el("defaultingMeta").textContent = "No defaulting clients in your scope";
+    }
+  }
+
   async function load() {
     try {
       dashboard = await S.fetchJson("/api/dashboard?" + queryString());
       render();
-      await loadRevenueToday();
+      await Promise.all([loadRevenueToday(), loadDefaulting()]);
     } catch (error) {
       S.toast(error.message || "Unable to load dashboard", true);
     }

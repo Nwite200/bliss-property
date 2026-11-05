@@ -74,6 +74,17 @@
       </div>
 
       <div class="card" style="max-width:800px;margin-top:18px">
+        <div class="card-head"><h3>Payment plan</h3><span class="small muted" id="planStatus"></span></div>
+        <div id="paymentPlan" style="font-size:13px;color:var(--muted)">Loading payment plan…</div>
+        <div class="table-responsive mt-16" id="planItemsWrap" style="display:none">
+          <table class="table">
+            <thead><tr><th>#</th><th>Due date</th><th>Expected</th><th>Status</th></tr></thead>
+            <tbody id="planItems"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:800px;margin-top:18px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
           <div>
             <h3 style="font-size:16px;margin:0">Property portfolio &amp; payment progress</h3>

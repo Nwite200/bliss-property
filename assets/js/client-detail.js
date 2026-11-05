@@ -76,6 +76,30 @@ async function load() {
         </div>`).join("");
     }
   }
+  const plan = data.payment_plan;
+  if (plan) {
+    const planLabel = ({ outright: "Outright", part_payment: "Part payment", daily: "Daily", weekly: "Weekly", bi_monthly: "Bi-monthly", monthly: "Monthly" })[plan.plan_type] || plan.plan_type;
+    document.getElementById("planStatus").innerHTML = plan.status === "defaulting" ? '<span class="badge badge-red">Defaulting</span>' : '<span class="badge badge-green">Performing</span>';
+    document.getElementById("paymentPlan").innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px">
+        <div><span style="color:var(--muted)">Plan type</span><br><strong>${esc(planLabel)}${plan.is_easy_buy ? " · easy buy" : ""}</strong></div>
+        <div><span style="color:var(--muted)">Agreed total</span><br><strong>${money(plan.total_agreed_price)}</strong></div>
+        <div><span style="color:var(--muted)">Instalment</span><br><strong>${money(plan.installment_amount)}</strong></div>
+        <div><span style="color:var(--muted)">Expected to date</span><br><strong>${money((plan.expected_to_date_kobo || 0) / 100)}</strong></div>
+        <div><span style="color:var(--muted)">Paid to date</span><br><strong>${money((plan.paid_to_date_kobo || 0) / 100)}</strong></div>
+        <div><span style="color:var(--muted)">Amount behind</span><br><strong style="color:${plan.amount_behind_kobo ? "var(--red,#DC2626)" : "var(--green-dark)"}">${money((plan.amount_behind_kobo || 0) / 100)}</strong></div>
+        <div><span style="color:var(--muted)">Days overdue</span><br><strong>${plan.days_overdue || 0}</strong></div>
+        <div><span style="color:var(--muted)">Grace period</span><br><strong>${plan.grace_days || 0} day(s)</strong></div>
+      </div>`;
+    const items = plan.expected_items || [];
+    document.getElementById("planItemsWrap").style.display = items.length ? "" : "none";
+    document.getElementById("planItems").innerHTML = items.map(item => `
+      <tr><td>${item.sequence_no}</td><td>${esc(String(item.due_date || "").slice(0, 10))}</td><td>${money((item.amount_kobo || 0) / 100)}</td><td>${esc(item.status)}</td></tr>`).join("");
+  } else {
+    document.getElementById("planStatus").textContent = "No plan";
+    document.getElementById("paymentPlan").innerHTML = '<div class="empty-state">No payment plan has been configured for this client.</div>';
+  }
+
   document.getElementById("statusSelect").value = c.status;
   document.getElementById("saveStatus").onclick = async () => {
     const result = await fetchJson("/clients/" + id + "/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: document.getElementById("statusSelect").value }) });

@@ -154,8 +154,8 @@ The only console message observed was a single missing static resource (favicon)
 | Phase 5 regression/security | 62 | 0 | 0 |
 | Phase 6 dashboards/analytics | 21 | 0 | 0 |
 | Phase 7 commissions/reports/portfolio | 26 | 0 | 0 |
-| Phase 8 integration/security | 25 | 0 | 0 |
-| **Total** | **134** | **0** | **0** |
+| Phase 8 integration/security | 30 | 0 | 0 |
+| **Total** | **139** | **0** | **0** |
 
 Phase 8 tests cover authentication cookies/session fixation, CSRF/fetch metadata, malformed JSON, public enquiries, signup/enquiry rate limits, property document upload/download/delete, private R2 isolation, cross-branch document denial, magic-byte rejection, unpublished image gating, report filters, role isolation, frontend integration checks, landing catalogue and clean-migration reproducibility.
 
@@ -180,4 +180,4 @@ The application is deployed to a **live Cloudflare demo** at `https://bliss-lega
 
 **READY FOR CONTROLLED DEMO / STAGING ACCEPTANCE.**
 
-Evidence: all 134 local tests pass, the migration chain is reproducible, critical integration defects were repaired, private files are access-controlled, 75 responsive renders show no document-level horizontal overflow, and a live Cloudflare demo is running with temporary role accounts. Super Admin, permission-guarded admin routes, staff notifications, Durable Object chat and hierarchical revenue drill-down are implemented. Full production sign-off still requires the external provider credentials, security headers, monitoring, backup validation, custom domain and owner acceptance listed in the readiness checklist. Staff onboarding approvals and permanent ALATPay static wallets remain outstanding.
+Evidence: all 139 local tests pass, the migration chain is reproducible, critical integration defects were repaired, private files are access-controlled, 75 responsive renders show no document-level horizontal overflow, and a live Cloudflare demo is running with temporary role accounts. Super Admin, permission-guarded admin routes, staff notifications, Durable Object chat and hierarchical revenue drill-down are implemented. Full production sign-off still requires the external provider credentials, security headers, monitoring, backup validation, custom domain and owner acceptance listed in the readiness checklist. Staff onboarding approvals and permanent ALATPay static wallets remain outstanding.

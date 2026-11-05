@@ -45,6 +45,7 @@ crons = ["0 6 * * *"]
 [vars]
 ENVIRONMENT = "staging"
 DEMO_MODE_ENABLED = "0"
+DEFAULT_GRACE_DAYS = "0"
 
 [observability]
 enabled = true

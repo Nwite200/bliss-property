@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { pbkdf2Sync, randomBytes } from 'node:crypto';
+import { pbkdf2Sync, randomBytes, createHmac } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import worker from './src/index.js';
@@ -688,14 +688,247 @@ await test('payment attribution survives reassignment and duplicate webhooks do 
   assert(stamped.revenue_staff_id === mkt3Id && stamped.revenue_team_lead_id === null && stamped.revenue_pm_id === bm2Id && stamped.revenue_branch_id === ajah, 'Webhook attribution snapshot incorrect');
 });
 
-console.log('\n--- 7. Migration reproducibility and database integrity ---');
+console.log('\n--- 7. Payment plans, defaulting, inspections, commissions and providers ---');
+
+function insertPlanClient(ref, name, branch, marketerId, agreed) {
+  return Number(db.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, email_address, status, sale_type,
+    assigned_branch_id, created_by, original_marketer_id, agreed_purchase_price, interested_property_id)
+    VALUES (?, ?, ?, ?, 'Active Buyer', 'New Sale', ?, ?, ?, ?, ?)`)
+    .run(ref, name, '08089' + String(Math.floor(Math.random() * 900000)).padStart(6, '0'),
+      ref.toLowerCase() + '@example.com', branch, marketerId, marketerId, agreed, propPublished).lastInsertRowid);
+}
+
+async function createPlanForClient(clientId, planType, options = {}) {
+  const start = options.start || new Date().toISOString().slice(0, 10);
+  const response = await request('/api/installments', {
+    method: 'POST', headers: { Cookie: mdCookie },
+    body: {
+      client_id: clientId, property_id: propPublished,
+      total_amount: options.total || 500000,
+      deposit_amount: options.deposit || 0,
+      installment_amount: options.installment || 100000,
+      plan_type: planType,
+      start_date: start,
+      next_due_date: start,
+      grace_days: options.graceDays || 0,
+      number_of_installments: options.count || null
+    }
+  });
+  assert(response.status === 200, `${planType} plan creation expected 200, got ${response.status}: ${JSON.stringify(response.data)}`);
+  return response.data.id;
+}
+
+function insertPlanPayment(clientId, ref, amountKobo, daysAgo = 0) {
+  const stamp = new Date(Date.now() - daysAgo * 86400000).toISOString();
+  return Number(db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, verified_at, provider, provider_reference, created_at)
+    VALUES (?, ?, ?, ?, 'NGN', 'Bank Transfer', 'verified', ?, 0, ?, 'wema_alat', ?, ?)`)
+    .run(clientId, propPublished, ref, amountKobo / 100, amountKobo, stamp, ref, stamp).lastInsertRowid);
+}
+
+await test('defaulting is detected per plan type, respects grace and clears on catch-up', async () => {
+  const dailyId = insertPlanClient('BLC-P12-DAILY', 'Phase 12 Daily Client', ikeja, mkt1Id, 5000);
+  const graceId = insertPlanClient('BLC-P12-GRACE', 'Phase 12 Grace Client', ikeja, mkt1Id, 5000);
+  const weeklyId = insertPlanClient('BLC-P12-WEEKLY', 'Phase 12 Weekly Client', ikeja, mkt1Id, 5000);
+  const monthlyId = insertPlanClient('BLC-P12-MONTHLY', 'Phase 12 Monthly Client', ikeja, mkt1Id, 5000);
+  const partId = insertPlanClient('BLC-P12-PART', 'Phase 12 Part Client', ikeja, mkt1Id, 5000);
+  const today = new Date().toISOString().slice(0, 10);
+  const daysAgo = days => new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  await createPlanForClient(dailyId, 'daily', { start: daysAgo(3), total: 5000, installment: 1000 });
+  await createPlanForClient(graceId, 'daily', { start: daysAgo(3), total: 5000, installment: 1000, graceDays: 3 });
+  await createPlanForClient(weeklyId, 'weekly', { start: daysAgo(10), total: 5000, installment: 1000 });
+  await createPlanForClient(monthlyId, 'monthly', { start: daysAgo(40), total: 5000, installment: 1000 });
+  await createPlanForClient(partId, 'part_payment', { start: daysAgo(40), total: 5000, installment: 1000, count: 5 });
+
+  const listed = await request('/api/defaulting-clients?limit=200', { headers: { Cookie: mdCookie } });
+  assert(listed.status === 200, 'defaulting list expected 200');
+  const byClient = new Map(listed.data.clients.map(row => [row.client_id, row]));
+  for (const [clientId, label] of [[dailyId, 'daily'], [weeklyId, 'weekly'], [monthlyId, 'monthly'], [partId, 'part payment']]) {
+    const row = byClient.get(clientId);
+    assert(row, `${label} client missing from defaulting list`);
+    assert(row.status === 'defaulting', `${label} client should be defaulting`);
+    assert(row.days_overdue > 0 && row.amount_behind_kobo > 0, `${label} defaulting figures missing`);
+  }
+  assert(byClient.get(graceId).status === 'performing', 'grace period should suppress defaulting');
+  assert(listed.data.summary.by_plan_type.daily.defaulting >= 1, 'daily defaulting summary missing');
+  assert(listed.data.summary.by_plan_type.weekly.defaulting >= 1, 'weekly defaulting summary missing');
+  assert(listed.data.summary.by_plan_type.monthly.defaulting >= 1, 'monthly defaulting summary missing');
+  assert(listed.data.summary.by_plan_type.part_payment.defaulting >= 1, 'part-payment defaulting summary missing');
+
+  insertPlanPayment(weeklyId, 'TX-P12-WEEKLY-CATCHUP', 500000, 0);
+  const caughtUp = await request('/api/defaulting-clients?limit=200', { headers: { Cookie: mdCookie } });
+  const weeklyRow = caughtUp.data.clients.find(row => row.client_id === weeklyId);
+  assert(weeklyRow && weeklyRow.status === 'performing' && weeklyRow.amount_behind_kobo === 0, 'catch-up payment should clear defaulting');
+
+  const scoped = await request('/api/defaulting-clients?limit=200', { headers: { Cookie: mktNoTeamCookie } });
+  assert(scoped.status === 200 && scoped.data.clients.every(row => row.client_id !== dailyId), 'staff defaulting scope leaked another marketer client');
+});
+
+await test('commission applies to outright payments but caps easy-buy commissionable basis; versions protect history', async () => {
+  const easyClientId = insertPlanClient('BLC-P12-EASY', 'Phase 12 Easy Buy Client', ikeja, mkt1Id, 500000);
+  const outrightClientId = insertPlanClient('BLC-P12-OUTRIGHT', 'Phase 12 Outright Client', ikeja, mkt1Id, 500000);
+  await createPlanForClient(easyClientId, 'weekly', { start: new Date().toISOString().slice(0, 10), total: 500000, installment: 250000, count: 2 });
+  await createPlanForClient(outrightClientId, 'outright', { start: new Date().toISOString().slice(0, 10), total: 500000, installment: 500000, count: 1 });
+  insertPlanPayment(easyClientId, 'TX-P12-EASY-1', 30000000, 1);
+  insertPlanPayment(easyClientId, 'TX-P12-EASY-2', 20000000, 0);
+  insertPlanPayment(outrightClientId, 'TX-P12-OUT-1', 30000000, 1);
+  insertPlanPayment(outrightClientId, 'TX-P12-OUT-2', 20000000, 0);
+
+  const plan = await request('/api/commission-plans', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {
+      name: 'Phase 12 Easy Buy Commission',
+      calculation_basis: 'verified_collections',
+      commissionable_mode: 'capped_amount',
+      commissionable_cap_amount: 200000,
+      approval_required: false,
+      separation_of_duties: false,
+      rules: [{ role_name: 'Marketer', rate_percent: 10 }]
+    }
+  });
+  assert(plan.status === 200, `commission plan create expected 200, got ${plan.status}`);
+  const planId = plan.data.id;
+
+  const generated = await request('/api/commissions/generate', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { plan_id: planId }
+  });
+  assert(generated.status === 200, `commission generation expected 200, got ${generated.status}`);
+  const easyEntries = db.prepare("SELECT * FROM commission_entries WHERE plan_id=? AND client_id=? ORDER BY id").all(planId, easyClientId);
+  const outrightEntries = db.prepare("SELECT * FROM commission_entries WHERE plan_id=? AND client_id=? ORDER BY id").all(planId, outrightClientId);
+  assert(easyEntries.length === 1, `easy-buy cap should create one commission entry, got ${easyEntries.length}`);
+  assert(easyEntries[0].qualifying_amount_kobo === 20000000, `easy-buy commissionable basis should be 200,000 NGN = 20,000,000 kobo, got ${easyEntries[0].qualifying_amount_kobo}`);
+  assert(easyEntries[0].commission_kobo === 2000000, 'easy-buy commission should be 10% of 200,000 NGN');
+  assert(outrightEntries.length === 2, 'outright plan should accrue on every payment');
+  assert(outrightEntries.reduce((sum, row) => sum + Number(row.qualifying_amount_kobo), 0) === 50000000, 'outright commissionable basis should be 500,000 NGN');
+  const oldEntryId = easyEntries[0].id;
+  const oldCommission = easyEntries[0].commission_kobo;
+
+  const detail = await request(`/api/commission-plans/${planId}`, { headers: { Cookie: mdCookie } });
+  const rule = detail.data.plan.rules[0];
+  const edited = await request(`/api/commission-plans/${planId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: {
+      name: 'Phase 12 Easy Buy Commission Updated',
+      calculation_basis: 'verified_collections',
+      commissionable_mode: 'percentage',
+      commissionable_percent: 50,
+      approval_required: false,
+      separation_of_duties: false,
+      rules: [{ id: rule.id, role_name: 'Marketer', rate_percent: 20, is_active: true }]
+    }
+  });
+  assert(edited.status === 200 && edited.data.version_no === 2, 'plan edit should create version 2');
+  const regenerated = await request('/api/commissions/generate', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { plan_id: planId }
+  });
+  assert(regenerated.status === 200 && regenerated.data.created === 0, 're-generation must not rewrite past commission');
+  const oldEntry = db.prepare("SELECT * FROM commission_entries WHERE id=?").get(oldEntryId);
+  assert(oldEntry.commission_kobo === oldCommission && oldEntry.plan_version_no === 1, 'past commission changed when plan version changed');
+  const versions = db.prepare("SELECT COUNT(*) AS c FROM commission_plan_versions WHERE plan_id=?").get(planId).c;
+  assert(versions === 2, `expected two plan versions, got ${versions}`);
+});
+
+await test('staff and team leads are denied commission endpoints', async () => {
+  const staff = await request('/api/commissions', { headers: { Cookie: mkt1Cookie } });
+  const staffGenerate = await request('/api/commissions/generate', { method: 'POST', headers: { Cookie: mkt1Cookie }, body: {} });
+  const lead = await request('/api/commissions', { headers: { Cookie: tlCookie } });
+  const leadPlans = await request('/api/commission-plans', { headers: { Cookie: tlCookie } });
+  assert(staff.status === 403 && staffGenerate.status === 403, 'staff commission access must be denied');
+  assert(lead.status === 403 && leadPlans.status === 403, 'team lead commission access must be denied');
+});
+
+await test('lead bulk import, inspection scheduling and conversion retain marketer attribution', async () => {
+  const csv = [
+    'full_name,phone_number,email_address,source,status,assigned_marketer_id',
+    'Phase 12 Bulk One,08081230001,bulk1@example.com,November ad campaign,interested,' + mkt2Id,
+    'Phase 12 Bulk Two,08081230002,bulk2@example.com,November ad campaign,new lead,' + mkt2Id
+  ].join('\n');
+  const bulk = await request('/api/leads/bulk', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { csv, source: 'November ad campaign' }
+  });
+  assert(bulk.status === 200 && bulk.data.created_count === 2, `bulk import expected 2 created, got ${bulk.status} ${JSON.stringify(bulk.data)}`);
+  const imported = db.prepare("SELECT * FROM leads WHERE email_address='bulk1@example.com'").get();
+  assert(imported && imported.source === 'November ad campaign' && imported.assigned_marketer_id === mkt2Id, 'bulk lead source/owner missing');
+
+  const inspection = await request(`/api/leads/${imported.id}/inspection`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {
+      inspection_date: new Date().toISOString().slice(0, 10), inspection_time: '11:30', property_id: propPublished
+    }
+  });
+  assert(inspection.status === 200 && inspection.data.status === 'Inspection Scheduled', 'inspection scheduling failed');
+  const summary = await request('/api/inspections/summary', { headers: { Cookie: mdCookie } });
+  assert(summary.status === 200 && summary.data.today >= 1, 'today inspection count missing');
+  assert(summary.data.by_marketer.some(row => row.marketer_id === mkt2Id && row.today_count >= 1), 'inspection count per marketer missing');
+
+  const converted = await request(`/api/leads/${imported.id}/convert`, {
+    method: 'POST', headers: { Cookie: bm1Cookie }, body: { agreed_purchase_price: 400000 }
+  });
+  assert(converted.status === 200, `lead conversion expected 200, got ${converted.status}`);
+  const client = db.prepare("SELECT * FROM clients WHERE id=?").get(converted.data.client_id);
+  assert(client.created_by === mkt2Id && client.original_marketer_id === mkt2Id, 'conversion did not retain marketer attribution');
+  const pending = db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
+    VALUES (?, ?, 'TX-P12-CONVERTED', 400000, 'NGN', 'Bank Transfer', 'pending', 40000000, 0, 'wema_alat', 'TX-P12-CONVERTED')`)
+    .run(converted.data.client_id, propPublished);
+  const verified = await request(`/api/finance/payments/${Number(pending.lastInsertRowid)}/verify`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(verified.status === 200, `converted client payment verify expected 200, got ${verified.status}`);
+  const attributed = db.prepare("SELECT revenue_staff_id FROM payments WHERE id=?").get(Number(pending.lastInsertRowid));
+  assert(attributed.revenue_staff_id === mkt2Id, 'revenue attribution did not follow converted lead marketer');
+});
+
+await test('duplicate webhook delivery is idempotent across multiple active providers', async () => {
+  db.prepare("UPDATE provider_configs SET status='Active', webhook_secret='p8-webhook-secret' WHERE provider_key='wema_alat'").run();
+  db.prepare("UPDATE provider_configs SET status='Active', webhook_secret='p8-paystack-secret', adapter_key='paystack', webhook_path='/api/webhooks/paystack' WHERE provider_key='paystack'").run();
+  const paystackPending = Number(db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
+    VALUES (?, ?, 'TX-P12-PAYSTACK', 50000, 'NGN', 'Card', 'pending', 5000000, 0, 'paystack', 'TX-P12-PAYSTACK')`)
+    .run(adaId, propPublished).lastInsertRowid);
+  const wemaPending = Number(db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
+    VALUES (?, ?, 'TX-P12-WEMA', 60000, 'NGN', 'Bank Transfer', 'pending', 6000000, 0, 'wema_alat', 'TX-P12-WEMA')`)
+    .run(adaId, propPublished).lastInsertRowid);
+
+  const paystackPayload = {
+    event: 'charge.success',
+    data: { id: 'p12-paystack-event', reference: 'TX-P12-PAYSTACK', amount: 5000000, currency: 'NGN', status: 'success', paid_at: new Date().toISOString() }
+  };
+  const raw = JSON.stringify(paystackPayload);
+  const sig = createHmac('sha512', 'p8-paystack-secret').update(raw).digest('hex');
+  const payFirst = await request('/api/webhooks/paystack', {
+    method: 'POST', headers: { 'x-paystack-signature': sig }, body: paystackPayload
+  });
+  assert(payFirst.status === 200 && payFirst.data.status === 'verified', `paystack webhook expected verified, got ${payFirst.status} ${JSON.stringify(payFirst.data)}`);
+  const paySecond = await request('/api/webhooks/paystack', {
+    method: 'POST', headers: { 'x-paystack-signature': sig }, body: paystackPayload
+  });
+  assert(paySecond.status === 200 && paySecond.data.already_processed === true, 'paystack duplicate must be idempotent');
+
+  const wemaPayload = {
+    id: 'p12-wema-event', event: 'payment.success', timestamp: new Date().toISOString(),
+    data: { transaction_reference: 'TX-P12-WEMA', amount: 60000, currency: 'NGN', status: 'success' }
+  };
+  const wemaFirst = await request('/api/webhooks/wema-alat', {
+    method: 'POST', headers: { 'X-Webhook-Secret': 'p8-webhook-secret' }, body: wemaPayload
+  });
+  const wemaSecond = await request('/api/webhooks/wema-alat', {
+    method: 'POST', headers: { 'X-Webhook-Secret': 'p8-webhook-secret' }, body: wemaPayload
+  });
+  assert(wemaFirst.status === 200 && wemaFirst.data.status === 'verified', 'wema webhook should verify');
+  assert(wemaSecond.status === 200 && wemaSecond.data.already_processed === true, 'wema duplicate must be idempotent');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM receipts WHERE payment_id=?").get(paystackPending).c === 1, 'paystack duplicate created an extra receipt');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM receipts WHERE payment_id=?").get(wemaPending).c === 1, 'wema duplicate created an extra receipt');
+  assert(db.prepare("SELECT provider FROM payments WHERE id=?").get(paystackPending).provider === 'paystack', 'paystack provider not stored');
+  assert(db.prepare("SELECT provider FROM payments WHERE id=?").get(wemaPending).provider === 'wema_alat', 'wema provider not stored');
+});
+
+console.log('\n--- 8. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
   for (const suffix of ['', '-wal', '-shm']) rmSync(cleanPath + suffix, { force: true });
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 12, `expected 12 migrations, found ${files.length}`);
+  assert(files.length === 13, `expected 13 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

@@ -28,7 +28,7 @@ These are separate from the production resources. Staging is not connected to `b
 
 ## 2. Migration status
 
-All twelve migrations were applied to `bliss-legacy-staging-db` only:
+All thirteen migrations were applied to `bliss-legacy-staging-db` only:
 
 - `0001_auth_org.sql`
 - `0002_properties.sql`
@@ -42,6 +42,7 @@ All twelve migrations were applied to `bliss-legacy-staging-db` only:
 - `0010_referrals_onboarding_alatpay.sql`
 - `0011_super_admin_notifications_chat.sql`
 - `0012_revenue_hierarchy_attribution.sql`
+- `0013_plans_defaulting_inspections_commissions_providers.sql`
 
 `wrangler d1 migrations list bliss-legacy-staging-db --remote` reports no pending migrations.
 
@@ -54,8 +55,8 @@ All twelve migrations were applied to `bliss-legacy-staging-db` only:
 | Phase 5 | 62 | 0 | 0 |
 | Phase 6 | 21 | 0 | 0 |
 | Phase 7 | 26 | 0 | 0 |
-| Phase 8 | 25 | 0 | 0 |
-| **Total** | **134** | **0** | **0** |
+| Phase 8 | 30 | 0 | 0 |
+| **Total** | **139** | **0** | **0** |
 
 Also passed: `node --check` for the Worker, all external JS and all test suites; inline HTML script checks; `git diff --check`.
 
@@ -234,9 +235,33 @@ The Super Admin temporary password is supplied only in the secure handover/final
 - Existing dashboard branch selector passes the selected branch into the revenue card and live dashboard queries.
 - Roll-up responses include `reconciles` and `children_total_kobo` so parent/child totals can be checked.
 
-## 11. Deployment version
+## 11. Payment plans, defaulting, inspections, commission versions and providers
 
-Current staging deployment version ID: `58f61443-9fa3-46aa-8789-ddb57d7d018b`
+- Payment plan types: outright, part payment, daily, weekly, bi-monthly, monthly.
+  Daily/weekly/bi-monthly/monthly are easy-buy plans.
+- Expected schedule items are generated in `payment_schedule_items`; plan
+  type, start date, grace period and schedule version are stored on the plan.
+- Defaulting clients compare expected-to-date with verified paid-to-date and
+  clear automatically when the client catches up.
+- Defaulting follow-up tools store owner, call note, next date and status.
+- Lead inspections store date, time, property and notes, with today/next-7-day
+  counts by branch and marketer. Bulk CSV/paste import is available.
+- Lead conversion now keeps the lead marketer as both `created_by` and
+  `original_marketer_id` so revenue and commission attribution stay with them.
+- Commission plans are versioned in `commission_plan_versions`; past entries
+  keep their original plan version, commissionable amount and rate.
+- Easy-buy commissionable basis supports: full payment, first N months,
+  percentage of each payment, or a fixed cap per sale.
+- `users.commission_access` gates all commission APIs and navigation. MD,
+  Head Accountant and Super Admin get it by default; staff/team leads do not.
+- Payment providers are adapter-based with per-provider webhook routes and
+  idempotent event storage. ALATPay is the first adapter; Wema ALAT and
+  Paystack adapters are registered. Secrets are Worker secrets only.
+- See `PAYMENT_PROVIDER_SECRETS.md` for the ALATPay secret checklist.
+
+## 12. Deployment version
+
+Current staging deployment version ID: `85f19c12-feed-4133-a8c3-41483bba887f`
 
 ---
 

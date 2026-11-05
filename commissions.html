@@ -74,7 +74,7 @@
         <div class="card">
           <div class="card-head"><h3>Commission plans</h3><span class="small muted">No rates are assumed; all rules are configured by management.</span></div>
           <div class="table-responsive"><table class="table">
-            <thead><tr><th>Plan</th><th>Basis</th><th>Rules</th><th>Effective</th><th>Approval</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Plan</th><th>Basis</th><th>Easy-buy rule</th><th>Version</th><th>Rules</th><th>Effective</th><th>Approval</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="planBody"></tbody>
           </table></div>
         </div>
@@ -90,6 +90,10 @@
         <div class="form-grid">
           <div class="field-group full"><label class="field-label" for="planName">Plan name</label><input class="field-input" id="planName" required></div>
           <div class="field-group"><label class="field-label" for="planBasis">Calculation basis</label><select class="field-input" id="planBasis"><option value="contract_value">Contract value</option><option value="verified_collections">Verified collections</option><option value="fixed">Fixed amount</option></select></div>
+          <div class="field-group"><label class="field-label" for="planCommissionableMode">Easy-buy commissionable basis</label><select class="field-input" id="planCommissionableMode"><option value="full">100% of every payment (outright/part payment)</option><option value="first_months">Only payments within first N months</option><option value="percentage">Only a percentage of each payment</option><option value="capped_amount">Only up to a fixed amount per sale</option></select></div>
+          <div class="field-group" id="planFirstMonthsGroup"><label class="field-label" for="planFirstMonths">First N months (default 2)</label><input class="field-input" type="number" min="0" max="120" id="planFirstMonths" value="2"></div>
+          <div class="field-group" id="planPercentGroup"><label class="field-label" for="planPercent">Commissionable percentage of each payment</label><input class="field-input" type="number" min="0" max="100" step="0.01" id="planPercent" value="100"></div>
+          <div class="field-group" id="planCapGroup"><label class="field-label" for="planCap">Commissionable cap per sale (₦)</label><input class="field-input" type="number" min="0" step="0.01" id="planCap" value="0"></div>
           <div class="field-group"><label class="field-label" for="planActive">Status</label><select class="field-input" id="planActive"><option value="1">Active</option><option value="0">Inactive</option></select></div>
           <div class="field-group"><label class="field-label" for="planFrom">Effective from</label><input class="field-input" type="date" id="planFrom"></div>
           <div class="field-group"><label class="field-label" for="planTo">Effective to</label><input class="field-input" type="date" id="planTo"></div>

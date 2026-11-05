@@ -322,7 +322,63 @@ Revenue responses include:
 }
 ```
 
-## 13. Common validation rules
+## 13. Payment plans, defaulting and inspections
+
+- `GET /api/installments` — plans in authorised scope with expected items and defaulting state.
+- `GET /api/installments/:id` — one plan with expected schedule and defaulting state.
+- `POST /api/installments` — create a plan (`plan_type`, `total_amount`, `installment_amount`, `start_date`, `next_due_date`, `deposit_amount`, `grace_days`, `number_of_installments`).
+- `PUT /api/installments/:id` — edit a plan and regenerate expected items.
+- `POST /api/installments/:id/cancel` — cancel with an audit reason.
+- `GET /api/defaulting-clients?branch_id&team_lead_id&staff_id&plan_type&status&q` — hierarchy-scoped performing/defaulting register and summary.
+- `GET /api/defaulting-clients/:scheduleId/follow-ups` — follow-up history.
+- `POST /api/defaulting-clients/:scheduleId/follow-ups` — owner, note, next date, status (`contacted`, `promised`, `escalated`).
+- `POST /api/leads/:id/inspection` — inspection date, time and property.
+- `GET /api/inspections/summary` — today/next-7-day counts by branch and marketer.
+- `POST /api/leads/bulk` — CSV or row-array lead import (maximum 500 rows).
+
+Plan types: `outright`, `part_payment`, `daily`, `weekly`, `bi_monthly`, `monthly`.
+Daily/weekly/bi-monthly/monthly are easy-buy plans.
+
+## 14. Commission access and versioning
+
+Commission endpoints require `can_access_commissions`, derived from the actual
+role or `users.commission_access`:
+
+- `GET /api/commission-options`
+- `GET|POST /api/commission-plans`
+- `GET|PUT /api/commission-plans/:id`
+- `POST /api/commission-plans/:id/status`
+- `GET /api/commissions`
+- `GET /api/commissions/:id`
+- `POST /api/commissions/generate`
+- `POST /api/commissions/:id/submit|approve|reject|payments|adjustments`
+- `GET /api/commissions/payments/:id/receipt`
+
+`commission_plans.commissionable_mode` is one of:
+
+- `full` — 100% of each payment (outright/part payment)
+- `first_months` — only payments within the first N months
+- `percentage` — only a percentage of each payment
+- `capped_amount` — only up to a fixed amount per sale
+
+Editing a plan creates a new `commission_plan_versions` row. Entries store
+`plan_version_id`, `plan_version_no`, `payment_amount_kobo`, commissionable
+amount and mode. A new version does not retroactively commission payments from
+before the version was created.
+
+## 15. Multi-provider payments
+
+- `GET /api/finance/providers` — provider registry (no secrets).
+- `POST /api/finance/providers` — status/environment/default provider (no secrets).
+- `POST /api/webhooks/alatpay` — ALATPay adapter, verified by server re-query.
+- `POST /api/webhooks/wema-alat` — Wema adapter, `X-Webhook-Secret`.
+- `POST /api/webhooks/paystack` — Paystack adapter, `x-paystack-signature` HMAC-SHA512.
+- Additional adapters use the generic `/api/webhooks/:provider` route.
+
+Payments store `provider` and `provider_reference`. Webhook event ids are
+provider-scoped and unique; repeated deliveries never credit twice.
+
+## 16. Common validation rules
 
 - Password minimum: 8 characters.
 - Phone: `+0-9() -`, 7–25 characters.
@@ -336,15 +392,13 @@ Revenue responses include:
 
 ---
 
-## 12. Known API gaps
+## 17. Known API gaps
 
-- No staff notification inbox endpoint.
-- No staff chat/message endpoints.
 - No client transaction-statement PDF endpoint.
 - No team-performance or customer-performance report type.
 - No branch CRUD endpoint.
-- No configurable permission endpoint.
 - No invitation/approval endpoint for staff.
-- No Wema/ALAT provisioning endpoint.
+- No permanent ALATPay static NUBAN/BVN onboarding endpoint; dynamic virtual accounts are implemented.
+- No automatic commission generation hook on payment credit; generation remains an explicit authorised operation.
 
 See `KNOWN_LIMITATIONS.md`.

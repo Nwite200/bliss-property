@@ -307,14 +307,15 @@
                 <th>Property</th>
                 <th>Agreed Total</th>
                 <th>Installment</th>
-                <th>Frequency</th>
+                <th>Plan</th>
+                <th>Expected / Behind</th>
                 <th>Next Due</th>
                 <th>Status</th>
                 <th style="text-align:right">Actions</th>
               </tr>
             </thead>
             <tbody id="scheduleTableBody">
-              <tr><td colspan="8" style="text-align:center;padding:28px;color:var(--muted)">Loading installment plans...</td></tr>
+              <tr><td colspan="9" style="text-align:center;padding:28px;color:var(--muted)">Loading installment plans...</td></tr>
             </tbody>
           </table></div>
         </div>
@@ -490,6 +491,23 @@
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="form-group">
+            <label>Plan Type *</label>
+            <select id="schedulePlanType">
+              <option value="outright">Outright (full payment)</option>
+              <option value="part_payment">Part payment</option>
+              <option value="daily">Daily — easy buy</option>
+              <option value="weekly" selected>Weekly — easy buy</option>
+              <option value="bi_monthly">Bi-monthly (15 days) — easy buy</option>
+              <option value="monthly">Monthly — easy buy</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Plan Start Date *</label>
+            <input type="date" id="scheduleStartDate" required>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group">
             <label>Total Agreed Price (NGN) *</label>
             <input type="number" step="0.01" min="1" id="scheduleTotal" required>
           </div>
@@ -500,11 +518,17 @@
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="form-group">
-            <label>Installment Amount (NGN) *</label>
-            <input type="number" step="0.01" min="1" id="scheduleInstallment" required>
+            <label>Installment Amount (NGN)</label>
+            <input type="number" step="0.01" min="0" id="scheduleInstallment" placeholder="Not required for outright">
           </div>
           <div class="form-group">
-            <label>Frequency *</label>
+            <label>Number of installments (optional)</label>
+            <input type="number" min="1" max="1000" id="scheduleNumberInstallments" placeholder="Derived from amount">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group" id="customDaysGroup">
+            <label>Part-payment Frequency</label>
             <select id="scheduleFrequency">
               <option value="weekly">Weekly (7 days)</option>
               <option value="monthly" selected>Monthly (30 days)</option>
@@ -512,14 +536,18 @@
               <option value="custom">Custom (days)</option>
             </select>
           </div>
+          <div class="form-group">
+            <label>Grace period (days)</label>
+            <input type="number" min="0" max="365" id="scheduleGraceDays" value="0">
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="form-group" id="customDaysGroup" style="display:none">
+          <div class="form-group" id="scheduleCustomDaysGroup" style="display:none">
             <label>Custom Frequency (days) *</label>
             <input type="number" min="1" max="365" id="scheduleCustomDays" value="14">
           </div>
           <div class="form-group">
-            <label>Next Due Date *</label>
+            <label>First Due Date *</label>
             <input type="date" id="scheduleNextDue" required>
           </div>
         </div>
@@ -984,10 +1012,16 @@
     let currentSchedules = [];
 
     function frequencyLabel(days) {
+      if (Number(days) === 1) return "Daily";
       if (Number(days) === 7) return "Weekly";
+      if (Number(days) === 15) return "Bi-monthly";
       if (Number(days) === 30) return "Monthly";
       if (Number(days) === 90) return "Quarterly";
       return `Every ${days} days`;
+    }
+
+    function planTypeLabel(type) {
+      return ({ outright: "Outright", part_payment: "Part payment", daily: "Daily", weekly: "Weekly", bi_monthly: "Bi-monthly", monthly: "Monthly" })[type] || type;
     }
 
     async function loadInstallments() {
@@ -1005,15 +1039,17 @@
       }
       tbody.innerHTML = currentSchedules.map(s => {
         const badge = s.status === "active" ? "status-verified" : (s.status === "cancelled" ? "status-failed" : "status-pending");
+        const planBadge = s.is_easy_buy ? `<span class="status-badge status-pending">easy buy</span>` : "";
         return `
           <tr>
             <td><strong>${s.client_name}</strong><div style="font-size:11px;color:var(--muted);font-family:'Space Mono', monospace">${s.client_reference}</div></td>
             <td style="font-size:12px">${s.property_title || "-"}</td>
             <td style="font-weight:700">${formatNGN(s.total_agreed_price)}</td>
             <td style="font-weight:700;color:#008F1B">${formatNGN(s.installment_amount)}</td>
-            <td style="font-size:12px">${frequencyLabel(s.frequency_days)}</td>
+            <td style="font-size:12px">${planTypeLabel(s.plan_type)}<div>${planBadge}</div></td>
+            <td style="font-size:12px">${formatNGN((s.expected_to_date_kobo || 0) / 100)}<div style="color:#DC2626">Behind ${formatNGN((s.amount_behind_kobo || 0) / 100)}</div></td>
             <td style="font-size:12px">${(s.next_due_date || "").slice(0, 10)}</td>
-            <td><span class="status-badge ${badge}">${s.status}${s.is_overdue ? " / overdue" : ""}</span></td>
+            <td><span class="status-badge ${badge}">${s.status}${s.status === "defaulting" || s.is_overdue ? " / overdue" : ""}</span></td>
             <td style="text-align:right">
               <div style="display:inline-flex;gap:5px">
                 ${s.status !== "cancelled" ? `<button type="button" class="btn btn-outline btn-sm" onclick="editSchedule(${s.id})" style="padding:3px 7px;font-size:11px">Edit</button>` : ""}
@@ -1029,29 +1065,41 @@
       const form = document.getElementById("scheduleForm");
       form.reset();
       document.getElementById("scheduleId").value = "";
-      document.getElementById("scheduleModalTitle").textContent = "Create Installment Plan";
+      document.getElementById("scheduleModalTitle").textContent = "Create Payment Plan";
+      document.getElementById("schedulePlanType").value = "weekly";
       document.getElementById("scheduleFrequency").value = "monthly";
       document.getElementById("customDaysGroup").style.display = "none";
-      const due = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
-      document.getElementById("scheduleNextDue").value = due;
+      document.getElementById("scheduleCustomDaysGroup").style.display = "none";
+      document.getElementById("scheduleGraceDays").value = "0";
+      document.getElementById("scheduleNumberInstallments").value = "";
+      const today = new Date().toISOString().slice(0, 10);
+      document.getElementById("scheduleStartDate").value = today;
+      document.getElementById("scheduleNextDue").value = today;
       const s = id ? currentSchedules.find(x => x.id === id) : null;
       if (s) {
         document.getElementById("scheduleId").value = s.id;
-        document.getElementById("scheduleModalTitle").textContent = "Edit Installment Plan";
+        document.getElementById("scheduleModalTitle").textContent = "Edit Payment Plan";
         document.getElementById("scheduleClientId").value = s.client_id;
         document.getElementById("schedulePropertyId").value = s.property_id || "";
         document.getElementById("scheduleTotal").value = s.total_agreed_price;
         document.getElementById("scheduleDeposit").value = s.deposit_amount;
         document.getElementById("scheduleInstallment").value = s.installment_amount;
         document.getElementById("scheduleNextDue").value = (s.next_due_date || "").slice(0, 10);
+        document.getElementById("scheduleStartDate").value = (s.start_date || s.next_due_date || "").slice(0, 10);
+        document.getElementById("schedulePlanType").value = s.plan_type || "part_payment";
+        document.getElementById("scheduleGraceDays").value = s.grace_days || 0;
+        document.getElementById("scheduleNumberInstallments").value = s.number_of_installments || "";
         document.getElementById("scheduleNotes").value = s.notes || "";
-        const known = ["7", "30", "90"];
-        if (known.includes(String(s.frequency_days))) {
-          document.getElementById("scheduleFrequency").value = { 7: "weekly", 30: "monthly", 90: "quarterly" }[s.frequency_days];
-        } else {
-          document.getElementById("scheduleFrequency").value = "custom";
+        if (s.plan_type === "part_payment") {
           document.getElementById("customDaysGroup").style.display = "block";
-          document.getElementById("scheduleCustomDays").value = s.frequency_days;
+          const known = ["7", "30", "90"];
+          if (known.includes(String(s.frequency_days))) {
+            document.getElementById("scheduleFrequency").value = { 7: "weekly", 30: "monthly", 90: "quarterly" }[s.frequency_days];
+          } else {
+            document.getElementById("scheduleFrequency").value = "custom";
+            document.getElementById("scheduleCustomDaysGroup").style.display = "block";
+            document.getElementById("scheduleCustomDays").value = s.frequency_days;
+          }
         }
       }
       openModal("scheduleModal");
@@ -1088,26 +1136,44 @@
     };
 
     document.getElementById("openScheduleBtn").addEventListener("click", () => window.openScheduleModal());
-    document.getElementById("scheduleFrequency").addEventListener("change", (e) => {
-      document.getElementById("customDaysGroup").style.display = e.target.value === "custom" ? "block" : "none";
-    });
+    function syncSchedulePlanFields() {
+      const planType = document.getElementById("schedulePlanType").value;
+      const isPartPayment = planType === "part_payment";
+      document.getElementById("customDaysGroup").style.display = isPartPayment ? "block" : "none";
+      document.getElementById("scheduleCustomDaysGroup").style.display =
+        isPartPayment && document.getElementById("scheduleFrequency").value === "custom" ? "block" : "none";
+      const installment = document.getElementById("scheduleInstallment");
+      installment.required = planType !== "outright";
+    }
+    document.getElementById("schedulePlanType").addEventListener("change", syncSchedulePlanFields);
+    document.getElementById("scheduleFrequency").addEventListener("change", syncSchedulePlanFields);
+    syncSchedulePlanFields();
 
     document.getElementById("scheduleForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const id = document.getElementById("scheduleId").value;
       const frequency = document.getElementById("scheduleFrequency").value;
+      const planType = document.getElementById("schedulePlanType").value;
+      const installmentValue = document.getElementById("scheduleInstallment").value;
       const payload = {
         client_id: Number(document.getElementById("scheduleClientId").value),
         property_id: document.getElementById("schedulePropertyId").value ? Number(document.getElementById("schedulePropertyId").value) : null,
         total_amount: Number(document.getElementById("scheduleTotal").value),
         deposit_amount: Number(document.getElementById("scheduleDeposit").value || 0),
-        installment_amount: Number(document.getElementById("scheduleInstallment").value),
+        installment_amount: installmentValue ? Number(installmentValue) : 0,
+        plan_type: planType,
+        start_date: document.getElementById("scheduleStartDate").value || document.getElementById("scheduleNextDue").value,
         next_due_date: document.getElementById("scheduleNextDue").value,
+        grace_days: Number(document.getElementById("scheduleGraceDays").value || 0),
+        number_of_installments: document.getElementById("scheduleNumberInstallments").value
+          ? Number(document.getElementById("scheduleNumberInstallments").value) : null,
         notes: document.getElementById("scheduleNotes").value.trim() || null,
         reason: document.getElementById("scheduleNotes").value.trim() || null
       };
-      if (frequency === "custom") payload.frequency_days = Number(document.getElementById("scheduleCustomDays").value);
-      else payload.frequency = frequency;
+      if (planType === "part_payment") {
+        if (frequency === "custom") payload.frequency_days = Number(document.getElementById("scheduleCustomDays").value);
+        else payload.frequency = frequency;
+      }
 
       const btn = document.getElementById("saveScheduleBtn");
       btn.disabled = true;

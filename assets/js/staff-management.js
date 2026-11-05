@@ -140,6 +140,10 @@
     el("staffJobTitle").value = row ? (row.job_title || "") : "";
     el("staffDateJoined").value = row && row.date_joined ? String(row.date_joined).slice(0, 10) : "";
     el("staffNotes").value = row ? (row.notes || "") : "";
+    const canGrantCommission = ["Managing Director", "Super Admin"].includes(me.actual_role || me.role);
+    el("staffCommissionAccessGroup").style.display = canGrantCommission ? "" : "none";
+    el("staffCommissionAccess").checked = Boolean(row && row.commission_access);
+    el("staffCommissionAccess").disabled = !canGrantCommission;
     el("staffPasswordGroup").style.display = row ? "none" : "";
     el("staffPassword").required = !row;
     const selectedTeams = row && row.team_ids ? String(row.team_ids).split(",").map(Number) : [];
@@ -175,6 +179,9 @@
       notes: el("staffNotes").value.trim()
     };
     if (!id) body.password = el("staffPassword").value;
+    if (["Managing Director", "Super Admin"].includes(me.actual_role || me.role)) {
+      body.commission_access = el("staffCommissionAccess").checked;
+    }
     const teamIds = [...el("staffTeamsChecks").querySelectorAll("input[type=checkbox]:checked")].map(input => Number(input.value));
     try {
       let saved;
