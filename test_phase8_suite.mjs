@@ -403,6 +403,26 @@ await test('frontend integration has no /api/api paths and public enquiries are 
   }
 });
 
+await test('logo intro and page transitions are shared across every page', async () => {
+  const motionJs = readFileSync('assets/js/motion.js', 'utf8');
+  const motionCss = readFileSync('assets/css/motion.css', 'utf8');
+  assert(motionJs.includes('bliss_intro_played_v1'), 'intro session key missing');
+  assert(motionJs.includes('sessionStorage.setItem'), 'intro does not set its session flag at start');
+  assert(motionJs.includes('prefers-reduced-motion'), 'intro does not respect reduced motion');
+  assert(motionJs.includes('INTRO_LEAVE_AT = 1500') && motionJs.includes('INTRO_REMOVE_AT = 2010'), 'intro timing is not in the 1.8–2.5s window');
+  assert(motionJs.includes('finishIntro(true)'), 'intro cannot be dismissed immediately');
+  assert(motionJs.includes('removeChild'), 'intro overlay is not removed from the DOM');
+  assert(motionCss.includes('main.bliss-view-enter'), 'landing page transition selector missing');
+  assert(motionCss.includes('.dash-main.bliss-view-enter > :not(.dash-top)'), 'dashboard transition must exclude the static header');
+  assert(motionCss.includes('.portal-main.bliss-view-enter'), 'client portal transition selector missing');
+  assert(motionCss.includes('@media (prefers-reduced-motion: reduce)'), 'CSS reduced-motion fallback missing');
+  for (const file of readdirSync('.').filter(name => name.endsWith('.html'))) {
+    const html = readFileSync(file, 'utf8');
+    assert(html.includes('assets/css/motion.css'), `${file} is missing motion.css`);
+    assert(html.includes('assets/js/motion.js'), `${file} is missing motion.js`);
+  }
+});
+
 await test('landing page exposes ten listings including land and demo labels', async () => {
   const props = readFileSync('assets/js/data/properties.js', 'utf8');
   const ids = [...props.matchAll(/id: "prop-(\d+)"/g)].map(m => m[1]);

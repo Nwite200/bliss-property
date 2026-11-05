@@ -51,8 +51,8 @@ All nine migrations were applied to `bliss-legacy-staging-db` only:
 | Phase 5 | 62 | 0 | 0 |
 | Phase 6 | 21 | 0 | 0 |
 | Phase 7 | 26 | 0 | 0 |
-| Phase 8 | 17 | 0 | 0 |
-| **Total** | **126** | **0** | **0** |
+| Phase 8 | 18 | 0 | 0 |
+| **Total** | **127** | **0** | **0** |
 
 Also passed: `node --check` for the Worker, all external JS and all test suites; inline HTML script checks; `git diff --check`.
 
