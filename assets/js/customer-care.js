@@ -166,6 +166,27 @@
     });
   }
 
+  function renderReferral() {
+    const card = el("referralCard");
+    const input = el("referralLinkInput");
+    if (!card || !input) return;
+    if (!me.referral_link) { card.style.display = "none"; return; }
+    card.style.display = "";
+    input.value = me.referral_link;
+    el("referralCodeText").textContent = `Referral code: ${me.referral_code || "-"}`;
+    el("copyReferralBtn").addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(me.referral_link); }
+      catch { input.select(); document.execCommand("copy"); }
+      S.toast("Referral link copied.");
+    });
+    el("copyReferralCodeBtn").addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(me.referral_code || ""); }
+      catch { /* clipboard may be unavailable */ }
+      S.toast("Referral code copied.");
+    });
+    el("shareReferralBtn").href = "https://wa.me/?text=" + encodeURIComponent(`Buy property with Bliss Legacy through my referral link: ${me.referral_link}`);
+  }
+
   document.addEventListener("DOMContentLoaded", async () => {
     me = await S.initShell("care");
     if (!me) return;
@@ -174,6 +195,7 @@
       window.location.href = "dashboard.html";
       return;
     }
+    renderReferral();
     await loadBranches();
     el("applyCareFilters").addEventListener("click", () => { page = 1; loadClients(); });
     el("resetCareFilters").addEventListener("click", () => {

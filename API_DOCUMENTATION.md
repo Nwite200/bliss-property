@@ -199,7 +199,7 @@ Client onboarding accepts:
 
 Terms are versioned. Signup records the accepting client, user, active terms version, IP address and user agent in `terms_acceptances`. Management can publish a new text version or upload a replacement PDF from the System Administration page.
 
-`/api/me` returns `referral_code` and `referral_link` for staff. `?ref=CODE` on `signup.html` pre-fills the referral code, shows the referring staff member and preselects their branch (the client can change it). The staff dashboard exposes a copy/share referral card.
+`/api/me` returns `referral_code` and `referral_link` for every staff account. `?ref=CODE` on `signup.html` pre-fills the referral code, shows the referring staff member and preselects their branch (the client can change it). The referred client is automatically assigned to the referring staff member as relationship manager and is visible in that staff member's client scope. Every staff dashboard and the Customer Care dashboard exposes a copy/share referral card with both the link and code.
 
 Client identity review is performed with `POST /api/clients/:id/kyc` (`verified`, `rejected`, `pending`). Permanent virtual-account activation is available to signed-in clients through:
 
@@ -314,6 +314,7 @@ Marketers may generate only `commission` and `commission_liability`. Team Leads 
 - `GET /api/admin/roles` — permission `admin.roles`
 - `PUT /api/admin/roles/:id/permissions` — permission `admin.permissions`; actual Super Admin only
 - `GET /api/admin/audit` — permission `admin.audit`
+- `GET /api/admin/clients` — permission `admin.system`; paginated client signup records including address, branch, identity/KYC, referral attribution, plan and accepted terms version
 - `GET /api/admin/terms` — permission `settings.manage`; active terms and version history
 - `POST /api/admin/terms` — permission `settings.manage`; publish a text version and/or upload a replacement PDF
 - `POST /api/admin/terms/:id/activate` — permission `settings.manage`; roll back to a previous version

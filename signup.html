@@ -32,8 +32,13 @@
     .terms-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
     .terms-head label { margin-bottom: 0 !important; }
     .terms-download { font-size: 11px; font-weight: 700; color: var(--green-dark); white-space: nowrap; }
-    .terms-box { max-height: 210px; overflow-y: auto; background: #FAFBFA; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; font-size: 12px; line-height: 1.65; color: var(--charcoal); white-space: pre-line; }
+    .terms-box { position: relative; max-height: 118px; overflow: hidden; background: #FAFBFA; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; font-size: 12px; line-height: 1.65; color: var(--charcoal); white-space: pre-line; transition: max-height .2s ease; }
+    .terms-box.expanded { max-height: 360px; overflow-y: auto; }
+    .terms-box:not(.expanded)::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 42px; background: linear-gradient(to bottom, rgba(250,251,250,0), #FAFBFA); pointer-events: none; }
     .terms-box.empty { color: #B45309; background: #FFFBEB; border-color: #FDE68A; }
+    .terms-box.empty::after { display: none; }
+    .terms-readmore { border: 0; background: none; color: var(--green-dark); font-size: 11px; font-weight: 800; cursor: pointer; padding: 0; }
+    .terms-readmore:hover { text-decoration: underline; }
     .signup-links { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 16px; font-size: 12px; }
     .signup-links a { color: var(--green-dark); font-weight: 700; }
     @media (max-width: 520px) { .signup-grid { grid-template-columns: 1fr; } .signup-card { padding: 24px 20px; } .signup-plan-detail.show { grid-template-columns: 1fr; } }
@@ -165,7 +170,10 @@
             <a class="terms-download" id="termsDownload" href="#" target="_blank" rel="noopener" style="display:none">Download PDF ↗</a>
           </div>
           <div class="terms-box" id="termsBox">Loading Terms and Conditions…</div>
-          <div class="small muted" id="termsMeta" style="margin-top:5px"></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:5px">
+            <div class="small muted" id="termsMeta"></div>
+            <button type="button" class="terms-readmore" id="termsReadMore">Read more ↓</button>
+          </div>
         </div>
         <div class="full">
           <label style="display:flex;align-items:flex-start;gap:8px;font-weight:600;color:var(--charcoal);line-height:1.5">
@@ -200,13 +208,20 @@
       const termsBox = document.getElementById('termsBox');
       const termsMeta = document.getElementById('termsMeta');
       const termsDownload = document.getElementById('termsDownload');
+      const termsReadMore = document.getElementById('termsReadMore');
       const referral = new URLSearchParams(window.location.search).get('ref');
       if (referral && referralInput) referralInput.value = referral.trim().toUpperCase();
+      termsReadMore.addEventListener('click', () => {
+        const expanded = termsBox.classList.toggle('expanded');
+        termsReadMore.textContent = expanded ? 'Show less ↑' : 'Read more ↓';
+        if (expanded) termsBox.scrollTop = 0;
+      });
       try {
         const termsData = await fetch('/api/terms').then(r => r.json());
         const terms = termsData.terms;
         if (terms) {
           termsBox.textContent = terms.body_text || 'Please review the attached Terms and Conditions document before accepting.';
+          termsReadMore.style.display = (terms.body_text || '').length > 260 ? '' : 'none';
           const published = terms.published_at
             ? new Date(String(terms.published_at).includes('T') ? terms.published_at : String(terms.published_at).replace(' ', 'T') + 'Z')
             : null;
@@ -218,10 +233,12 @@
         } else {
           termsBox.textContent = 'Terms and Conditions are not available yet. Please contact Bliss Legacy Limited.';
           termsBox.classList.add('empty');
+          termsReadMore.style.display = 'none';
         }
       } catch {
         termsBox.textContent = 'Unable to load the Terms and Conditions. Please refresh the page before creating an account.';
         termsBox.classList.add('empty');
+        termsReadMore.style.display = 'none';
       }
       try {
         const branches = await fetch('/api/branches').then(r => r.json());

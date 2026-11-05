@@ -356,6 +356,8 @@ await test('client onboarding stores alternate phone, next of kin and valid staf
   assert(client.next_of_kin_relationship === 'Sibling' && client.next_of_kin_address === '3 Next of Kin Street', 'next-of-kin relationship/address missing');
   assert(client.referral_code_used === 'BL-P8-MD' && client.referred_by_staff_id === mdId, 'staff referral attribution missing');
   assert(client.assigned_branch_id === ikeja, 'signup should use the branch selected by the client');
+  const referredAssignment = db.prepare("SELECT relationship_manager_id FROM client_assignments WHERE client_id=? AND is_primary=1").get(client.id);
+  assert(referredAssignment && referredAssignment.relationship_manager_id === mdId, 'referred client was not automatically assigned to the referring staff member');
   const self = await request('/api/me', { headers: { Cookie: (signup.headers.get('set-cookie') || '').split(';')[0] } });
   assert(self.status === 200 && self.data.role === 'Client', 'referred client session invalid');
   const mdMe = await request('/api/me', { headers: { Cookie: mdCookie } });
@@ -455,6 +457,15 @@ await test('terms and conditions are published, versioned, accepted and download
   assert(signup.status === 200 && signup.data.terms.version_no === publish.data.version_no, 'signup did not return the accepted terms version');
   const acceptance = db.prepare('SELECT * FROM terms_acceptances WHERE client_id=?').get(signup.data.client_id);
   assert(acceptance && acceptance.terms_version_id === publish.data.id, 'terms acceptance was not recorded against the client');
+
+  const adminClients = await request('/api/admin/clients?q=terms.phase18', { headers: { Cookie: mdCookie } });
+  assert(adminClients.status === 200 && adminClients.data.clients.length === 1, 'super admin client data view failed');
+  const adminClient = adminClients.data.clients[0];
+  assert(adminClient.residential_address === '12 Signup Test Street' && adminClient.assigned_branch_id === ikeja, 'super admin client view missing signup address or branch');
+  assert(adminClient.terms_version_no === publish.data.version_no && adminClient.terms_accepted_at, 'super admin client view missing accepted terms version');
+  assert(adminClient.branch_name && adminClient.client_reference, 'super admin client view missing branch or reference');
+  const forbiddenClients = await request('/api/admin/clients', { headers: { Cookie: mkt1Cookie } });
+  assert(forbiddenClients.status === 403, 'non-admin must not read the super admin client data view');
 
   const form = new FormData();
   form.append('title', 'Terms With PDF');

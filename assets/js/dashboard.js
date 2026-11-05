@@ -389,6 +389,14 @@
       }
       S.toast("Referral link copied.");
     };
+    const copyCodeBtn = el("copyReferralCodeBtn");
+    if (copyCodeBtn) {
+      copyCodeBtn.onclick = async () => {
+        try { await navigator.clipboard.writeText(me.referral_code || ""); }
+        catch { /* clipboard may be unavailable */ }
+        S.toast("Referral code copied.");
+      };
+    }
     const share = el("shareReferralBtn");
     share.href = "https://wa.me/?text=" + encodeURIComponent(`Buy property with Bliss Legacy through my referral link: ${me.referral_link}`);
   }

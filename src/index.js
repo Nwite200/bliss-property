@@ -309,11 +309,11 @@ async function buildReferralAttribution(env, referrer, fallbackUserId) {
     `).bind(referrer.id).first();
     teamLeadId = team ? team.team_lead_user_id : null;
   }
-  const canManage = referrer && ["Marketer", "Team Lead", "Branch Manager"].includes(referrer.role_name);
+  const assignedToReferrer = Boolean(referrer);
   return {
     branchId,
     teamLeadId,
-    relationshipManagerId: canManage ? referrer.id : fallbackUserId,
+    relationshipManagerId: assignedToReferrer ? referrer.id : fallbackUserId,
     originalMarketerId: referrer && referrer.role_name === "Marketer" ? referrer.id : fallbackUserId,
     referredByStaffId: referrer ? referrer.id : null,
     referralCodeUsed: referrer ? referrer.referral_code : null
@@ -5323,6 +5323,57 @@ export default {
         return { error: json({ error: `Missing permission: ${permission}` }, 403) };
       }
       return { actor };
+    }
+
+    if (path === "/api/admin/clients" && request.method === "GET") {
+      const auth = await adminActor("admin.system");
+      if (auth.error) return auth.error;
+      const q = String(url.searchParams.get("q") || "").trim();
+      const branchId = url.searchParams.get("branch_id");
+      const kycStatus = String(url.searchParams.get("kyc_status") || "").trim();
+      const status = String(url.searchParams.get("status") || "").trim();
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+      const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "50", 10)));
+      const offset = (page - 1) * limit;
+      const clauses = ["c.is_deleted=0"];
+      const binds = [];
+      if (q) {
+        clauses.push("(c.full_name LIKE ? OR c.client_reference LIKE ? OR c.phone_number LIKE ? OR c.email_address LIKE ?)");
+        binds.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+      }
+      if (branchId) { clauses.push("c.assigned_branch_id=?"); binds.push(Number(branchId)); }
+      if (kycStatus) { clauses.push("c.kyc_status=?"); binds.push(kycStatus); }
+      if (status) { clauses.push("c.status=?"); binds.push(status); }
+      const whereSql = "WHERE " + clauses.join(" AND ");
+      const { results: clients } = await env.DB.prepare(`
+        SELECT c.id, c.client_reference, c.full_name, c.phone_number, c.alternate_phone, c.email_address,
+               c.residential_address, c.state, c.city, c.status, c.verification_status, c.verification_channel,
+               c.next_of_kin_name, c.next_of_kin_phone, c.next_of_kin_relationship, c.next_of_kin_address,
+               c.assigned_branch_id, c.kyc_status, c.identity_type, c.identity_number_masked, c.identity_number_last4, c.bvn_last4,
+               c.payment_plan_type, c.payment_plan_duration_months, c.payment_plan_total_kobo,
+               c.referral_code_used, c.referred_by_staff_id, c.original_marketer_id,
+               c.created_at, c.updated_at,
+               b.name AS branch_name, ref.full_name AS referred_by_name, ref.referral_code AS referred_by_code,
+               m.full_name AS marketer_name, prop.title AS property_title, prop.reference AS property_reference,
+               (SELECT t.version_no FROM terms_acceptances ta
+                 JOIN terms_versions t ON t.id=ta.terms_version_id
+                 WHERE ta.client_id=c.id ORDER BY ta.id DESC LIMIT 1) AS terms_version_no,
+               (SELECT ta.accepted_at FROM terms_acceptances ta
+                 WHERE ta.client_id=c.id ORDER BY ta.id DESC LIMIT 1) AS terms_accepted_at
+        FROM clients c
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        LEFT JOIN users ref ON ref.id=c.referred_by_staff_id
+        LEFT JOIN users m ON m.id=c.original_marketer_id
+        LEFT JOIN properties prop ON prop.id=c.interested_property_id
+        ${whereSql}
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT ? OFFSET ?
+      `).bind(...binds, limit, offset).all();
+      const count = await env.DB.prepare(`SELECT COUNT(*) AS c FROM clients c ${whereSql}`).bind(...binds).first();
+      return json({
+        clients,
+        pagination: { page, limit, total: Number(count ? count.c : 0) }
+      });
     }
 
     if (path === "/api/admin/terms" && request.method === "GET") {

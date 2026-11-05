@@ -31,6 +31,22 @@
         <div class="role-hero-meta" id="careMeta"></div>
       </section>
 
+      <div class="card" id="referralCard" style="margin-bottom:16px;display:none">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+          <div style="flex:1;min-width:240px">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Your client referral link</div>
+            <p style="font-size:12px;color:var(--muted);margin:5px 0 10px">Share this link with a prospective client. When they sign up, the client is automatically attributed to you.</p>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input class="field-input" id="referralLinkInput" readonly style="flex:1;min-width:220px;font-size:12px">
+              <button class="btn btn-green btn-sm" type="button" id="copyReferralBtn">Copy link</button>
+              <button class="btn btn-outline btn-sm" type="button" id="copyReferralCodeBtn">Copy code</button>
+              <a class="btn btn-outline btn-sm" id="shareReferralBtn" target="_blank" rel="noopener">Share on WhatsApp</a>
+            </div>
+            <div class="small muted" id="referralCodeText" style="margin-top:7px"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="kpi-grid kpi-grid-5" id="careKpis"></div>
 
       <div class="card section-gap">

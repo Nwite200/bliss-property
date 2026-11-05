@@ -40,6 +40,37 @@
         <div class="kpi"><div class="label">Audit events</div><div class="value" id="auditCount">—</div><div class="delta">Immutable history</div></div>
       </div>
 
+      <div class="card" style="margin-bottom:20px" id="adminClientsCard">
+        <div class="card-head">
+          <h3>Client signup records</h3>
+          <span class="small muted" id="adminClientCount">Loading…</span>
+        </div>
+        <p class="small muted" style="margin:6px 0 12px">Every field captured at signup: contact, residential address, branch, identity/KYC status, referral attribution, plan and accepted terms version.</p>
+        <div class="filters mb-16">
+          <input type="search" id="adminClientSearch" placeholder="Search name, reference, phone or email…">
+          <select id="adminClientKyc">
+            <option value="">All KYC statuses</option>
+            <option value="pending">Pending</option>
+            <option value="verified">Verified</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          <select id="adminClientBranch"><option value="">All branches</option></select>
+          <button class="btn btn-green btn-sm" type="button" id="adminClientApply">Filter</button>
+          <button class="btn btn-ghost btn-sm" type="button" id="adminClientReset">Reset</button>
+        </div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead><tr><th>Client</th><th>Address</th><th>Branch</th><th>Identity / KYC</th><th>Referral</th><th>Plan</th><th>Terms</th><th>Status</th><th></th></tr></thead>
+            <tbody id="adminClientBody"><tr><td colspan="9"><div class="empty-state">Loading client records…</div></td></tr></tbody>
+          </table>
+        </div>
+        <div class="toolbar mt-16" style="justify-content:flex-end">
+          <button class="btn btn-ghost btn-sm" type="button" id="adminClientPrev">← Previous</button>
+          <span class="small muted" id="adminClientPageLabel">Page 1</span>
+          <button class="btn btn-ghost btn-sm" type="button" id="adminClientNext">Next →</button>
+        </div>
+      </div>
+
       <div class="card" style="margin-bottom:20px">
         <div class="card-head"><h3>Role permissions</h3><span class="small muted">Only a Super Admin can save changes</span></div>
         <div class="form-group" style="max-width:380px;margin-top:14px">

@@ -3,6 +3,8 @@
   let me = null;
   let roles = [];
   let allPermissions = [];
+  let clientPage = 1;
+  let adminClientTotal = 0;
   const el = id => document.getElementById(id);
 
   function renderPermissions(role) {
@@ -42,6 +44,71 @@
       el("commissionBackfillBody").innerHTML = (data.payments || []).length ? data.payments.map(row => `
         <tr><td>${S.escape(row.transaction_ref)}</td><td>${S.escape(row.client_name)} (${S.escape(row.client_reference)})</td><td>${S.money(row.amount_kobo)}</td><td>${S.formatDateTime(row.verified_at)}</td></tr>`).join("") : '<tr><td colspan="4"><div class="empty-state">No missing commissions.</div></td></tr>';
     } catch (error) { S.toast(error.message || "Unable to load backfill preview", true); }
+  }
+
+  async function loadAdminClientBranches() {
+    try {
+      const data = await S.fetchJson("/api/branches");
+      el("adminClientBranch").innerHTML = '<option value="">All branches</option>' + (data.branches || []).map(branch => `<option value="${branch.id}">${S.escape(branch.name)}</option>`).join("");
+    } catch { /* optional */ }
+  }
+
+  async function loadAdminClients() {
+    const params = new URLSearchParams();
+    params.set("page", String(clientPage));
+    params.set("limit", "25");
+    if (el("adminClientSearch").value.trim()) params.set("q", el("adminClientSearch").value.trim());
+    if (el("adminClientKyc").value) params.set("kyc_status", el("adminClientKyc").value);
+    if (el("adminClientBranch").value) params.set("branch_id", el("adminClientBranch").value);
+    try {
+      const data = await S.fetchJson("/api/admin/clients?" + params.toString());
+      const clients = data.clients || [];
+      adminClientTotal = data.pagination ? data.pagination.total : clients.length;
+      el("adminClientCount").textContent = `${adminClientTotal} client record${adminClientTotal === 1 ? "" : "s"}`;
+      const pages = Math.max(1, Math.ceil(adminClientTotal / 25));
+      el("adminClientPageLabel").textContent = `Page ${clientPage} of ${pages}`;
+      el("adminClientPrev").disabled = clientPage <= 1;
+      el("adminClientNext").disabled = clientPage >= pages;
+      el("adminClientBody").innerHTML = clients.length ? clients.map(row => {
+        const address = [row.residential_address, row.city, row.state].filter(Boolean).join(", ") || "-";
+        const nextOfKin = [row.next_of_kin_name, row.next_of_kin_relationship, row.next_of_kin_phone].filter(Boolean).join(" · ");
+        const plan = row.payment_plan_type
+          ? `${String(row.payment_plan_type).replace(/_/g, " ")}${row.payment_plan_duration_months !== null && row.payment_plan_duration_months !== undefined ? ` · ${row.payment_plan_duration_months} month(s)` : ""}`
+          : "Not set";
+        const planTotal = row.payment_plan_total_kobo ? S.money(row.payment_plan_total_kobo) : "";
+        const kycTone = row.kyc_status === "verified" ? "green" : row.kyc_status === "rejected" ? "red" : "amber";
+        const referral = row.referred_by_name
+          ? `${row.referred_by_name} (${row.referred_by_code || row.referral_code_used || "no code"})`
+          : (row.referral_code_used || "Direct");
+        const terms = row.terms_version_no
+          ? `v${row.terms_version_no}${row.terms_accepted_at ? `<div class="small muted">${S.formatDateTime(row.terms_accepted_at)}</div>` : ""}`
+          : '<span class="badge badge-red">Not recorded</span>';
+        return `<tr>
+          <td>
+            <strong>${S.escape(row.full_name || "-")}</strong>
+            <div class="small muted">${S.escape(row.client_reference || "")}</div>
+            <div class="small">${S.escape(row.phone_number || "-")}${row.alternate_phone ? " · " + S.escape(row.alternate_phone) : ""}</div>
+            <div class="small muted">${S.escape(row.email_address || "-")}</div>
+          </td>
+          <td class="small">${S.escape(address)}${nextOfKin ? `<div class="small muted">NOK: ${S.escape(nextOfKin)}</div>` : ""}</td>
+          <td>${S.escape(row.branch_name || "-")}</td>
+          <td class="small">
+            ${row.identity_type ? `<strong>${S.escape(row.identity_type)}</strong><div>${S.escape(row.identity_number_masked || "-")}</div>` : '<span class="small muted">Not supplied</span>'}
+            ${row.bvn_last4 ? `<div class="small muted">BVN •••••••${S.escape(row.bvn_last4)}</div>` : ""}
+            <div style="margin-top:4px">${S.badge(row.kyc_status || "pending", kycTone)}</div>
+            <div class="small muted">Verification: ${S.escape(row.verification_status || "unverified")}</div>
+          </td>
+          <td class="small">${S.escape(referral)}</td>
+          <td class="small"><strong>${S.escape(plan)}</strong>${planTotal ? `<div class="small muted">${S.escape(row.property_title || "")} · ${planTotal}</div>` : ""}</td>
+          <td class="small">${terms}</td>
+          <td>${S.badge(row.status || "Prospect", row.status === "Cancelled" || row.status === "Inactive" ? "red" : "green")}</td>
+          <td><a class="btn btn-ghost btn-xs" href="client-detail.html?id=${row.id}">Open</a></td>
+        </tr>`;
+      }).join("") : '<tr><td colspan="9"><div class="empty-state">No client records match the filters.</div></td></tr>';
+    } catch (error) {
+      el("adminClientCount").textContent = "Unavailable";
+      el("adminClientBody").innerHTML = `<tr><td colspan="9"><div class="empty-state">${S.escape(error.message)}</div></td></tr>`;
+    }
   }
 
   async function loadTerms() {
@@ -112,12 +179,25 @@
           <td>${S.escape(row.branch_name || "Company-wide")}</td>
         </tr>`).join("") || '<tr><td colspan="5">No audit records.</td></tr>';
       await loadCommissionFailures();
+      await loadAdminClientBranches();
+      await loadAdminClients();
       await loadTerms();
     } catch (error) {
       S.toast(error.message || "Unable to load system administration", true);
     }
 
     el("loadCommissionBackfill").addEventListener("click", loadCommissionBackfill);
+
+    el("adminClientApply").addEventListener("click", () => { clientPage = 1; loadAdminClients(); });
+    el("adminClientReset").addEventListener("click", () => {
+      el("adminClientSearch").value = "";
+      el("adminClientKyc").value = "";
+      el("adminClientBranch").value = "";
+      clientPage = 1;
+      loadAdminClients();
+    });
+    el("adminClientPrev").addEventListener("click", () => { if (clientPage > 1) { clientPage--; loadAdminClients(); } });
+    el("adminClientNext").addEventListener("click", () => { clientPage++; loadAdminClients(); });
 
     el("saveTermsBtn").addEventListener("click", async () => {
       const msg = el("termsMsg");
