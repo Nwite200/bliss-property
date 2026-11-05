@@ -15,6 +15,35 @@
     `).join("");
   }
 
+  async function loadCommissionFailures() {
+    try {
+      const data = await S.fetchJson("/api/admin/commission-failures");
+      el("commissionFailureCount").textContent = `${data.total || 0} unresolved`;
+      el("commissionFailureBody").innerHTML = (data.failures || []).length ? data.failures.map(row => `
+        <tr>
+          <td><strong>${S.escape(row.transaction_ref || row.payment_id)}</strong><div class="small muted">${S.money(row.amount_kobo || 0)}</div></td>
+          <td>${S.escape(row.client_name || "-")}<div class="small muted">${S.escape(row.client_reference || "")}</div></td>
+          <td>${S.escape(row.branch_name || "-")}</td>
+          <td>${row.attempts || 0}</td>
+          <td class="small">${S.escape(row.last_error || "-")}</td>
+          <td>${row.next_retry_at ? S.formatDateTime(row.next_retry_at) : "-"}</td>
+        </tr>`).join("") : '<tr><td colspan="6"><div class="empty-state">No unresolved commission failures.</div></td></tr>';
+    } catch (error) {
+      el("commissionFailureCount").textContent = "Unavailable";
+      el("commissionFailureBody").innerHTML = '<tr><td colspan="6">Unable to load commission failures.</td></tr>';
+    }
+  }
+
+  async function loadCommissionBackfill() {
+    try {
+      const data = await S.fetchJson("/api/admin/commission-backfill");
+      el("commissionBackfillMeta").textContent = `${data.missing_count || 0} verified payment(s) without commission — dry run only, no writes.`;
+      el("commissionBackfillWrap").style.display = "";
+      el("commissionBackfillBody").innerHTML = (data.payments || []).length ? data.payments.map(row => `
+        <tr><td>${S.escape(row.transaction_ref)}</td><td>${S.escape(row.client_name)} (${S.escape(row.client_reference)})</td><td>${S.money(row.amount_kobo)}</td><td>${S.formatDateTime(row.verified_at)}</td></tr>`).join("") : '<tr><td colspan="4"><div class="empty-state">No missing commissions.</div></td></tr>';
+    } catch (error) { S.toast(error.message || "Unable to load backfill preview", true); }
+  }
+
   async function load() {
     me = await S.initShell("super-admin");
     if (!me) return;
@@ -47,9 +76,12 @@
           <td>${S.escape(row.target_type || "-")} ${row.target_id ? "#" + S.escape(row.target_id) : ""}</td>
           <td>${S.escape(row.branch_name || "Company-wide")}</td>
         </tr>`).join("") || '<tr><td colspan="5">No audit records.</td></tr>';
+      await loadCommissionFailures();
     } catch (error) {
       S.toast(error.message || "Unable to load system administration", true);
     }
+
+    el("loadCommissionBackfill").addEventListener("click", loadCommissionBackfill);
 
     el("roleSelect").addEventListener("change", () => {
       renderPermissions(roles.find(role => String(role.id) === el("roleSelect").value));

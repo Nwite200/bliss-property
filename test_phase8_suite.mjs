@@ -65,6 +65,7 @@ db.exec(`
   DELETE FROM commission_payments;
   DELETE FROM commission_approvals;
   DELETE FROM commission_attributions;
+  DELETE FROM commission_generation_failures;
   DELETE FROM commission_entries;
   DELETE FROM commission_plan_rules;
   DELETE FROM commission_plans;
@@ -1286,6 +1287,69 @@ await test('ALATPay static wallet creation, signature validation, status verific
   }
 });
 
+console.log('\n--- 11. Automatic commission generation and retry ---');
+await test('verified webhook creates commission once, duplicate creates none, failure flags and retry resolves', async () => {
+  const autoClient = insertPlanClient('BLC-AUTO-COMM', 'Audit Auto Commission Client', ikeja, mkt1Id, 500000);
+  db.prepare('UPDATE clients SET team_lead_id=? WHERE id=?').run(tlId, autoClient);
+  db.prepare('INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by, is_primary) VALUES (?,?,?,?,?,1)')
+    .run(autoClient, mkt1Id, ikeja, tlId, bm1Id);
+  await createPlanForClient(autoClient, 'outright', { total: 500000, installment: 500000, count: 1 });
+  const plan = await request('/api/commission-plans', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {
+      name: 'Audit Auto Commission', calculation_basis: 'verified_collections',
+      commissionable_mode: 'full', approval_required: false, separation_of_duties: false,
+      rules: [
+        { role_name: 'Marketer', rate_percent: 10 },
+        { role_name: 'Team Lead', rate_percent: 2 },
+        { role_name: 'Branch Manager', rate_percent: 1 }
+      ]
+    }
+  });
+  assert(plan.status === 200, 'automatic commission plan create failed');
+  db.prepare("UPDATE provider_configs SET status='Active', webhook_secret='auto-comm-secret' WHERE provider_key='wema_alat'").run();
+  const pending = Number(db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference, payment_mode)
+    VALUES (?, ?, 'AUD-AUTO-WH-1', 100000, 'NGN', 'Bank Transfer', 'pending', 10000000, 0, 'wema_alat', 'AUD-AUTO-WH-1', 'test')`)
+    .run(autoClient, propPublished).lastInsertRowid);
+  const payload = {
+    id: 'audit-auto-webhook-1', event: 'payment.success', timestamp: new Date().toISOString(),
+    data: { transaction_reference: 'AUD-AUTO-WH-1', amount: 100000, currency: 'NGN', status: 'success' }
+  };
+  const first = await request('/api/webhooks/wema-alat', { method: 'POST', headers: { 'X-Webhook-Secret': 'auto-comm-secret' }, body: payload });
+  assert(first.status === 200 && first.data.status === 'verified', 'auto-commission webhook should verify');
+  const entries = db.prepare('SELECT * FROM commission_entries WHERE client_id=? AND payment_id=? AND plan_id=?').all(autoClient, pending, plan.data.id);
+  assert(entries.length === 3, `expected 3 beneficiary commission entries for audit plan, got ${entries.length}`);
+  assert(db.prepare('SELECT commission_state FROM payments WHERE id=?').get(pending).commission_state === 'generated', 'payment not marked commission generated');
+  const replay = await request('/api/webhooks/wema-alat', { method: 'POST', headers: { 'X-Webhook-Secret': 'auto-comm-secret' }, body: payload });
+  assert(replay.data.already_processed === true, 'duplicate auto webhook must be idempotent');
+  assert(db.prepare('SELECT COUNT(*) AS c FROM commission_entries WHERE client_id=? AND payment_id=? AND plan_id=?').get(autoClient, pending, plan.data.id).c === 3, 'duplicate webhook created extra commission entries');
+
+  const failClient = insertPlanClient('BLC-AUTO-FAIL', 'Audit Auto Fail Client', ikeja, mkt1Id, 500000);
+  db.prepare('UPDATE clients SET team_lead_id=? WHERE id=?').run(tlId, failClient);
+  db.prepare('INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by, is_primary) VALUES (?,?,?,?,?,1)')
+    .run(failClient, mkt1Id, ikeja, tlId, bm1Id);
+  await createPlanForClient(failClient, 'outright', { total: 500000, installment: 500000, count: 1 });
+  const failPayment = Number(db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference, payment_mode)
+    VALUES (?, ?, 'AUD-AUTO-FAIL-1', 100000, 'NGN', 'Bank Transfer', 'pending', 10000000, 0, 'wema_alat', 'AUD-AUTO-FAIL-1', 'test')`)
+    .run(failClient, propPublished).lastInsertRowid);
+  db.exec("CREATE TRIGGER audit_fail_commission BEFORE INSERT ON commission_entries BEGIN SELECT RAISE(ABORT, 'forced commission failure'); END;");
+  const verified = await request(`/api/finance/payments/${failPayment}/verify`, { method: 'POST', headers: { Cookie: mdCookie }, body: {} });
+  assert(verified.status === 200, `payment must still verify when commission fails, got ${verified.status}`);
+  const failedPayment = db.prepare('SELECT status, commission_state FROM payments WHERE id=?').get(failPayment);
+  assert(failedPayment.status === 'verified', 'failed commission must not roll back payment');
+  assert(failedPayment.commission_state === 'failed', 'failed commission was not flagged');
+  const failure = db.prepare('SELECT * FROM commission_generation_failures WHERE payment_id=? AND resolved_at IS NULL').get(failPayment);
+  assert(failure, 'commission failure row missing');
+  db.exec('DROP TRIGGER audit_fail_commission;');
+  db.prepare("UPDATE commission_generation_failures SET next_retry_at=datetime('now','-1 minute') WHERE payment_id=?").run(failPayment);
+  await worker.scheduled({}, makeEnv(), { waitUntil() {} });
+  const retried = db.prepare('SELECT commission_state FROM payments WHERE id=?').get(failPayment);
+  assert(retried.commission_state === 'generated', 'retry did not mark commission generated');
+  assert(db.prepare('SELECT resolved_at FROM commission_generation_failures WHERE payment_id=?').get(failPayment).resolved_at, 'retry did not resolve failure');
+  assert(db.prepare('SELECT COUNT(*) AS c FROM commission_entries WHERE client_id=? AND plan_id=?').get(failClient, plan.data.id).c >= 3, 'retry created no commission entries');
+});
+
 console.log('\n--- 11. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
@@ -1293,7 +1357,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 16, `expected 16 migrations, found ${files.length}`);
+  assert(files.length === 17, `expected 17 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

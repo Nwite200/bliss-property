@@ -631,6 +631,7 @@ async function finalizeAlatpayCredit(env, payment, remoteData, mode, reference) 
   });
   await notifyPaymentVerified(env, payment, null);
   await sendPaymentReceivedSms(env, payment.id);
+  await autoGenerateCommissionForPayment(env, payment);
   await audit(env, null, "payment.reconciled", "payment", String(payment.id), { provider: "alatpay", mode, reference, amount_kobo: amountKobo });
   return { ok: true, payment_id: payment.id, receipt_ref: receipt.receipt_ref };
 }
@@ -1692,6 +1693,79 @@ async function generateCommissionEntries(env, actor, body) {
   }
   return { created, skipped, created_refs: createdRefs };
 }
+
+async function systemCommissionActor(env) {
+  const row = await env.DB.prepare(`
+    SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+    WHERE r.name IN ('Managing Director','Super Admin') AND u.is_active=1
+    ORDER BY CASE r.name WHEN 'Managing Director' THEN 0 ELSE 1 END, u.id LIMIT 1
+  `).first();
+  return row ? { id: row.id } : null;
+}
+
+async function autoGenerateCommissionForPayment(env, payment) {
+  if (!payment || !payment.id || !payment.client_id) return { skipped: true };
+  const actor = await systemCommissionActor(env);
+  if (!actor) {
+    await markCommissionGenerationFailure(env, payment, "No active MD/Super Admin available for commission actor");
+    return { ok: false, error: "No system actor" };
+  }
+  try {
+    const result = await generateCommissionEntries(env, actor, { client_id: payment.client_id });
+    await env.DB.prepare(`
+      UPDATE payments SET commission_state='generated', commission_processed_at=datetime('now'), commission_error=NULL
+      WHERE id=?
+    `).bind(payment.id).run();
+    await env.DB.prepare(`
+      UPDATE commission_generation_failures SET resolved_at=datetime('now'), updated_at=datetime('now')
+      WHERE payment_id=? AND resolved_at IS NULL
+    `).bind(payment.id).run();
+    return { ok: true, ...result };
+  } catch (error) {
+    await markCommissionGenerationFailure(env, payment, error.message || "Commission generation failed");
+    return { ok: false, error: error.message || "Commission generation failed" };
+  }
+}
+
+async function markCommissionGenerationFailure(env, payment, message) {
+  const text = String(message || "Commission generation failed").slice(0, 1000);
+  await env.DB.prepare(`
+    UPDATE payments SET commission_state='failed', commission_error=?, commission_processed_at=datetime('now')
+    WHERE id=?
+  `).bind(text, payment.id).run();
+  await env.DB.prepare(`
+    INSERT INTO commission_generation_failures (payment_id, client_id, attempts, last_error, next_retry_at)
+    VALUES (?, ?, 1, ?, datetime('now','+15 minutes'))
+    ON CONFLICT(payment_id) DO UPDATE SET attempts=attempts+1, last_error=excluded.last_error,
+      next_retry_at=datetime('now','+15 minutes'), resolved_at=NULL, updated_at=datetime('now')
+  `).bind(payment.id, payment.client_id, text).run();
+  await audit(env, null, "commission.generation_failed", "payment", String(payment.id), {
+    error: text, client_id: payment.client_id
+  }, null);
+}
+
+async function retryCommissionGeneration(env) {
+  const { results: failures } = await env.DB.prepare(`
+    SELECT f.*, p.client_id, p.status AS payment_status
+    FROM commission_generation_failures f JOIN payments p ON p.id=f.payment_id
+    WHERE f.resolved_at IS NULL AND (f.next_retry_at IS NULL OR f.next_retry_at <= datetime('now'))
+    ORDER BY f.id LIMIT 50
+  `).all();
+  let resolved = 0;
+  for (const failure of failures) {
+    if (failure.payment_status !== "verified") continue;
+    const result = await autoGenerateCommissionForPayment(env, { id: failure.payment_id, client_id: failure.client_id });
+    if (result.ok) resolved++;
+    else {
+      await env.DB.prepare(`
+        UPDATE commission_generation_failures SET attempts=attempts+1,
+          next_retry_at=datetime('now','+30 minutes'), updated_at=datetime('now') WHERE id=?
+      `).bind(failure.id).run();
+    }
+  }
+  return { examined: failures.length, resolved };
+}
+
 
 async function applyPaymentCommissionAdjustments(env, payment, adjustmentType, actorId, reason) {
   const { results: entries } = await env.DB.prepare(`
@@ -4585,6 +4659,47 @@ export default {
       return json({ ok: true, role_id: roleId, permissions: names });
     }
 
+    if (path === "/api/admin/commission-failures" && request.method === "GET") {
+      const auth = await adminActor("admin.system");
+      if (auth.error) return auth.error;
+      const { results } = await env.DB.prepare(`
+        SELECT f.id, f.payment_id, f.client_id, f.attempts, f.last_error, f.next_retry_at,
+               f.created_at, p.transaction_ref, p.amount_kobo, p.verified_at, p.commission_state,
+               c.full_name AS client_name, c.client_reference, b.name AS branch_name
+        FROM commission_generation_failures f
+        JOIN payments p ON p.id=f.payment_id
+        JOIN clients c ON c.id=f.client_id
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        WHERE f.resolved_at IS NULL
+        ORDER BY f.id DESC LIMIT 200
+      `).all();
+      return json({ failures: results, total: results.length });
+    }
+
+    if (path === "/api/admin/commission-backfill" && request.method === "GET") {
+      const auth = await adminActor("admin.system");
+      if (auth.error) return auth.error;
+      const { results } = await env.DB.prepare(`
+        SELECT p.id AS payment_id, p.transaction_ref, p.amount_kobo, p.verified_at, p.payment_mode,
+               p.commission_state, c.id AS client_id, c.full_name AS client_name,
+               c.client_reference, b.name AS branch_name
+        FROM payments p
+        JOIN clients c ON c.id=p.client_id
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        WHERE p.status='verified' AND p.is_demo=0 AND p.currency='NGN'
+          AND NOT EXISTS (SELECT 1 FROM commission_entries ce WHERE ce.payment_id=p.id)
+        ORDER BY p.verified_at DESC, p.id DESC
+        LIMIT 500
+      `).all();
+      return json({
+        dry_run: true,
+        missing_count: results.length,
+        payments: results,
+        note: "No commission entries were created. Awaiting owner approval before backfill."
+      });
+    }
+
+
     if (path === "/api/admin/audit" && request.method === "GET") {
       const auth = await adminActor("admin.audit");
       if (auth.error) return auth.error;
@@ -7411,6 +7526,7 @@ export default {
       });
       await notifyPaymentVerified(env, payment, actor.id);
       await sendPaymentReceivedSms(env, payment.id);
+      await autoGenerateCommissionForPayment(env, payment);
 
       return json({ ok: true, receipt_ref: receiptRef, remaining_balance_kobo: remainingKobo });
     }
@@ -7914,6 +8030,7 @@ export default {
       });
       await notifyPaymentVerified(env, payment, null);
       await sendPaymentReceivedSms(env, payment.id);
+      await autoGenerateCommissionForPayment(env, payment);
       return json({ ok: true, status: "verified", provider: "alatpay", mode: routeMode, receipt_ref: receipt.receipt_ref });
     }
 
@@ -8055,6 +8172,7 @@ export default {
       });
       await notifyPaymentVerified(env, payment, null);
       await sendPaymentReceivedSms(env, payment.id);
+      await autoGenerateCommissionForPayment(env, payment);
 
       await recordEvent("verified", payment.id);
       return json({ ok: true, status: "verified", receipt_ref: receipt.receipt_ref });
@@ -8208,6 +8326,7 @@ export default {
       });
       await notifyPaymentVerified(env, payment, null);
       await sendPaymentReceivedSms(env, payment.id);
+      await autoGenerateCommissionForPayment(env, payment);
       await audit(env, null, "webhook.received", "payment", String(payment.id), {
         provider: providerKey, event_id: event.eventId, reference: event.reference, result: "verified"
       });
@@ -11351,6 +11470,7 @@ export default {
       await dispatchPaymentReminders(env);
       await dispatchSmsSchedules(env);
       await reconcileAlatpayPayments(env);
+      await retryCommissionGeneration(env);
       const settings = await getSmsSettings(env);
       if (settings.enabled && settings.provider !== "mock") {
         try {
