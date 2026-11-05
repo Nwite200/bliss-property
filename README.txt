@@ -63,6 +63,9 @@ Architecture and safety
 - PWA: installable on iPhone/iPad (Safari → Share → Add to Home Screen) and Android (Chrome → Install app)
 - PWA manifest: manifest.json; service worker: sw.js; offline: offline.html
 - Logo intro: assets/js/intro-config.js (INTRO_STYLE = hype | classic), assets/js/motion.js, assets/css/motion.css
+- ALATPay: Worker secrets ALATPAY_SECRET_KEY and ALATPAY_BUSINESS_ID; client/staff virtual-account endpoints; webhook /api/webhooks/alatpay
+- Client onboarding: alternate phone, next-of-kin name/phone/relationship/address and staff referral code
+- Staff referrals: unique referral_code on users, referral link /signup?ref=CODE, referred clients remain visible to the referring staff member
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
 - There is no separate Super Admin role; the Managing Director is the highest implemented role.

@@ -162,7 +162,7 @@ Until that dashboard step is completed, Git pushes will not automatically trigge
 
 ## 9. Deployment version
 
-Current staging deployment version ID: `32958c88-5943-4606-b9ae-3977b30608eb`
+Current staging deployment version ID: `1090b8bc-6a85-48e2-9a71-cdf280002290`
 
 ---
 
