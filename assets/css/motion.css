@@ -163,6 +163,11 @@
   opacity: 0;
 }
 
+.style-hype .bliss-intro__tagline {
+  color: rgba(65, 65, 65, 0.86);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
 .style-classic .bliss-intro__tagline,
 .style-reduced .bliss-intro__tagline,
 .style-classic .bliss-intro__streak,
