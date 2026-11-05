@@ -439,7 +439,32 @@ backfilled as verified. Email uses the Resend adapter (`RESEND_API_KEY`,
 `EMAIL_FROM`); SMS uses the existing SMS provider. See
 `CLIENT_OTP_VERIFICATION.md`.
 
-## 21. Common validation rules
+## 21. ALATPay webhooks, transaction verification and static wallets
+
+- `POST /api/webhooks/alatpay/test` — test-mode webhook.
+- `POST /api/webhooks/alatpay/live` — live-mode webhook (rejected unless `PAYMENT_MODE=live`).
+- Legacy `POST /api/webhooks/alatpay` resolves to the current mode.
+- Validation: `x-signature` must equal `Base64(HMAC-SHA256(raw body, webhook secret))`.
+- Payload supports `{ Value: { Data: {...} } }`.
+- Before credit, the transaction is re-checked at
+  `/alatpaytransaction/api/v1/transactions/{transactionId}`.
+- `POST /api/finance/reconciliation/alatpay` — manual reconciliation using completed ALATPay transactions.
+- `GET /api/finance/clients/:id/static-wallet`
+- `POST /api/finance/clients/:id/static-wallet/initiate` — transient BVN, never stored.
+- `POST /api/finance/clients/:id/static-wallet/validate` — OTP validation.
+- `POST /api/finance/static-wallets/backfill` — dry-run by default; non-dry-run needs per-client BVN list.
+
+Mode and secrets:
+
+```text
+PAYMENT_MODE=test|live
+ALATPAY_TEST_SECRET_KEY / ALATPAY_TEST_BUSINESS_ID / ALATPAY_TEST_WEBHOOK_SECRET
+ALATPAY_LIVE_SECRET_KEY / ALATPAY_LIVE_BUSINESS_ID / ALATPAY_LIVE_WEBHOOK_SECRET
+```
+
+See `ALATPAY_INTEGRATION.md`.
+
+## 22. Common validation rules
 
 - Password minimum: 8 characters.
 - Phone: `+0-9() -`, 7–25 characters.
@@ -453,7 +478,7 @@ backfilled as verified. Email uses the Resend adapter (`RESEND_API_KEY`,
 
 ---
 
-## 22. Known API gaps
+## 23. Known API gaps
 
 - No client transaction-statement PDF endpoint.
 - No team-performance or customer-performance report type.

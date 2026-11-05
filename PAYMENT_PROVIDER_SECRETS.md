@@ -14,15 +14,30 @@ operational settings (status, webhook path, environment, default flag).
 | `ALATPAY_BASE_URL` | Optional | Override only if ALATPay supplies a different API base URL. |
 | `ALATPAY_DEFAULT_EMAIL` | Optional | Fallback customer email when a client has no email address. |
 
-Set them for staging:
+Current ALATPay mode-specific secrets (recommended; used by `PAYMENT_MODE`):
 
-```bash
-npx wrangler secret put ALATPAY_SECRET_KEY
-npx wrangler secret put ALATPAY_BUSINESS_ID
-# optional
-npx wrangler secret put ALATPAY_BASE_URL
-npx wrangler secret put ALATPAY_DEFAULT_EMAIL
+Test mode:
+
+```text
+ALATPAY_TEST_SECRET_KEY
+ALATPAY_TEST_BUSINESS_ID
+ALATPAY_TEST_WEBHOOK_SECRET
+ALATPAY_TEST_BASE_URL       (optional)
 ```
+
+Live mode:
+
+```text
+ALATPAY_LIVE_SECRET_KEY
+ALATPAY_LIVE_BUSINESS_ID
+ALATPAY_LIVE_WEBHOOK_SECRET
+ALATPAY_LIVE_BASE_URL       (optional)
+```
+
+Set `PAYMENT_MODE=test` for staging and `PAYMENT_MODE=live` only in production.
+
+Legacy `ALATPAY_SECRET_KEY` / `ALATPAY_BUSINESS_ID` are no longer used for the
+mode-specific ALATPay integration. See `ALATPAY_INTEGRATION.md`.
 
 Set them separately for production before deploying.
 

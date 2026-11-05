@@ -175,7 +175,7 @@
                   <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.account_name}</div>
                 </div>
                 <div>
-                  <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Dedicated Account Number</span>
+                  <span style="font-size:11px;color:var(--muted);text-transform:uppercase">${data.is_static ? 'Permanent Account Number' : 'Dedicated Account Number'}</span>
                   <div style="font-family:monospace;font-size:22px;font-weight:800;color:var(--green-dark);margin-top:4px">${data.account_number}</div>
                 </div>
                 <div>
@@ -184,15 +184,15 @@
                 </div>
                 <div>
                   <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Amount</span>
-                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${Bliss.money((data.amount_kobo || 0) / 100)}</div>
+                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.is_static ? 'Any amount' : Bliss.money((data.amount_kobo || 0) / 100)}</div>
                 </div>
                 <div>
                   <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Expires</span>
-                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.expires_at ? new Date(data.expires_at).toLocaleString() : 'Single payment'}</div>
+                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.is_static ? 'Permanent account' : (data.expires_at ? new Date(data.expires_at).toLocaleString() : 'Single payment')}</div>
                 </div>
               </div>
               <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:12px;font-size:12px;color:#2E7D32">
-                ✓ Payments transferred to this dedicated virtual account are verified and receipted automatically.
+                ✓ ${data.is_static ? 'This permanent account can receive any amount and any number of payments.' : 'Payments transferred to this dedicated virtual account are verified and receipted automatically.'}
               </div>
             </div>
           `;

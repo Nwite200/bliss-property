@@ -46,6 +46,9 @@ This is an honest list of what the current implementation does **not** provide. 
 12. Customer Care uses a dedicated dashboard and only branch/national client-care scope. It has no commission, lead or finance access.
 13. Client OTP verification marks trust status but does not currently block portal access. Login/payment access remains available to unverified clients.
 14. Email OTP delivery uses the Resend adapter only; another email provider needs a new adapter and secrets.
+15. ALATPay static individual wallets require each client's BVN and OTP. The portal never stores BVN/OTP; wallet creation cannot be fully automated without that per-client KYC step.
+16. Dynamic amount-specific ALATPay virtual accounts remain enabled. They can be retired after every client has an active static wallet and open balances are reviewed.
+17. Real ALATPay sandbox/live delivery still needs dashboard webhook URL registration, test/live secrets and a real test transfer.
 
 ---
 

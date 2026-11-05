@@ -76,6 +76,21 @@
         </div>
       </div>
 
+      <div class="card" style="max-width:800px;margin-top:18px" id="staticWalletCard">
+        <div class="card-head"><h3>ALATPay static wallet</h3><span id="staticWalletStatus"></span></div>
+        <p class="small muted">Permanent account number for this client. Creating or validating a wallet requires the client's BVN/OTP. BVN and OTP are sent to ALATPay and are never stored by this portal.</p>
+        <div id="staticWalletDetails" class="small" style="margin-bottom:12px"></div>
+        <div class="form-grid" id="staticWalletInitiateWrap">
+          <div class="field-group"><label class="field-label" for="staticWalletBvn">Client BVN (not stored)</label><input class="field-input" id="staticWalletBvn" inputmode="numeric" autocomplete="off" maxlength="11" placeholder="Sandbox BVN: 2222222222"></div>
+          <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-green" type="button" id="staticWalletInitiateBtn">Create static wallet</button></div>
+        </div>
+        <div class="form-grid" id="staticWalletValidateWrap" style="display:none">
+          <div class="field-group"><label class="field-label" for="staticWalletOtp">OTP sent to BVN phone</label><input class="field-input" id="staticWalletOtp" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Sandbox OTP: 123456"></div>
+          <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-green" type="button" id="staticWalletValidateBtn">Validate wallet</button></div>
+        </div>
+        <div class="small muted" id="staticWalletMessage"></div>
+      </div>
+
       <div class="card" style="max-width:800px;margin-top:18px" id="clientVerificationCard">
         <div class="card-head"><h3>Client verification (OTP)</h3><span id="verificationStatus"></span></div>
         <p class="small muted">Confirm the client is real by sending a 6-digit code to their phone or email. The client reads the code back to staff for verification.</p>

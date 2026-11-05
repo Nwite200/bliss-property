@@ -37,8 +37,8 @@ Tests
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm run test:phase8  (35 tests)
-- npm test              (all suites, 144 tests)
+- npm run test:phase8  (36 tests)
+- npm test              (all suites, 145 tests)
 
 Documentation
 -------------
@@ -81,7 +81,8 @@ Architecture and safety
 - SMS provider adapter, templates, opt-out, queued delivery log and credit alerts
 - Lead temperature, contact count/last contact and required lost reason
 - Client onboarding OTP verification by SMS or email, with staff-assisted and self-service verification
-- See PAYMENT_PROVIDER_SECRETS.md, SMS_PROVIDER_SETUP.md and CLIENT_OTP_VERIFICATION.md for secret/provider setup
+- ALATPay documented webhook validation, transaction monitoring, static wallets and test/live separation
+- See PAYMENT_PROVIDER_SECRETS.md, ALATPAY_INTEGRATION.md, SMS_PROVIDER_SETUP.md and CLIENT_OTP_VERIFICATION.md for secret/provider setup
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
 - There is no separate Super Admin role; the Managing Director is the highest implemented role.

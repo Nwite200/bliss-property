@@ -71,6 +71,7 @@ db.exec(`
   DELETE FROM sms_messages;
   DELETE FROM sms_optouts;
   DELETE FROM client_verification_otps;
+  DELETE FROM client_static_wallets;
   DELETE FROM client_care_calls;
   DELETE FROM client_care_records;
   DELETE FROM property_payment_plans;
@@ -1164,14 +1165,131 @@ await test('public signup sends an OTP and the client can verify their own accou
   assert(finalState.data.verification_status === 'verified', 'public client verification state not persisted');
 });
 
-console.log('\n--- 10. Migration reproducibility and database integrity ---');
+console.log('\n--- 10. ALATPay documented webhook, static wallet and test mode ---');
+await test('ALATPay static wallet creation, signature validation, status verification and idempotency', async () => {
+  const originalFetch = globalThis.fetch;
+  const mockJson = data => new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+  let remoteStatus = 'completed';
+  let remoteAmount = 100;
+  let remoteAccount = '0412345678';
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url.includes('/alatpay-wallet/api/v1/staticaccount/validateAndCreate')) {
+      return mockJson({ status: true, data: { accountNumber: '0412345678', accountName: 'BLISS LEGACY - TEST CLIENT', bankName: 'Wema Bank', id: 'sw-account-1' } });
+    }
+    if (url.includes('/alatpay-wallet/api/v1/staticaccount') && String(init.method || 'GET').toUpperCase() === 'POST') {
+      return mockJson({ status: true, data: { id: 'sw-init-1', otpTrackingID: 'otp-track-1', message: 'An OTP has been sent to 08*******86' } });
+    }
+    if (url.includes('/alatpaytransaction/api/v1/transactions/')) {
+      const tx = decodeURIComponent(url.split('/').pop());
+      return mockJson({ status: true, data: {
+        Id: tx, OrderId: tx === 'tx-dyn' ? 'order-dyn' : (tx === 'tx-static-1' ? 'order-static-1' : (tx === 'tx-unknown' ? 'order-unknown' : 'order-static-2')),
+        Amount: remoteAmount, Currency: 'NGN', Status: remoteStatus,
+        NgnVirtualBankAccountNumber: tx === 'tx-unknown' ? '9999999999' : remoteAccount
+      } });
+    }
+    return originalFetch(input, init);
+  };
+  const alatEnv = makeEnv({
+    PAYMENT_MODE: 'test',
+    ALATPAY_TEST_SECRET_KEY: 'test-secret',
+    ALATPAY_TEST_BUSINESS_ID: 'test-business',
+    ALATPAY_TEST_WEBHOOK_SECRET: 'test-webhook',
+    ALATPAY_TEST_BASE_URL: 'https://alatpay.test'
+  });
+  try {
+    const initiate = await request(`/api/finance/clients/${adaId}/static-wallet/initiate`, {
+      method: 'POST', headers: { Cookie: mdCookie }, body: { bvn: '2222222222' }, env: alatEnv
+    });
+    assert(initiate.status === 200 && initiate.data.status === 'otp_pending', `static wallet initiate expected otp_pending, got ${initiate.status}: ${JSON.stringify(initiate.data)}`);
+    assert(db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE metadata LIKE '%2222222222%'").get().c === 0, 'BVN leaked into audit logs');
+    const validate = await request(`/api/finance/clients/${adaId}/static-wallet/validate`, {
+      method: 'POST', headers: { Cookie: mdCookie }, body: { otp: '123456' }, env: alatEnv
+    });
+    assert(validate.status === 200 && validate.data.status === 'active' && validate.data.account_number === '0412345678', 'static wallet validate expected active account');
+    const staffWallet = await request(`/api/finance/clients/${adaId}/static-wallet`, { headers: { Cookie: mdCookie }, env: alatEnv });
+    assert(staffWallet.data.wallet && staffWallet.data.wallet.status === 'active', 'staff static wallet view missing');
+    const clientWallet = await request('/api/client/virtual-account', { headers: { Cookie: clientCookie }, env: alatEnv });
+    assert(clientWallet.data.is_active === true && clientWallet.data.is_static === true && clientWallet.data.account_number === '0412345678', 'client static wallet view missing');
+
+    const payload = {
+      Value: { Data: {
+        Id: 'tx-static-1', OrderId: 'order-static-1', Amount: 100, Currency: 'NGN', Status: 'completed',
+        NgnVirtualBankAccountNumber: '0412345678', BusinessId: 'test-business'
+      } }, StatusCode: 200
+    };
+    const raw = JSON.stringify(payload);
+    const signature = createHmac('sha256', 'test-webhook').update(raw).digest('base64');
+    const invalid = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': 'invalid' }, body: payload, env: alatEnv
+    });
+    assert(invalid.status === 401, 'invalid ALATPay signature expected 401');
+    const before = db.prepare('SELECT COUNT(*) AS c FROM payments WHERE transaction_ref=?').get('order-static-1').c;
+    assert(before === 0, 'invalid signature created a payment');
+    const first = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': signature }, body: payload, env: alatEnv
+    });
+    assert(first.status === 200 && first.data.status === 'verified', `valid ALATPay webhook expected verified, got ${first.status}: ${JSON.stringify(first.data)}`);
+    const replay = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': signature }, body: payload, env: alatEnv
+    });
+    assert(replay.data.already_processed === true, 'duplicate ALATPay webhook must be idempotent');
+    const staticPayment = db.prepare('SELECT * FROM payments WHERE transaction_ref=?').get('order-static-1');
+    assert(staticPayment && staticPayment.status === 'verified' && staticPayment.payment_mode === 'test', 'static wallet payment not credited in test mode');
+    assert(staticPayment.provider_account_number === '0412345678', 'static wallet account not stored on payment');
+    assert(db.prepare('SELECT COUNT(*) AS c FROM payments WHERE transaction_ref=?').get('order-static-1').c === 1, 'duplicate webhook created a second payment');
+    assert(db.prepare('SELECT COUNT(*) AS c FROM sms_messages WHERE payment_id=?').get(staticPayment.id).c === 1, 'duplicate webhook created a second SMS');
+    const expectedStaff = db.prepare('SELECT COALESCE(created_by, original_marketer_id) AS s FROM clients WHERE id=?').get(adaId).s;
+    assert(staticPayment.revenue_staff_id === expectedStaff, 'static wallet payment attribution missing');
+
+    const unknown = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': createHmac('sha256', 'test-webhook').update(JSON.stringify({
+        Value: { Data: { Id: 'tx-unknown', OrderId: 'order-unknown', Amount: 100, Currency: 'NGN', Status: 'completed', NgnVirtualBankAccountNumber: '9999999999' } }
+      })).digest('base64') }, body: { Value: { Data: { Id: 'tx-unknown', OrderId: 'order-unknown', Amount: 100, Currency: 'NGN', Status: 'completed', NgnVirtualBankAccountNumber: '9999999999' } } }, env: alatEnv
+    });
+    assert(unknown.status === 202 && unknown.data.matched === false, `unknown static account must be logged, not credited; got ${unknown.status} ${JSON.stringify(unknown.data)}`);
+
+    remoteStatus = 'pending';
+    remoteAmount = 50;
+    const pendingPayload = { Value: { Data: { Id: 'tx-pending', OrderId: 'order-static-2', Amount: 50, Currency: 'NGN', Status: 'completed', NgnVirtualBankAccountNumber: '0412345678' } } };
+    const pendingSig = createHmac('sha256', 'test-webhook').update(JSON.stringify(pendingPayload)).digest('base64');
+    const pending = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': pendingSig }, body: pendingPayload, env: alatEnv
+    });
+    assert(pending.status === 202 && pending.data.status === 'pending', 'provider-pending transaction must not credit');
+    remoteStatus = 'completed';
+    const later = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': pendingSig }, body: pendingPayload, env: alatEnv
+    });
+    assert(later.status === 200 && later.data.status === 'verified', 'retried webhook after provider completion should credit');
+
+    const dynPayment = db.prepare(`INSERT INTO payments
+      (client_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference, payment_mode)
+      VALUES (?, 'order-dyn', 100, 'NGN', 'ALATPay', 'pending', 10000, 0, 'alatpay', 'tx-dyn', 'test')`).run(adaId);
+    remoteAmount = 200;
+    const dynPayload = { Value: { Data: { Id: 'tx-dyn', OrderId: 'order-dyn', Amount: 200, Currency: 'NGN', Status: 'completed' } } };
+    const dyn = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': createHmac('sha256', 'test-webhook').update(JSON.stringify(dynPayload)).digest('base64') }, body: dynPayload, env: alatEnv
+    });
+    assert(dyn.status === 409, `dynamic amount mismatch expected 409, got ${dyn.status}`);
+    assert(db.prepare('SELECT status FROM payments WHERE id=?').get(Number(dynPayment.lastInsertRowid)).status === 'pending', 'amount mismatch credited a payment');
+    const liveRoute = await request('/api/webhooks/alatpay/live', {
+      method: 'POST', headers: { 'x-signature': signature }, body: payload, env: alatEnv
+    });
+    assert(liveRoute.status === 404, 'live ALATPay webhook must not run while PAYMENT_MODE=test');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+console.log('\n--- 11. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
   for (const suffix of ['', '-wal', '-shm']) rmSync(cleanPath + suffix, { force: true });
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 15, `expected 15 migrations, found ${files.length}`);
+  assert(files.length === 16, `expected 16 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

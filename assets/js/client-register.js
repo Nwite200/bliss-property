@@ -108,6 +108,7 @@ async function onSubmit(e) {
     agreed_purchase_price: window.__blissCanSetClientPrice && !document.getElementById("agreed_purchase_price").readOnly && document.getElementById("agreed_purchase_price").value
       ? Number(document.getElementById("agreed_purchase_price").value) : null,
     assigned_branch_id: document.getElementById("assigned_branch_id").value,
+    static_wallet_bvn: document.getElementById("static_wallet_bvn").value.trim() || null,
   };
   if (!body.full_name || !body.phone_number) { msg.textContent = "Full name and phone number are required."; return; }
   const res = await fetchJson("/clients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

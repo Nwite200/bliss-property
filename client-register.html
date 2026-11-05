@@ -60,6 +60,7 @@
             <div style="flex:1"><label class="field-label">Assigned branch</label><select id="assigned_branch_id"></select></div>
             <div style="flex:1"><label class="field-label">Status</label><select id="status"><option>Prospect</option><option>Interested</option><option>Negotiation</option><option>Reserved</option><option>Active Buyer</option><option>Completed</option><option>Cancelled</option><option>Inactive</option></select></div>
           </div>
+          <div style="grid-column:1/-1"><label class="field-label">ALATPay BVN for static wallet (optional — not stored)</label><input id="static_wallet_bvn" type="password" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="Leave blank to create the wallet later"><div class="small muted">Required by ALATPay for a permanent account. OTP validation happens afterwards; this form never stores the BVN.</div></div>
           <div style="grid-column:1/-1"><label class="field-label">Notes</label><textarea id="notes" rows="3"></textarea></div>
           <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
             <a class="btn btn-outline" href="clients.html">Cancel</a>

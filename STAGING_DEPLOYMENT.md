@@ -28,7 +28,7 @@ These are separate from the production resources. Staging is not connected to `b
 
 ## 2. Migration status
 
-All fifteen migrations were applied to `bliss-legacy-staging-db` only:
+All sixteen migrations were applied to `bliss-legacy-staging-db` only:
 
 - `0001_auth_org.sql`
 - `0002_properties.sql`
@@ -45,6 +45,7 @@ All fifteen migrations were applied to `bliss-legacy-staging-db` only:
 - `0013_plans_defaulting_inspections_commissions_providers.sql`
 - `0014_property_plans_customer_care_sms_leads.sql`
 - `0015_client_onboarding_otp.sql`
+- `0016_alatpay_webhook_static_wallets_test_mode.sql`
 
 `wrangler d1 migrations list bliss-legacy-staging-db --remote` reports no pending migrations.
 
@@ -57,8 +58,8 @@ All fifteen migrations were applied to `bliss-legacy-staging-db` only:
 | Phase 5 | 62 | 0 | 0 |
 | Phase 6 | 21 | 0 | 0 |
 | Phase 7 | 26 | 0 | 0 |
-| Phase 8 | 35 | 0 | 0 |
-| **Total** | **144** | **0** | **0** |
+| Phase 8 | 36 | 0 | 0 |
+| **Total** | **145** | **0** | **0** |
 
 Also passed: `node --check` for the Worker, all external JS and all test suites; inline HTML script checks; `git diff --check`.
 
@@ -288,9 +289,20 @@ The Super Admin temporary password is supplied only in the secure handover/final
 - Codes expire in 10 minutes, allow five attempts and are stored hashed.
 - See `CLIENT_OTP_VERIFICATION.md` for email/SMS provider setup.
 
-## 14. Deployment version
+## 14. ALATPay documented integration
 
-Current staging deployment version ID: `e53ce588-a1a1-443c-b800-539100bb6be1`
+- Webhook validation now uses `x-signature` = Base64(HMAC-SHA256(raw body, webhook secret)).
+- Webhook payload supports documented `Value.Data` envelope.
+- Transaction status uses `/alatpaytransaction/api/v1/transactions/{id}` before credit.
+- Static wallets use `/alatpay-wallet/api/v1/staticaccount` and `validateAndCreate`.
+- Test/live mode is controlled by `PAYMENT_MODE` with separate secrets and webhook routes.
+- Staff sidebar shows a TEST MODE banner when `PAYMENT_MODE=test`.
+- Dynamic amount-specific accounts remain available.
+- See `ALATPAY_INTEGRATION.md`.
+
+## 15. Deployment version
+
+Current staging deployment version ID: `ad6e4447-3476-4c0a-ab45-e24bf409553f`
 
 ---
 

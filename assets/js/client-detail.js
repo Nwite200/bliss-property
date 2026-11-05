@@ -155,6 +155,60 @@ async function load() {
     el.innerHTML = data.notes.map(n => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="font-size:11px;color:var(--muted)">${new Date(n.created_at).toLocaleString()}</div><div style="padding-left:12px">${esc(n.note)}</div></div>`).join("");
   }
 
+  async function loadStaticWallet() {
+    const card = document.getElementById("staticWalletCard");
+    if (!card) return;
+    const data = await fetchJson("/finance/clients/" + id + "/static-wallet");
+    if (!data.ok) { card.style.display = "none"; return; }
+    const wallet = data.data.wallet;
+    const statusEl = document.getElementById("staticWalletStatus");
+    const details = document.getElementById("staticWalletDetails");
+    const msg = document.getElementById("staticWalletMessage");
+    if (!wallet) {
+      statusEl.innerHTML = '<span class="badge badge-gray">Not created</span>';
+      details.textContent = "No static wallet yet.";
+      document.getElementById("staticWalletValidateWrap").style.display = "none";
+      return;
+    }
+    statusEl.innerHTML = wallet.status === "active"
+      ? '<span class="badge badge-green">Active</span>'
+      : '<span class="badge badge-amber">OTP pending</span>';
+    details.innerHTML = `
+      <div><strong>${esc(wallet.account_number || "—")}</strong></div>
+      <div>${esc(wallet.account_name || "")} · ${esc(wallet.bank_name || "Wema Bank")}</div>
+      <div class="small muted">Wallet reference: ${esc(wallet.wallet_reference || "—")} · ${esc(wallet.payment_mode || "test")} mode</div>`;
+    if (wallet.status === "active") {
+      document.getElementById("staticWalletInitiateWrap").style.display = "none";
+      document.getElementById("staticWalletValidateWrap").style.display = "none";
+      msg.textContent = "Permanent account number is active.";
+      return;
+    }
+    document.getElementById("staticWalletInitiateWrap").style.display = "none";
+    document.getElementById("staticWalletValidateWrap").style.display = "";
+    document.getElementById("staticWalletValidateBtn").onclick = async () => {
+      const result = await fetchJson("/finance/clients/" + id + "/static-wallet/validate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ otp: document.getElementById("staticWalletOtp").value.trim() })
+      });
+      if (!result.ok) { msg.textContent = result.data.error || "Unable to validate wallet"; return; }
+      msg.textContent = "Static wallet active.";
+      await loadStaticWallet();
+    };
+  }
+  document.getElementById("staticWalletInitiateBtn").onclick = async () => {
+    const msg = document.getElementById("staticWalletMessage");
+    const bvn = document.getElementById("staticWalletBvn").value.trim();
+    if (!bvn) { msg.textContent = "Enter the client BVN."; return; }
+    const result = await fetchJson("/finance/clients/" + id + "/static-wallet/initiate", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bvn })
+    });
+    document.getElementById("staticWalletBvn").value = "";
+    if (!result.ok) { msg.textContent = result.data.error || "Unable to create static wallet"; return; }
+    msg.textContent = result.data.message || "OTP sent. Enter it below.";
+    await loadStaticWallet();
+  };
+  loadStaticWallet();
+
   async function loadClientVerification() {
     const card = document.getElementById("clientVerificationCard");
     if (!card) return;

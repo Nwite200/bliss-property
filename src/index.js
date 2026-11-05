@@ -270,7 +270,17 @@ async function buildReferralAttribution(env, referrer, fallbackUserId) {
 
 const ALATPAY_DEFAULT_BASE = "https://apibox.alatpay.ng";
 
-async function getAlatpaySettings(env) {
+function getPaymentMode(env) {
+  return String(env.PAYMENT_MODE || "test").trim().toLowerCase() === "live" ? "live" : "test";
+}
+
+function alatpayWebhookPath(env, mode) {
+  return `/api/webhooks/alatpay/${mode || getPaymentMode(env)}`;
+}
+
+async function getAlatpaySettings(env, modeOverride) {
+  const mode = modeOverride === "live" ? "live" : (modeOverride === "test" ? "test" : getPaymentMode(env));
+  const prefix = mode === "live" ? "ALATPAY_LIVE" : "ALATPAY_TEST";
   const row = await env.DB.prepare(
     "SELECT status, environment, config_json FROM provider_configs WHERE provider_key='wema_alat'"
   ).first();
@@ -278,26 +288,30 @@ async function getAlatpaySettings(env) {
   if (row && row.config_json) {
     try { config = JSON.parse(row.config_json) || {}; } catch { config = {}; }
   }
-  const secret = env.ALATPAY_SECRET_KEY || "";
-  const businessId = env.ALATPAY_BUSINESS_ID || config.business_id || "";
-  const baseUrl = String(env.ALATPAY_BASE_URL || config.base_url || ALATPAY_DEFAULT_BASE).replace(/\/+$/, "");
+  const secret = env[`${prefix}_SECRET_KEY`] || "";
+  const businessId = env[`${prefix}_BUSINESS_ID`] || "";
+  const webhookSecret = env[`${prefix}_WEBHOOK_SECRET`] || "";
+  const baseUrl = String(env[`${prefix}_BASE_URL`] || env.ALATPAY_BASE_URL || config.base_url || ALATPAY_DEFAULT_BASE).replace(/\/+$/, "");
   return {
     row,
     config,
+    mode,
     secret,
     businessId,
+    webhookSecret,
     baseUrl,
     ready: Boolean(secret && businessId),
+    webhookReady: Boolean(webhookSecret),
     status: secret && businessId ? "Configured" : (secret ? "Awaiting business ID" : "Awaiting credentials"),
     providerName: "ALATPay by Wema Bank",
-    webhookPath: "/api/webhooks/alatpay"
+    webhookPath: `/api/webhooks/alatpay/${mode}`
   };
 }
 
 async function alatpayRequest(env, path, options = {}) {
-  const settings = await getAlatpaySettings(env);
+  const settings = await getAlatpaySettings(env, options.mode);
   if (!settings.secret) {
-    throw Object.assign(new Error("ALATPay secret key is not configured"), { status: 503 });
+    throw Object.assign(new Error(`ALATPay ${settings.mode} secret key is not configured`), { status: 503 });
   }
   let response;
   try {
@@ -324,6 +338,15 @@ async function alatpayRequest(env, path, options = {}) {
   return payload.data === undefined ? payload : payload.data;
 }
 
+async function hmacBase64(secret, message, hash = "SHA-256") {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(String(secret || "")),
+    { name: "HMAC", hash }, false, ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(String(message || "")));
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+}
+
 async function hmacHex(secret, message, hash = "SHA-512") {
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(String(secret || "")),
@@ -338,41 +361,55 @@ const PAYMENT_PROVIDER_ADAPTERS = {
     key: "alatpay",
     name: "ALATPay by Wema Bank",
     requiresConfig: false,
-    webhookPath: "/api/webhooks/alatpay",
+    webhookPath: "/api/webhooks/alatpay/test",
     async createVirtualAccount(env, client, amountKobo, actorId) {
       return createAlatpayVirtualAccount(env, client, amountKobo, actorId);
     },
-    async verifyTransaction(env, reference) {
-      return alatpayRequest(env, `/bank-transfer/api/v1/bankTransfer/transactions/${encodeURIComponent(reference)}`);
+    async createStaticWallet(env, client, bvn, actorId) {
+      return initiateAlatpayStaticWallet(env, client, bvn, actorId);
     },
-    async verifyWebhook(env, request, body) {
-      const source = body.data || body;
-      const transactionId = source.transactionId || source.transaction_id || source.id || body.transactionId;
-      if (!transactionId) {
-        throw Object.assign(new Error("Missing ALATPay transaction ID"), { status: 400 });
+    async validateStaticWallet(env, client, otp, actorId) {
+      return validateAlatpayStaticWallet(env, client, otp, actorId);
+    },
+    async verifyTransaction(env, reference, mode) {
+      return alatpayRequest(env, `/alatpaytransaction/api/v1/transactions/${encodeURIComponent(reference)}`, { mode });
+    },
+    async verifyWebhook(env, request, body, rawText, mode) {
+      const settings = await getAlatpaySettings(env, mode);
+      if (!settings.webhookSecret) {
+        throw Object.assign(new Error(`ALATPay ${settings.mode} webhook secret is not configured`), { status: 503 });
       }
-      const remote = await this.verifyTransaction(env, transactionId);
-      return { remote, transactionId, source };
+      const supplied = request.headers.get("x-signature") || "";
+      const expected = await hmacBase64(settings.webhookSecret, rawText || JSON.stringify(body), "SHA-256");
+      if (!secureCompare(supplied, expected)) {
+        throw Object.assign(new Error("Invalid webhook signature"), { status: 401 });
+      }
+      const envelope = body.Value || body;
+      const data = envelope.Data || body.Data || body.data || body;
+      const transactionId = data.Id || data.id || data.TransactionId || data.transactionId;
+      if (!transactionId) throw Object.assign(new Error("Missing ALATPay transaction ID"), { status: 400 });
+      const remote = await this.verifyTransaction(env, transactionId, settings.mode);
+      return { remote, transactionId, data, settings };
     },
     normalizeEvent(body, verification) {
       const data = verification.remote.data || verification.remote;
-      const source = verification.source || body.data || body;
-      const statusText = String(data.status || data.transactionStatus || source.status || "").trim().toLowerCase();
-      const orderId = data.orderId || data.order_id || source.orderId || body.orderId;
+      const source = verification.data || body.data || body;
+      const statusText = String(data.status || data.Status || source.Status || source.status || "").trim().toLowerCase();
+      const orderId = data.orderId || data.OrderId || source.orderId || source.OrderId || body.orderId;
       const amountKobo = data.amount !== undefined ? toKobo(data.amount)
-        : (source.amount !== undefined ? toKobo(source.amount) : null);
-      const currency = String(data.currency || source.currency || SUPPORTED_CURRENCY).trim().toUpperCase();
+        : (data.Amount !== undefined ? toKobo(data.Amount) : null);
+      const currency = String(data.currency || data.Currency || source.Currency || source.currency || SUPPORTED_CURRENCY).trim().toUpperCase();
       const transactionId = verification.transactionId;
       return {
         providerKey: "alatpay",
-        eventId: `alatpay:${transactionId}:${statusText}:${amountKobo}`,
+        eventId: `alatpay:${verification.settings ? verification.settings.mode : getPaymentMode({})}:${transactionId}:${statusText}:${amountKobo}`,
         eventType: statusText,
         reference: orderId,
         providerReference: transactionId,
         amountKobo,
         currency,
         success: SUCCESS_EVENT_STATUSES.has(statusText),
-        occurredAt: data.updatedAt || data.createdAt || source.updatedAt || source.createdAt || null,
+        occurredAt: data.updatedAt || data.UpdatedAt || data.createdAt || data.CreatedAt || null,
         payload: { body, remote: verification.remote }
       };
     }
@@ -522,24 +559,26 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
   await env.DB.prepare(`
     INSERT INTO virtual_accounts
       (client_id, provider, provider_key, bank_name, account_name, account_number, account_status,
-       provider_reference, transaction_id, order_id, expires_at, amount_kobo, metadata, updated_by, updated_at)
-    VALUES (?, 'alatpay', 'alatpay', ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       provider_reference, transaction_id, order_id, expires_at, amount_kobo, metadata, updated_by, updated_at, payment_mode)
+    VALUES (?, 'alatpay', 'alatpay', ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
     ON CONFLICT(client_id) DO UPDATE SET
       provider='alatpay', provider_key='alatpay', bank_name=excluded.bank_name, account_name=excluded.account_name,
       account_number=excluded.account_number, account_status='active',
       provider_reference=excluded.provider_reference, transaction_id=excluded.transaction_id,
       order_id=excluded.order_id, expires_at=excluded.expires_at, amount_kobo=excluded.amount_kobo,
-      metadata=excluded.metadata, updated_by=excluded.updated_by, updated_at=datetime('now')
+      metadata=excluded.metadata, updated_by=excluded.updated_by, updated_at=datetime('now'),
+      payment_mode=excluded.payment_mode
   `).bind(
     client.id, bankName, accountName, String(accountNumber), transactionId || String(accountNumber),
     transactionId || null, orderId, expiresAt, Number(amountKobo),
-    JSON.stringify({ response: data, request: payload }).slice(0, 5000), actorId || null
+    JSON.stringify({ response: data, request: payload }).slice(0, 5000), actorId || null, settings.mode
   ).run();
   await audit(env, actorId || null, "provider.virtual_account.create", "client", String(client.id), {
     provider: "alatpay", order_id: orderId, transaction_id: transactionId, amount_kobo: Number(amountKobo)
   }, client.assigned_branch_id);
   return {
     provider: "ALATPay by Wema Bank",
+    payment_mode: settings.mode,
     bank_name: bankName,
     account_name: accountName,
     account_number: String(accountNumber),
@@ -549,6 +588,190 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
     expires_at: expiresAt,
     amount_kobo: Number(amountKobo)
   };
+}
+
+
+async function finalizeAlatpayCredit(env, payment, remoteData, mode, reference) {
+  if (!payment) return { skipped: true, reason: "payment_missing" };
+  if (payment.status === "verified") return { skipped: true, reason: "already_verified" };
+  if (payment.status !== "pending") return { skipped: true, reason: "not_pending" };
+  const amountKobo = remoteData?.Amount !== undefined ? toKobo(remoteData.Amount)
+    : (remoteData?.amount !== undefined ? toKobo(remoteData.amount) : Number(payment.amount_kobo || 0));
+  const transactionId = remoteData?.Id || remoteData?.id || payment.provider_reference || payment.transaction_ref;
+  const accountNumber = remoteData?.NgnVirtualBankAccountNumber || remoteData?.ngnVirtualBankAccountNumber || payment.provider_account_number || null;
+  const now = new Date().toISOString();
+  const updated = await env.DB.prepare(`
+    UPDATE payments SET status='verified', verified_at=?, verified_by=NULL, provider='alatpay',
+      provider_reference=?, provider_account_number=?, payment_mode=? WHERE id=? AND status='pending'
+  `).bind(now, String(transactionId), accountNumber ? String(accountNumber) : null, mode, payment.id).run();
+  if (!updated.meta || Number(updated.meta.changes) === 0) return { skipped: true, reason: "already_verified" };
+  await stampPaymentAttribution(env, payment.id, payment.client_id);
+  const client = await env.DB.prepare("SELECT id, agreed_purchase_price FROM clients WHERE id=?").bind(payment.client_id).first();
+  const totalRow = await env.DB.prepare(`
+    SELECT COALESCE(SUM(amount_kobo),0) AS total_kobo FROM payments
+    WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+  `).bind(payment.client_id).first();
+  const remainingKobo = Math.max(0, toKobo(client?.agreed_purchase_price || 0) - Number(totalRow ? totalRow.total_kobo : 0));
+  let receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
+  if (!receipt) {
+    const receiptRef = newReceiptRef(false);
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO receipts (payment_id, client_id, receipt_ref, amount, currency, amount_kobo, remaining_balance_kobo, is_demo, created_at)
+      VALUES (?, ?, ?, ?, 'NGN', ?, ?, 0, datetime('now'))
+    `).bind(payment.id, payment.client_id, receiptRef, fromKobo(amountKobo), amountKobo, remainingKobo).run();
+    receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
+  }
+  await ensureReceiptPdf(env, { ...payment, ...receipt, payment_status: "verified", payment_date: now }).catch(() => {});
+  await createNotification(env, {
+    clientId: payment.client_id,
+    type: "payment.verified",
+    title: "Payment Successfully Verified",
+    message: `Your ALATPay payment of ${formatNGN(amountKobo)} has been verified. Official Receipt #${receipt.receipt_ref} is now available.`,
+    metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, reference, source: "alatpay_reconciliation", mode }
+  });
+  await notifyPaymentVerified(env, payment, null);
+  await sendPaymentReceivedSms(env, payment.id);
+  await audit(env, null, "payment.reconciled", "payment", String(payment.id), { provider: "alatpay", mode, reference, amount_kobo: amountKobo });
+  return { ok: true, payment_id: payment.id, receipt_ref: receipt.receipt_ref };
+}
+
+async function reconcileAlatpayPayments(env) {
+  const mode = getPaymentMode(env);
+  const settings = await getAlatpaySettings(env, mode);
+  if (!settings.ready) return { skipped: true, reason: "not_configured", mode };
+  let payload;
+  try {
+    payload = await alatpayRequest(env,
+      `/alatpaytransaction/api/v1/transactions?BusinessId=${encodeURIComponent(settings.businessId)}&Page=1&Limit=100&Status=completed`,
+      { mode });
+  } catch (error) {
+    return { error: error.message || "Unable to list ALATPay transactions", mode };
+  }
+  const rows = Array.isArray(payload) ? payload : (payload?.data || payload?.transactions || []);
+  const results = [];
+  for (const remote of rows) {
+    const transactionId = remote.Id || remote.id || remote.TransactionId || remote.transactionId;
+    const orderId = remote.OrderId || remote.orderId || transactionId;
+    if (!transactionId) continue;
+    const accountNumber = remote.NgnVirtualBankAccountNumber || remote.ngnVirtualBankAccountNumber || null;
+    let payment = await env.DB.prepare(`
+      SELECT p.* FROM payments p WHERE p.provider='alatpay' AND p.payment_mode=?
+        AND (p.transaction_ref=? OR p.provider_reference=?)
+      ORDER BY p.id DESC LIMIT 1
+    `).bind(mode, String(orderId), String(transactionId)).first();
+    if (!payment && accountNumber) {
+      const wallet = await env.DB.prepare("SELECT * FROM client_static_wallets WHERE account_number=? AND payment_mode=? AND status='active'")
+        .bind(String(accountNumber), mode).first();
+      if (wallet) {
+        const client = await env.DB.prepare("SELECT id, interested_property_id FROM clients WHERE id=? AND is_deleted=0").bind(wallet.client_id).first();
+        if (client) {
+          const inserted = await env.DB.prepare(`
+            INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo,
+              is_demo, provider, provider_reference, provider_account_number, payment_mode)
+            VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Static Wallet', 'pending', ?, 0, 'alatpay', ?, ?, ?)
+          `).bind(client.id, client.interested_property_id || null, String(orderId), fromKobo(toKobo(remote.Amount ?? remote.amount)),
+            toKobo(remote.Amount ?? remote.amount), String(transactionId), String(accountNumber), mode).run();
+          payment = await env.DB.prepare("SELECT * FROM payments WHERE id=?").bind(inserted.meta.last_row_id).first();
+        }
+      }
+    }
+    if (!payment) { results.push({ transaction_id: transactionId, status: "unmatched" }); continue; }
+    const result = await finalizeAlatpayCredit(env, payment, remote, mode, orderId);
+    results.push({ transaction_id: transactionId, order_id: orderId, ...result });
+  }
+  return { mode, scanned: rows.length, results };
+}
+
+async function getClientStaticWallet(env, clientId, mode) {
+  const paymentMode = mode || getPaymentMode(env);
+  return env.DB.prepare("SELECT * FROM client_static_wallets WHERE client_id=? AND payment_mode=? ORDER BY id DESC LIMIT 1")
+    .bind(clientId, paymentMode).first();
+}
+
+async function initiateAlatpayStaticWallet(env, client, bvn, actorId) {
+  const settings = await getAlatpaySettings(env);
+  if (!settings.ready) throw Object.assign(new Error(`ALATPay ${settings.mode} credentials are not configured`), { status: 503 });
+  const cleanedBvn = String(bvn || "").replace(/\D/g, "");
+  if (!/^\d{10,11}$/.test(cleanedBvn)) throw Object.assign(new Error("A valid BVN is required to create a static wallet"), { status: 400 });
+  const existing = await getClientStaticWallet(env, client.id, settings.mode);
+  if (existing && existing.status === "active") return { existing: true, wallet: existing };
+  if (existing && existing.status === "otp_pending") return { existing: true, wallet: existing, pending_otp: true };
+  const data = await alatpayRequest(env, "/alatpay-wallet/api/v1/staticaccount", {
+    method: "POST",
+    mode: settings.mode,
+    body: {
+      businessId: settings.businessId,
+      staticWalletType: 1,
+      bvn: cleanedBvn,
+      email: client.email_address || undefined
+    }
+  });
+  const walletReference = data.id || data.staticWalletId || data.staticWalletID;
+  if (!walletReference) throw Object.assign(new Error("ALATPay did not return a static wallet reference"), { status: 502 });
+  const otpTrackingId = data.otpTrackingID || data.trackingId || data.trackingID || null;
+  const maskedPhone = String(data.message || "").replace(/\d/g, "*");
+  await env.DB.prepare(`
+    INSERT INTO client_static_wallets
+      (client_id, provider, payment_mode, business_id, wallet_type, wallet_reference, otp_tracking_id,
+       status, provider_status, metadata_json, created_by, updated_by)
+    VALUES (?, 'alatpay', ?, ?, 1, ?, ?, 'otp_pending', 'otp_pending', ?, ?, ?)
+    ON CONFLICT(client_id) DO UPDATE SET payment_mode=excluded.payment_mode, business_id=excluded.business_id,
+      wallet_type=excluded.wallet_type, wallet_reference=excluded.wallet_reference,
+      otp_tracking_id=excluded.otp_tracking_id, status='otp_pending', provider_status='otp_pending',
+      metadata_json=excluded.metadata_json, updated_by=excluded.updated_by, updated_at=datetime('now')
+  `).bind(client.id, settings.mode, settings.businessId, walletReference, otpTrackingId,
+    JSON.stringify({ message: maskedPhone, wallet_type: 1 }).slice(0, 1000), actorId || null, actorId || null).run();
+  await audit(env, actorId || null, "provider.static_wallet.initiate", "client", String(client.id), {
+    provider: "alatpay", mode: settings.mode, wallet_reference: walletReference
+  }, client.assigned_branch_id);
+  return {
+    ok: true,
+    status: "otp_pending",
+    wallet_reference: walletReference,
+    message: data.message || "An OTP has been sent to the BVN phone number."
+  };
+}
+
+async function validateAlatpayStaticWallet(env, client, otp, actorId) {
+  const settings = await getAlatpaySettings(env);
+  const wallet = await getClientStaticWallet(env, client.id, settings.mode);
+  if (!wallet) throw Object.assign(new Error("No static wallet has been initiated for this client"), { status: 404 });
+  if (wallet.status === "active" && wallet.account_number) return { ok: true, status: "active", wallet };
+  if (!wallet.wallet_reference || !wallet.otp_tracking_id) {
+    throw Object.assign(new Error("Static wallet initiation is incomplete; initiate again"), { status: 409 });
+  }
+  const cleanedOtp = String(otp || "").replace(/\D/g, "");
+  if (!/^\d{4,8}$/.test(cleanedOtp)) throw Object.assign(new Error("A valid static wallet OTP is required"), { status: 400 });
+  const data = await alatpayRequest(env, "/alatpay-wallet/api/v1/staticaccount/validateAndCreate", {
+    method: "POST",
+    mode: settings.mode,
+    body: {
+      staticWalletId: wallet.wallet_reference,
+      businessId: settings.businessId,
+      otp: cleanedOtp,
+      trackingId: wallet.otp_tracking_id
+    }
+  });
+  const accountNumber = data.accountNumber || data.account_number;
+  if (!accountNumber) throw Object.assign(new Error("ALATPay did not return a static account number"), { status: 502 });
+  await env.DB.prepare(`
+    UPDATE client_static_wallets SET account_number=?, account_name=?, bank_name=?, status='active',
+      provider_status='active', wallet_reference=COALESCE(?, wallet_reference), updated_by=?, updated_at=datetime('now')
+    WHERE id=?
+  `).bind(String(accountNumber), data.accountName || data.account_name || null, data.bankName || data.bank_name || "Wema Bank",
+    data.id || null, actorId || null, wallet.id).run();
+  await audit(env, actorId || null, "provider.static_wallet.active", "client", String(client.id), {
+    provider: "alatpay", mode: settings.mode, account_number: String(accountNumber)
+  }, client.assigned_branch_id);
+  await enqueueSms(env, {
+    clientId: client.id,
+    templateKey: "static_wallet_ready",
+    phone: client.phone_number,
+    body: `Your permanent ALATPay account is ${accountNumber} (${data.bankName || data.bank_name || "Wema Bank"}). Use it for any amount. Bliss Legacy.`,
+    idempotencyKey: `client:${client.id}:static_wallet_ready`,
+    createdBy: actorId || null
+  }).catch(() => {});
+  return { ok: true, status: "active", account_number: String(accountNumber), account_name: data.accountName || data.account_name || null };
 }
 
 function revenueScopeSql(actor, alias = "p") {
@@ -3306,7 +3529,7 @@ async function enqueueSms(env, options) {
 
 async function sendPaymentReceivedSms(env, paymentId) {
   const row = await env.DB.prepare(`
-    SELECT p.id, p.client_id, p.amount_kobo, p.amount, p.transaction_ref, p.verified_at, p.is_demo, p.currency,
+    SELECT p.id, p.client_id, p.amount_kobo, p.amount, p.transaction_ref, p.verified_at, p.is_demo, p.currency, p.payment_mode,
            c.full_name, c.phone_number, c.client_reference, c.agreed_purchase_price,
            COALESCE(prop.title, 'your property') AS property_title
     FROM payments p JOIN clients c ON c.id=p.client_id
@@ -3314,6 +3537,7 @@ async function sendPaymentReceivedSms(env, paymentId) {
     WHERE p.id=?
   `).bind(paymentId).first();
   if (!row || Number(row.is_demo) === 1 || String(row.currency || "NGN").toUpperCase() !== "NGN") return { skipped: true };
+  const wallet = await getClientStaticWallet(env, row.client_id, row.payment_mode || getPaymentMode(env));
   const total = await env.DB.prepare(`
     SELECT COALESCE(SUM(amount_kobo),0) AS paid FROM payments
     WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
@@ -3321,7 +3545,7 @@ async function sendPaymentReceivedSms(env, paymentId) {
   const paidKobo = Number(total ? total.paid : 0);
   const balanceKobo = Math.max(0, toKobo(row.agreed_purchase_price || 0) - paidKobo);
   const template = await getSmsTemplate(env, "payment_received");
-  const body = renderSmsTemplate(template ? template.body : "Payment received: NGN {amount}. New balance: NGN {balance}. Ref: {reference}. Bliss Legacy.", {
+  let body = renderSmsTemplate(template ? template.body : "Payment received: NGN {amount}. New balance: NGN {balance}. Ref: {reference}. Bliss Legacy.", {
     name: row.full_name,
     amount: fromKobo(Number(row.amount_kobo || toKobo(row.amount))).toLocaleString("en-NG"),
     balance: fromKobo(balanceKobo).toLocaleString("en-NG"),
@@ -3329,6 +3553,9 @@ async function sendPaymentReceivedSms(env, paymentId) {
     date: String(row.verified_at || new Date().toISOString()).slice(0, 10),
     reference: row.transaction_ref
   });
+  if (wallet && wallet.status === "active" && wallet.account_number) {
+    body = `${body} Account: ${wallet.account_number}.`.slice(0, 1000);
+  }
   return enqueueSms(env, {
     clientId: row.client_id,
     paymentId: row.id,
@@ -3344,10 +3571,14 @@ async function sendAccountCreatedSms(env, clientId, actorId) {
   const client = await env.DB.prepare("SELECT id, full_name, phone_number, client_reference, assigned_branch_id FROM clients WHERE id=?")
     .bind(clientId).first();
   if (!client) return { skipped: true };
+  const wallet = await getClientStaticWallet(env, client.id, getPaymentMode(env));
   const template = await getSmsTemplate(env, "account_created");
-  const body = renderSmsTemplate(template ? template.body : "Welcome {name}. Your Bliss Legacy client reference is {reference}.", {
+  let body = renderSmsTemplate(template ? template.body : "Welcome {name}. Your Bliss Legacy client reference is {reference}.", {
     name: client.full_name, reference: client.client_reference
   });
+  if (wallet && wallet.status === "active" && wallet.account_number) {
+    body = `${body} Your permanent ALATPay account is ${wallet.account_number} (${wallet.bank_name || "Wema Bank"}).`.slice(0, 1000);
+  }
   return enqueueSms(env, {
     clientId: client.id,
     templateKey: "account_created",
@@ -4225,6 +4456,7 @@ export default {
         property_plans_access: Number(user.property_plans_access || 0) === 1,
         sms_access: Number(user.sms_access || 0) === 1,
         care_scope: user.care_scope || null,
+        payment_mode: getPaymentMode(env),
         referral_link: user.role_name !== "Client" && user.referral_code
           ? `${new URL(request.url).origin}/signup?ref=${encodeURIComponent(user.referral_code)}`
           : null,
@@ -5283,7 +5515,7 @@ export default {
         next_of_kin, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
         next_of_kin_address, notes, preferred_channel, status, assigned_branch_id,
         agreed_purchase_price, interested_property_id, sale_type, referral_code, property_plan_id,
-        plan_start_date
+        plan_start_date, static_wallet_bvn
       } = body || {};
       if (!full_name || !phone_number) return json({ error: "Full name and phone number required" }, 400);
       const normalizedPhone = normalizeNigerianPhone(phone_number);
@@ -5390,11 +5622,22 @@ export default {
         email_address: email_address || null,
         assigned_branch_id: resolvedBranchId
       }, actor.id);
+      let staticWallet = null;
+      if (static_wallet_bvn) {
+        try {
+          staticWallet = await initiateAlatpayStaticWallet(env, {
+            id: newId, full_name, phone_number: normalizedPhone, email_address: email_address || null,
+            assigned_branch_id: resolvedBranchId
+          }, static_wallet_bvn, actor.id);
+        } catch (walletError) {
+          staticWallet = { ok: false, error: walletError.message || "Unable to initiate static wallet" };
+        }
+      }
       if (env.TASKS && typeof env.TASKS.send === "function") {
         await env.TASKS.send({ type: "client.registered", client_id: newId }).catch(() => {});
       }
 
-      return json({ ok: true, id: newId, client_reference: ref, schedule_id: createdScheduleId, verification });
+      return json({ ok: true, id: newId, client_reference: ref, schedule_id: createdScheduleId, verification, static_wallet: staticWallet });
     }
 
     // ---- Client details (Phase 4) ----
@@ -6145,6 +6388,28 @@ export default {
 
       const settings = await getAlatpaySettings(env);
       const outstandingKobo = await outstandingForClient(env, client);
+      const staticWallet = await getClientStaticWallet(env, client.id, settings.mode);
+      if (staticWallet && staticWallet.status === "active" && staticWallet.account_number) {
+        return json({
+          is_active: true,
+          is_static: true,
+          payment_mode: settings.mode,
+          provider: settings.providerName,
+          provider_status: settings.status,
+          status: settings.status,
+          bank_name: staticWallet.bank_name || "Wema Bank",
+          account_name: staticWallet.account_name,
+          account_number: staticWallet.account_number,
+          account_status: "active",
+          wallet_reference: staticWallet.wallet_reference,
+          amount_kobo: 0,
+          amount_ngn: 0,
+          outstanding_kobo: outstandingKobo,
+          outstanding_ngn: fromKobo(outstandingKobo),
+          client_reference: client.client_reference,
+          notice: "This is your permanent ALATPay account number. It can be used for any amount and any number of payments."
+        });
+      }
       let va = await env.DB.prepare(
         "SELECT * FROM virtual_accounts WHERE client_id=? AND provider IN ('alatpay','wema_alat') ORDER BY id DESC LIMIT 1"
       ).bind(client.id).first();
@@ -6178,6 +6443,13 @@ export default {
       return json({
         is_active: false,
         can_generate: settings.ready,
+        payment_mode: settings.mode,
+        static_wallet: staticWallet ? {
+          status: staticWallet.status,
+          account_number: staticWallet.account_number,
+          account_name: staticWallet.account_name,
+          bank_name: staticWallet.bank_name
+        } : null,
         outstanding_kobo: outstandingKobo,
         outstanding_ngn: fromKobo(outstandingKobo),
         provider: settings.providerName,
@@ -6226,6 +6498,81 @@ export default {
     }
 
     // Staff-assisted virtual-account generation
+    // ALATPay static wallets: permanent account numbers per client.
+    const staticWalletMatch = path.match(/^\/api\/finance\/clients\/(\d+)\/static-wallet(?:\/(initiate|validate))?$/);
+    if (staticWalletMatch) {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Finance Officer", "Branch Manager"].includes(actor.role_name)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const client = await env.DB.prepare("SELECT id, full_name, email_address, phone_number, assigned_branch_id FROM clients WHERE id=? AND is_deleted=0")
+        .bind(staticWalletMatch[1]).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+      if (actor.role_name === "Branch Manager" && Number(client.assigned_branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Cross-branch forbidden" }, 403);
+      }
+      if (request.method === "GET") {
+        const wallet = await getClientStaticWallet(env, client.id);
+        return json({ wallet: wallet || null, payment_mode: getPaymentMode(env) });
+      }
+      if (request.method === "POST" && staticWalletMatch[2] === "initiate") {
+        if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+        const body = await request.json().catch(() => ({}));
+        try {
+          const result = await initiateAlatpayStaticWallet(env, client, body.bvn, actor.id);
+          return json(result);
+        } catch (error) {
+          return json({ error: error.message || "Unable to initiate static wallet" }, error.status || 502);
+        }
+      }
+      if (request.method === "POST" && staticWalletMatch[2] === "validate") {
+        if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+        const body = await request.json().catch(() => ({}));
+        try {
+          const result = await validateAlatpayStaticWallet(env, client, body.otp, actor.id);
+          return json(result);
+        } catch (error) {
+          return json({ error: error.message || "Unable to validate static wallet" }, error.status || 502);
+        }
+      }
+      return json({ error: "Method not allowed" }, 405);
+    }
+
+    if (path === "/api/finance/static-wallets/backfill" && request.method === "POST") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const { results: clients } = await env.DB.prepare(`
+        SELECT c.id, c.client_reference, c.full_name, c.assigned_branch_id, b.name AS branch_name
+        FROM clients c LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        LEFT JOIN client_static_wallets w ON w.client_id=c.id AND w.payment_mode=?
+        WHERE c.is_deleted=0 AND w.id IS NULL
+        ORDER BY c.id
+      `).bind(getPaymentMode(env)).all();
+      if (body.dry_run !== false) {
+        return json({ dry_run: true, missing_count: clients.length, clients, note: "Static wallet creation requires a per-client BVN and OTP validation. No BVN is stored by this app." });
+      }
+      if (!Array.isArray(body.wallets)) {
+        return json({ error: "Provide wallets: [{client_id, bvn}] for non-dry-run backfill" }, 400);
+      }
+      const results = [];
+      for (const item of body.wallets) {
+        const target = clients.find(client => Number(client.id) === Number(item.client_id));
+        if (!target) { results.push({ client_id: item.client_id, status: "skipped", reason: "not_missing" }); continue; }
+        try {
+          const fullClient = await env.DB.prepare("SELECT * FROM clients WHERE id=?").bind(target.id).first();
+          const result = await initiateAlatpayStaticWallet(env, fullClient, item.bvn, actor.id);
+          results.push({ client_id: target.id, status: result.status || "otp_pending", wallet_reference: result.wallet_reference || null });
+        } catch (error) {
+          results.push({ client_id: target.id, status: "failed", error: error.message });
+        }
+      }
+      return json({ dry_run: false, processed: results.length, results });
+    }
+
+
     const staffVirtualAccountMatch = path.match(/^\/api\/finance\/clients\/(\d+)\/virtual-account$/);
     if (staffVirtualAccountMatch && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
@@ -6916,9 +7263,9 @@ export default {
       try {
         const providerKey = body.provider ? String(body.provider) : await getDefaultPaymentProvider(env);
         res = await env.DB.prepare(`
-          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, datetime('now'))
-        `).bind(client_id, property_id || null, txRef, fromKobo(kobo), SUPPORTED_CURRENCY, method, kobo, demoFlag, providerKey, txRef).run();
+          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference, payment_mode, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, datetime('now'))
+        `).bind(client_id, property_id || null, txRef, fromKobo(kobo), SUPPORTED_CURRENCY, method, kobo, demoFlag, providerKey, txRef, getPaymentMode(env)).run();
       } catch (err) {
         if (String(err && err.message || "").toUpperCase().includes("UNIQUE")) {
           return json({ error: "Duplicate transaction reference" }, 409);
@@ -7128,14 +7475,26 @@ export default {
                updated_at, CASE WHEN webhook_secret IS NULL OR webhook_secret='' THEN 0 ELSE 1 END AS has_db_secret
         FROM provider_configs ORDER BY is_default DESC, provider_key
       `).all();
+      const alatSettings = await getAlatpaySettings(env);
       const providers = results.map(row => ({
         ...row,
         env_secret_configured: row.provider_key === "alatpay"
-          ? Boolean(env.ALATPAY_SECRET_KEY)
+          ? Boolean(alatSettings.secret && alatSettings.businessId)
           : (row.provider_key === "paystack" ? Boolean(env.PAYSTACK_SECRET_KEY) : row.has_db_secret === 1),
+        webhook_secret_configured: row.provider_key === "alatpay"
+          ? Boolean(alatSettings.webhookSecret)
+          : row.has_db_secret === 1,
+        payment_mode: row.provider_key === "alatpay" ? alatSettings.mode : null,
         adapter_registered: Boolean(getPaymentProviderAdapter(row.adapter_key || row.provider_key))
       }));
-      return json({ providers, default_provider: await getDefaultPaymentProvider(env), adapters: Object.keys(PAYMENT_PROVIDER_ADAPTERS) });
+      return json({
+        providers,
+        default_provider: await getDefaultPaymentProvider(env),
+        adapters: Object.keys(PAYMENT_PROVIDER_ADAPTERS),
+        payment_mode: getPaymentMode(env),
+        alatpay_webhook_path: alatpayWebhookPath(env),
+        alatpay_webhook_ready: Boolean(alatSettings.webhookSecret && alatSettings.secret && alatSettings.businessId)
+      });
     }
 
     if (path === "/api/finance/providers" && request.method === "POST") {
@@ -7301,130 +7660,221 @@ export default {
 
     // ALATPay webhook: trust is established by re-querying ALATPay with the
     // server-side secret before any payment is verified.
-    if (path === "/api/webhooks/alatpay" && request.method === "POST") {
-      const body = await request.json().catch(() => null);
+    // ALATPay webhook: documented x-signature validation (HMAC-SHA256, base64)
+    // and transaction-status re-query before any credit.
+    const alatpayWebhookMatch = path.match(/^\/api\/webhooks\/alatpay(?:\/(test|live))?$/);
+    if (alatpayWebhookMatch && request.method === "POST") {
+      const currentMode = getPaymentMode(env);
+      const routeMode = alatpayWebhookMatch[1] || currentMode;
+      if (routeMode !== currentMode) {
+        await audit(env, null, "webhook.rejected", "alatpay", null, { reason: "mode_mismatch", route_mode: routeMode, current_mode: currentMode });
+        return json({ error: "Webhook mode does not match this deployment" }, 404);
+      }
+      const settings = await getAlatpaySettings(env, routeMode);
+      if (!settings.webhookSecret) {
+        await audit(env, null, "webhook.rejected", "alatpay", null, { reason: "webhook_secret_missing", mode: routeMode });
+        return json({ error: `ALATPay ${routeMode} webhook secret is not configured` }, 503);
+      }
+      const rawText = await request.text();
+      let body;
+      try { body = rawText ? JSON.parse(rawText) : null; } catch { body = null; }
       if (!body) return json({ error: "Invalid JSON payload" }, 400);
-      const source = body.data || body;
-      const transactionId = source.transactionId || source.transaction_id || source.id || body.transactionId;
+      const supplied = request.headers.get("x-signature") || "";
+      const expected = await hmacBase64(settings.webhookSecret, rawText, "SHA-256");
+      if (!secureCompare(supplied, expected)) {
+        await audit(env, null, "webhook.rejected", "alatpay", null, { reason: "bad_signature", mode: routeMode });
+        return json({ error: "Invalid webhook signature" }, 401);
+      }
+
+      const envelope = body.Value || body;
+      const data = envelope.Data || body.Data || body.data || body;
+      const transactionId = data.Id || data.id || data.TransactionId || data.transactionId || body.transactionId;
+      const statusText = String(data.Status || data.status || data.TransactionStatus || "").trim().toLowerCase();
+      const payloadAmountKobo = data.Amount !== undefined ? toKobo(data.Amount)
+        : (data.amount !== undefined ? toKobo(data.amount) : null);
+      const currency = String(data.Currency || data.currency || SUPPORTED_CURRENCY).trim().toUpperCase();
+      const orderId = data.OrderId || data.orderId || data.OrderReference || data.order_reference || null;
+      const accountNumber = data.NgnVirtualBankAccountNumber || data.ngnVirtualBankAccountNumber ||
+        data.VirtualBankAccountNumber || data.virtualBankAccountNumber || null;
       if (!transactionId) return json({ error: "Missing ALATPay transaction ID" }, 400);
+      if (!Number.isInteger(payloadAmountKobo) || payloadAmountKobo <= 0) return json({ error: "Invalid ALATPay amount" }, 400);
+      if (currency !== SUPPORTED_CURRENCY) return json({ error: "Unsupported ALATPay currency" }, 409);
+
+      const eventId = `alatpay:${routeMode}:${transactionId}:${statusText}:${payloadAmountKobo}`;
+      const seen = await env.DB.prepare("SELECT id, result FROM webhook_events WHERE provider='alatpay' AND event_id=?")
+        .bind(eventId).first();
+      if (seen && !["pending", "verification_failed"].includes(seen.result)) {
+        return json({ ok: true, already_processed: true, result: seen.result });
+      }
+      const recordEvent = async (result, reference, paymentId, extra = {}) => {
+        await env.DB.prepare(`
+          INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at, payment_mode)
+          VALUES ('alatpay', ?, ?, ?, ?, ?, datetime('now'), ?)
+          ON CONFLICT(event_id) DO UPDATE SET result=excluded.result, processed_at=excluded.processed_at,
+            payload=excluded.payload, payment_mode=excluded.payment_mode
+        `).bind(eventId, statusText || null, reference || orderId || transactionId,
+          JSON.stringify({ transaction_id: transactionId, order_id: orderId, amount: data.Amount ?? data.amount, status: statusText, ...extra }).slice(0, 4000),
+          result, routeMode).run().catch(() => {});
+        await audit(env, null, "webhook.received", "payment", paymentId ? String(paymentId) : (reference || transactionId), {
+          provider: "alatpay", mode: routeMode, event_id: eventId, result
+        });
+      };
 
       let remote;
       try {
-        remote = await alatpayRequest(env, `/bank-transfer/api/v1/bankTransfer/transactions/${encodeURIComponent(transactionId)}`);
+        remote = await alatpayRequest(env, `/alatpaytransaction/api/v1/transactions/${encodeURIComponent(transactionId)}`, { mode: routeMode });
       } catch (error) {
-        await audit(env, null, "webhook.rejected", "alatpay", String(transactionId), { reason: "provider_verification_failed" });
-        return json({ error: "Unable to verify ALATPay transaction" }, error.status || 503);
+        await recordEvent("verification_failed", orderId || transactionId, null);
+        return json({ error: "Unable to verify ALATPay transaction status" }, error.status || 503);
       }
-      const data = remote.data || remote;
-      const statusText = String(data.status || data.transactionStatus || source.status || "").trim().toLowerCase();
-      if (!SUCCESS_EVENT_STATUSES.has(statusText)) {
-        return json({ ok: true, status: "ignored", payment_status: statusText || "unknown" }, 202);
+      const remoteData = remote.data || remote;
+      const remoteStatus = String(remoteData.Status || remoteData.status || "").trim().toLowerCase();
+      const remoteAmountKobo = remoteData.Amount !== undefined ? toKobo(remoteData.Amount)
+        : (remoteData.amount !== undefined ? toKobo(remoteData.amount) : null);
+      const remoteCurrency = String(remoteData.Currency || remoteData.currency || SUPPORTED_CURRENCY).trim().toUpperCase();
+      const remoteOrderId = remoteData.OrderId || remoteData.orderId || orderId;
+      const remoteAccount = remoteData.NgnVirtualBankAccountNumber || remoteData.ngnVirtualBankAccountNumber || accountNumber;
+      const remoteTransactionId = remoteData.Id || remoteData.id || transactionId;
+      if (!Number.isInteger(remoteAmountKobo) || remoteAmountKobo <= 0) {
+        await recordEvent("rejected", remoteOrderId || transactionId, null, { reason: "invalid_remote_amount" });
+        return json({ error: "ALATPay returned an invalid amount" }, 409);
       }
-      const orderId = data.orderId || data.order_id || source.orderId || body.orderId;
-      if (!orderId) return json({ error: "Missing ALATPay order ID" }, 400);
-      const amountKobo = data.amount !== undefined ? toKobo(data.amount) : (source.amount !== undefined ? toKobo(source.amount) : null);
-      const currency = String(data.currency || source.currency || SUPPORTED_CURRENCY).trim().toUpperCase();
-      if (!Number.isInteger(amountKobo) || amountKobo <= 0) {
-        return json({ error: "Invalid ALATPay amount" }, 400);
+      if (remoteAmountKobo !== payloadAmountKobo) {
+        await recordEvent("amount_mismatch", remoteOrderId || transactionId, null, { remote_amount: remoteAmountKobo, payload_amount: payloadAmountKobo });
+        return json({ error: "ALATPay webhook amount does not match provider status" }, 409);
       }
-      if (currency !== SUPPORTED_CURRENCY) {
+      if (remoteCurrency !== SUPPORTED_CURRENCY) {
+        await recordEvent("currency_mismatch", remoteOrderId || transactionId, null);
         return json({ error: "Unsupported ALATPay currency" }, 409);
       }
-      const eventId = `alatpay:${transactionId}:${statusText}:${amountKobo}`;
-      const seen = await env.DB.prepare("SELECT id, result FROM webhook_events WHERE event_id=?").bind(eventId).first();
-      if (seen) return json({ ok: true, already_processed: true, result: seen.result });
+      if (remoteOrderId && orderId && String(remoteOrderId) !== String(orderId)) {
+        await recordEvent("reference_mismatch", orderId, null, { remote_order_id: remoteOrderId });
+        return json({ error: "ALATPay reference does not match the webhook" }, 409);
+      }
 
-      const va = await env.DB.prepare(
-        "SELECT * FROM virtual_accounts WHERE order_id=? OR transaction_id=? ORDER BY id DESC LIMIT 1"
-      ).bind(String(orderId), String(transactionId)).first();
-      if (!va) {
-        await env.DB.prepare(`
-          INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
-          VALUES ('alatpay', ?, ?, ?, ?, 'unmatched', datetime('now'))
-        `).bind(eventId, statusText, String(orderId), JSON.stringify({ body, remote }).slice(0, 4000)).run().catch(() => {});
+      const reference = orderId || remoteOrderId || transactionId;
+      let payment = await env.DB.prepare(`
+        SELECT p.*, c.full_name AS client_name, c.client_reference, c.agreed_purchase_price,
+               c.assigned_branch_id, prop.title AS property_title
+        FROM payments p JOIN clients c ON c.id=p.client_id
+        LEFT JOIN properties prop ON prop.id=p.property_id
+        WHERE p.provider='alatpay' AND p.payment_mode=? AND
+          (p.transaction_ref=? OR p.provider_reference=? OR p.transaction_ref=?)
+        ORDER BY p.id DESC LIMIT 1
+      `).bind(routeMode, String(reference), String(remoteTransactionId), String(transactionId)).first();
+      let staticWallet = null;
+      if (!payment && remoteAccount) {
+        staticWallet = await env.DB.prepare(`
+          SELECT * FROM client_static_wallets
+          WHERE account_number=? AND payment_mode=? AND status='active'
+          LIMIT 1
+        `).bind(String(remoteAccount), routeMode).first();
+        if (staticWallet) {
+          const client = await env.DB.prepare("SELECT id, interested_property_id FROM clients WHERE id=? AND is_deleted=0")
+            .bind(staticWallet.client_id).first();
+          if (client) {
+            const txRef = orderId || `ALATPAY-${transactionId}`;
+            const inserted = await env.DB.prepare(`
+              INSERT INTO payments
+                (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo,
+                 is_demo, provider, provider_reference, provider_account_number, payment_mode)
+              VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Static Wallet', 'pending', ?, 0, 'alatpay', ?, ?, ?)
+            `).bind(client.id, client.interested_property_id || null, String(txRef), fromKobo(remoteAmountKobo),
+              remoteAmountKobo, String(remoteTransactionId), String(remoteAccount), routeMode).run();
+            payment = await env.DB.prepare(`
+              SELECT p.*, c.full_name AS client_name, c.client_reference, c.agreed_purchase_price,
+                     c.assigned_branch_id, prop.title AS property_title
+              FROM payments p JOIN clients c ON c.id=p.client_id
+              LEFT JOIN properties prop ON prop.id=p.property_id
+              WHERE p.id=?
+            `).bind(inserted.meta.last_row_id).first();
+          }
+        }
+      }
+      if (!payment) {
+        await recordEvent("unmatched", reference, null);
         return json({ ok: true, status: "logged", matched: false }, 202);
       }
-
-      const client = await env.DB.prepare(
-        "SELECT id, client_reference, interested_property_id, agreed_purchase_price FROM clients WHERE id=? AND is_deleted=0"
-      ).bind(va.client_id).first();
-      if (!client) return json({ error: "Client not found" }, 404);
-
-      let payment = await env.DB.prepare("SELECT * FROM payments WHERE transaction_ref=?").bind(String(orderId)).first();
-      if (!payment) {
-        await env.DB.prepare(`
-          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
-          VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Virtual Account', 'pending', ?, 0, 'alatpay', ?)
-        `).bind(client.id, client.interested_property_id || null, String(orderId), fromKobo(amountKobo), amountKobo, String(transactionId)).run();
-        payment = await env.DB.prepare("SELECT * FROM payments WHERE transaction_ref=?").bind(String(orderId)).first();
+      const isStatic = Boolean(payment.provider_account_number || staticWallet);
+      if (payment.provider_account_number && remoteAccount && String(payment.provider_account_number) !== String(remoteAccount)) {
+        await recordEvent("account_mismatch", reference, payment.id, {
+          expected_account: payment.provider_account_number, remote_account: remoteAccount
+        });
+        return json({ error: "ALATPay account number does not match the recorded payment" }, 409);
       }
-      if (!payment) return json({ error: "Unable to record ALATPay payment" }, 500);
-      if (Number(payment.amount_kobo || toKobo(payment.amount)) !== amountKobo) {
-        await env.DB.prepare(`
-          INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
-          VALUES ('alatpay', ?, ?, ?, ?, 'amount_mismatch', datetime('now'))
-        `).bind(eventId, statusText, String(orderId), JSON.stringify({ body, remote }).slice(0, 4000)).run().catch(() => {});
+      const expectedAmountKobo = Number(payment.amount_kobo || toKobo(payment.amount));
+      if (!isStatic && expectedAmountKobo !== remoteAmountKobo) {
+        await recordEvent("amount_mismatch", reference, payment.id, { expected_amount: expectedAmountKobo, remote_amount: remoteAmountKobo });
         return json({ error: "ALATPay amount does not match the pending payment" }, 409);
       }
+      if (isStatic && expectedAmountKobo !== remoteAmountKobo && payment.status !== "pending") {
+        await recordEvent("amount_mismatch", reference, payment.id, { existing_amount: expectedAmountKobo, remote_amount: remoteAmountKobo });
+        return json({ error: "ALATPay amount does not match the recorded static-wallet payment" }, 409);
+      }
+      if (["pending", "processing", "initiated", "new"].includes(remoteStatus)) {
+        await recordEvent("pending", reference, payment.id, { remote_status: remoteStatus });
+        return json({ ok: true, status: "pending", payment_id: payment.id }, 202);
+      }
+      if (["failed", "cancelled", "canceled", "declined"].includes(remoteStatus)) {
+        await env.DB.prepare("UPDATE payments SET status='failed' WHERE id=? AND status='pending'").bind(payment.id).run();
+        await recordEvent("failed", reference, payment.id, { remote_status: remoteStatus });
+        return json({ ok: true, status: "failed", payment_id: payment.id }, 202);
+      }
+      if (["reversed", "reversal", "refunded", "refund"].includes(remoteStatus)) {
+        await recordEvent("reversed", reference, payment.id, { remote_status: remoteStatus });
+        return json({ ok: true, status: "reversed", credited: false, payment_id: payment.id }, 202);
+      }
+      if (!SUCCESS_EVENT_STATUSES.has(remoteStatus)) {
+        await recordEvent("rejected", reference, payment.id, { remote_status: remoteStatus });
+        return json({ error: `ALATPay transaction is not successful (${remoteStatus || "unknown"})` }, 409);
+      }
       if (payment.status === "verified") {
-        await env.DB.prepare(`
-          INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
-          VALUES ('alatpay', ?, ?, ?, ?, 'duplicate', datetime('now'))
-        `).bind(eventId, statusText, String(orderId), JSON.stringify({ body, remote }).slice(0, 4000)).run().catch(() => {});
+        await recordEvent("duplicate", reference, payment.id);
         return json({ ok: true, already_processed: true });
       }
       if (payment.status !== "pending") {
+        await recordEvent("rejected", reference, payment.id, { payment_status: payment.status });
         return json({ error: `Payment cannot be verified from status ${payment.status}` }, 409);
       }
 
       const now = new Date().toISOString();
-      const updated = await env.DB.prepare(
-        "UPDATE payments SET status='verified', verified_at=?, verified_by=NULL, provider='alatpay', provider_reference=COALESCE(provider_reference, ?) WHERE id=? AND status='pending'"
-      ).bind(now, String(transactionId), payment.id).run();
+      const updated = await env.DB.prepare(`
+        UPDATE payments SET status='verified', verified_at=?, verified_by=NULL, provider='alatpay',
+          provider_reference=?, provider_account_number=?, payment_mode=? WHERE id=? AND status='pending'
+      `).bind(now, String(remoteTransactionId), remoteAccount ? String(remoteAccount) : null, routeMode, payment.id).run();
       if (updated.meta && Number(updated.meta.changes) === 0) {
+        await recordEvent("duplicate", reference, payment.id);
         return json({ ok: true, already_processed: true });
       }
       await stampPaymentAttribution(env, payment.id, payment.client_id);
-      const totalRow = await env.DB.prepare(
-        "SELECT COALESCE(SUM(amount_kobo),0) AS total_kobo FROM payments WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'"
-      ).bind(client.id).first();
-      const remainingKobo = Math.max(0, toKobo(client.agreed_purchase_price || 0) - Number(totalRow ? totalRow.total_kobo : 0));
+      const totalRow = await env.DB.prepare(`
+        SELECT COALESCE(SUM(amount_kobo),0) AS total_kobo FROM payments
+        WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+      `).bind(payment.client_id).first();
+      const remainingKobo = Math.max(0, toKobo(payment.agreed_purchase_price || 0) - Number(totalRow ? totalRow.total_kobo : 0));
       let receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
       if (!receipt) {
         const receiptRef = newReceiptRef(false);
         await env.DB.prepare(`
           INSERT INTO receipts (payment_id, client_id, receipt_ref, amount, currency, amount_kobo, remaining_balance_kobo, is_demo, created_at)
           VALUES (?, ?, ?, ?, 'NGN', ?, ?, 0, datetime('now'))
-        `).bind(payment.id, client.id, receiptRef, fromKobo(amountKobo), amountKobo, remainingKobo).run();
+        `).bind(payment.id, payment.client_id, receiptRef, fromKobo(remoteAmountKobo), remoteAmountKobo, remainingKobo).run();
         receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
       }
-      await ensureReceiptPdf(env, {
-        ...payment,
-        ...receipt,
-        full_name: client.client_reference,
-        client_reference: client.client_reference,
-        payment_status: "verified",
-        payment_date: now
-      }).catch(() => {});
-      await env.DB.prepare("UPDATE virtual_accounts SET account_status='used', updated_at=datetime('now') WHERE id=?")
-        .bind(va.id).run();
-      await env.DB.prepare(`
-        INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
-        VALUES ('alatpay', ?, ?, ?, ?, 'verified', datetime('now'))
-      `).bind(eventId, statusText, String(orderId), JSON.stringify({ body, remote }).slice(0, 4000)).run().catch(() => {});
+      await ensureReceiptPdf(env, { ...payment, ...receipt, payment_status: "verified", payment_date: now }).catch(() => {});
+      await env.DB.prepare("UPDATE virtual_accounts SET account_status='used', updated_at=datetime('now') WHERE order_id=? AND payment_mode=?")
+        .bind(String(orderId || ""), routeMode).run().catch(() => {});
+      await recordEvent("verified", reference, payment.id);
       await createNotification(env, {
-        clientId: client.id,
+        clientId: payment.client_id,
         type: "payment.verified",
         title: "Payment Successfully Verified",
-        message: `Your ALATPay payment of ${formatNGN(amountKobo)} has been verified. Official Receipt #${receipt.receipt_ref} is now available.`,
-        metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, order_id: orderId, source: "alatpay" }
+        message: `Your ALATPay payment of ${formatNGN(remoteAmountKobo)} has been verified. Official Receipt #${receipt.receipt_ref} is now available.`,
+        metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, order_id: reference, source: "alatpay", mode: routeMode }
       });
       await notifyPaymentVerified(env, payment, null);
       await sendPaymentReceivedSms(env, payment.id);
-      await audit(env, null, "webhook.received", "payment", String(payment.id), {
-        event_id: eventId, order_id: orderId, transaction_id: transactionId, result: "verified"
-      });
-      return json({ ok: true, status: "verified", receipt_ref: receipt.receipt_ref });
+      return json({ ok: true, status: "verified", provider: "alatpay", mode: routeMode, receipt_ref: receipt.receipt_ref });
     }
 
     // ALAT by Wema Bank Webhook Receiver (idempotent, signature-gated)
@@ -7725,6 +8175,16 @@ export default {
     }
 
     // ALAT Transaction Reconciliation Interface
+    if (path === "/api/finance/reconciliation/alatpay" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const result = await reconcileAlatpayPayments(env);
+      await audit(env, actor.id, "provider.reconcile", "alatpay", null, result, null);
+      return json({ ok: !result.error, ...result });
+    }
+
     if (path === "/api/finance/reconciliation" && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
@@ -10812,6 +11272,7 @@ export default {
     const task = (async () => {
       await dispatchPaymentReminders(env);
       await dispatchSmsSchedules(env);
+      await reconcileAlatpayPayments(env);
       const settings = await getSmsSettings(env);
       if (settings.enabled && settings.provider !== "mock") {
         try {

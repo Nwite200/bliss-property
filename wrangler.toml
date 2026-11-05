@@ -47,6 +47,7 @@ crons = ["0 6 * * *"]
 ENVIRONMENT = "staging"
 DEMO_MODE_ENABLED = "0"
 DEFAULT_GRACE_DAYS = "0"
+PAYMENT_MODE = "test"
 
 [observability]
 enabled = true
