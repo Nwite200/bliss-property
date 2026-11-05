@@ -413,6 +413,7 @@ await test('single logo intro replays on navigation, refresh and Back/Forward', 
   assert(motionJs.includes("addEventListener(\"popstate\""), 'Back/Forward popstate replay missing');
   assert(motionJs.includes("event.key !== \"Escape\"") && motionJs.includes("event.key !== \"Enter\""), 'Escape/Enter skip missing');
   assert(motionJs.includes('activeRun') && motionJs.includes('runCounter'), 'single-run navigation lock missing');
+  assert(motionJs.includes('.pagination [data-page]') && !motionJs.includes('button, [data-page]'), 'generic data-page selectors would trigger the intro on every click');
   assert(motionJs.includes('has-logo-error'), 'logo failure fallback missing');
   assert(!motionCss.includes('bliss-view-enter'), 'separate page-transition system must be removed');
   assert(motionCss.includes('.bliss-intro') && motionCss.includes('has-logo-error'), 'intro visual/fallback styles missing');

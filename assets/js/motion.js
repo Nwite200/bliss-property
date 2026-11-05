@@ -198,7 +198,7 @@
     if (isNonViewClick(event.target)) return;
 
     var tab = event.target.closest("[role='tab'], .tab, .tab-btn, .tab-link, [data-tab], [data-view], [data-section]");
-    var pageControl = event.target.closest(".pagination a, .pagination button, #pagination a, #pagination button, [data-page]");
+    var pageControl = event.target.closest(".pagination a, .pagination button, #pagination a, #pagination button, .pagination [data-page], #pagination [data-page]");
     var hashLink = event.target.closest("a[href]");
     var isHashView = false;
     if (hashLink) {
