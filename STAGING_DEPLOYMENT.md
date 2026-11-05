@@ -129,15 +129,18 @@ Until that dashboard step is completed, Git pushes will not automatically trigge
 ## 7. PWA and motion
 
 - `manifest.json` is served with HTTP 200 and Chrome reports no installability errors.
-- Service worker `sw.js` registers at scope `/` with cache `bliss-pwa-v3-static`.
+- Service worker `sw.js` registers at scope `/` with cache `bliss-pwa-v5-static`.
 - Install UI supports Android `beforeinstallprompt` and iOS Safari **Add to Home Screen** instructions.
 - Offline fallback: `/offline`.
-- Logo intro replays on page loads, refresh, direct URLs, Back/Forward and dashboard tab view changes; non-navigation clicks do not replay it.
+- Logo intro uses `assets/js/intro-config.js` with `INTRO_STYLE='hype'` by default and a `classic` variant available by changing one constant.
+- Full hype sequence is 3.0 s; short internal/Back-Forward hype is 1.0 s; classic is 2.7 s full and 1.35 s short.
+- Intro replays on page loads, refresh, direct URLs, Back/Forward and dashboard tab view changes; non-navigation clicks do not replay it.
 - PWA icons are generated from the official `assets/images/bliss-legacy-logo.png` file.
+- No ODATANO asset or brand string exists in the repository. The intro therefore uses the actual Bliss Legacy logo; `LOGO_SRC` in `assets/js/intro-config.js` is the single swap point if a real ODATANO file is supplied.
 
 ## 8. Deployment version
 
-Current staging deployment version ID: `03957d78-4bb6-4d00-8ccd-5c8ac3143f5c`
+Current staging deployment version ID: `6989e126-06f9-4442-8549-57fedcb49530`
 
 ---
 

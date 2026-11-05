@@ -62,6 +62,7 @@ Architecture and safety
 - Production deployment: https://bliss-legacy-limited.easterntechexpo.workers.dev
 - PWA: installable on iPhone/iPad (Safari → Share → Add to Home Screen) and Android (Chrome → Install app)
 - PWA manifest: manifest.json; service worker: sw.js; offline: offline.html
+- Logo intro: assets/js/intro-config.js (INTRO_STYLE = hype | classic), assets/js/motion.js, assets/css/motion.css
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
 - There is no separate Super Admin role; the Managing Director is the highest implemented role.
