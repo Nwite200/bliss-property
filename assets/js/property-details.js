@@ -20,6 +20,7 @@ async function load() {
   const p = data.property;
   const me = await fetchJson("/me");
   const canManageAssets = me.ok && ["Managing Director", "Branch Manager"].includes(me.data.role);
+  const canManagePlans = me.ok && (me.data.property_plans_access || ["Managing Director", "Head Accountant", "Super Admin"].includes(me.data.actual_role || me.data.role));
   if (!canManageAssets) {
     const uploads = [document.getElementById("imageUploadControls"), document.getElementById("docUploadControls")];
     uploads.forEach(el => { if (el) el.style.display = "none"; });
@@ -96,6 +97,77 @@ async function load() {
   renderImages(data.images || []);
   renderDocuments(data.documents || []);
 
+  let propertyPlans = data.payment_plans || [];
+  function planLabel(type) {
+    return ({ outright: "Outright", part_payment: "Part payment", daily: "Daily", weekly: "Weekly", bi_monthly: "Bi-monthly", monthly: "Monthly" })[type] || type;
+  }
+  function renderPaymentPlans() {
+    const tbody = document.getElementById("paymentPlanBody");
+    if (!tbody) return;
+    if (!propertyPlans.length) {
+      tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state">No payment plans configured. Clients will not be able to choose a plan for this property.</div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = propertyPlans.map(plan => `
+      <tr>
+        <td><strong>${esc(planLabel(plan.plan_type))}</strong>${plan.is_easy_buy ? ' <span class="badge badge-blue">easy buy</span>' : ''}</td>
+        <td>${money(plan.total_price_kobo / 100)}</td>
+        <td>${money((plan.deposit_kobo || 0) / 100)}</td>
+        <td>${money((plan.installment_kobo || 0) / 100)}</td>
+        <td>${plan.duration_months ? plan.duration_months + ' month(s)' : '-'}${plan.number_of_installments ? ' · ' + plan.number_of_installments + ' instalment(s)' : ''}</td>
+        <td>${plan.is_enabled ? '<span class="badge badge-green">Enabled</span>' : '<span class="badge badge-gray">Disabled</span>'}</td>
+        <td>${canManagePlans ? `<button class="btn btn-ghost btn-xs" type="button" data-edit-plan="${plan.id}">Edit</button>` : ''}</td>
+      </tr>`).join("");
+    tbody.querySelectorAll("[data-edit-plan]").forEach(button => {
+      button.addEventListener("click", () => openPlanModal(propertyPlans.find(plan => Number(plan.id) === Number(button.getAttribute("data-edit-plan")))));
+    });
+  }
+  function openPlanModal(plan) {
+    const editing = Boolean(plan);
+    document.getElementById("ppExistingId").value = editing ? plan.id : "";
+    document.getElementById("paymentPlanModalTitle").textContent = editing ? "Edit payment plan" : "Add payment plan";
+    document.getElementById("ppType").value = editing ? plan.plan_type : "outright";
+    document.getElementById("ppType").disabled = editing;
+    document.getElementById("ppEnabled").value = editing ? String(plan.is_enabled) : "1";
+    document.getElementById("ppTotal").value = editing ? Number(plan.total_price_kobo || 0) / 100 : Number(p.sale_price || 0);
+    document.getElementById("ppDeposit").value = editing ? Number(plan.deposit_kobo || 0) / 100 : 0;
+    document.getElementById("ppInstallment").value = editing ? Number(plan.installment_kobo || 0) / 100 : 0;
+    document.getElementById("ppCount").value = editing && plan.number_of_installments ? plan.number_of_installments : "";
+    document.getElementById("ppDuration").value = editing && plan.duration_months ? plan.duration_months : "";
+    document.getElementById("ppNotes").value = editing ? (plan.notes || "") : "";
+    document.getElementById("paymentPlanModal").classList.add("open");
+  }
+  renderPaymentPlans();
+  if (canManagePlans) {
+    document.getElementById("addPaymentPlanBtn").addEventListener("click", () => openPlanModal(null));
+    document.getElementById("paymentPlanForm").addEventListener("submit", async event => {
+      event.preventDefault();
+      const planType = document.getElementById("ppType").value;
+      const payload = {
+        plans: [{
+          plan_type: planType,
+          is_enabled: document.getElementById("ppEnabled").value === "1",
+          total_price: Number(document.getElementById("ppTotal").value),
+          deposit: Number(document.getElementById("ppDeposit").value || 0),
+          installment: Number(document.getElementById("ppInstallment").value || 0),
+          duration_months: document.getElementById("ppDuration").value ? Number(document.getElementById("ppDuration").value) : null,
+          number_of_installments: document.getElementById("ppCount").value ? Number(document.getElementById("ppCount").value) : null,
+          notes: document.getElementById("ppNotes").value.trim() || null
+        }]
+      };
+      const result = await fetchJson(`/properties/${id}/payment-plans`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+      });
+      if (!result.ok) { alert(result.data.error || "Unable to save payment plan."); return; }
+      const refreshed = await fetchJson(`/properties/${id}/payment-plans?all=1`);
+      propertyPlans = refreshed.data.plans || [];
+      renderPaymentPlans();
+      document.getElementById("paymentPlanModal").classList.remove("open");
+    });
+  } else {
+    document.getElementById("addPaymentPlanBtn").style.display = "none";
+  }
+
   if (canManageAssets) {
     document.getElementById("imageUploadBtn").onclick = async () => {
       const file = document.getElementById("imageFile").files[0];
@@ -148,6 +220,12 @@ async function load() {
     e.preventDefault();
     await fetch("/api/logout", { method: "POST", credentials: "include" });
     window.location.href = "/login.html";
+  });
+  document.querySelectorAll("[data-close-modal]").forEach(button => {
+    button.addEventListener("click", () => {
+      const modal = document.getElementById(button.getAttribute("data-close-modal"));
+      if (modal) modal.classList.remove("open");
+    });
   });
 }
 

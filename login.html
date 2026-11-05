@@ -155,7 +155,9 @@
           return;
         }
         const me = await fetch('/api/me').then(r => r.json());
-        window.location.href = `/dashboard.html?role=${encodeURIComponent(me.role_name || me.role || '')}`;
+        window.location.href = (me.role_name || me.role) === 'Customer Care'
+          ? '/customer-care.html'
+          : `/dashboard.html?role=${encodeURIComponent(me.role_name || me.role || '')}`;
       } catch (err) {
         msg.textContent = 'Server is currently offline. Management portal will be enabled in Phase 2.';
         submitBtn.disabled = false;

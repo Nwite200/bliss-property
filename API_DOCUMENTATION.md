@@ -378,7 +378,52 @@ before the version was created.
 Payments store `provider` and `provider_reference`. Webhook event ids are
 provider-scoped and unique; repeated deliveries never credit twice.
 
-## 16. Common validation rules
+## 16. Property payment plans and locked purchases
+
+- `GET /api/properties/:id/payment-plans` — enabled plans for onboarding; managers with `property_plans_access` can request `?all=1`.
+- `PUT /api/properties/:id/payment-plans` — MD, Head Accountant, Super Admin or explicitly granted users manage plans.
+- Plan fields: `plan_type`, `total_price_kobo` (or `total_price`), `deposit_kobo`, `installment_kobo`, `duration_months`, `number_of_installments`, `is_enabled`.
+- Client create, lead conversion and public signup accept `property_plan_id` and `plan_start_date`.
+- On purchase, plan terms are copied to `clients`, `client_properties` and `payment_schedules`; later property-plan edits do not change existing clients.
+- The generated schedule uses the existing plan type definitions and drives defaulting and easy-buy commission basis.
+
+## 17. Customer care
+
+Customer care uses dedicated endpoints and never inherits manager or commission scope.
+
+- `GET /api/customer-care/overview`
+- `GET /api/customer-care/clients?status&q&branch_id`
+- `GET /api/customer-care/clients/:id`
+- `POST /api/customer-care/clients/:id/clearance`
+- `GET|POST /api/customer-care/clients/:id/calls`
+
+`users.care_scope` is `branch` or `national`. Branch care is restricted to the
+assigned branch; national care has no branch and sees all branches. Customer
+Care accounts are created by MD/Super Admin and have no commission access.
+
+## 18. SMS
+
+- `GET /api/sms/overview` — controls, provider state, credit balance and counts.
+- `GET /api/sms/messages?status&template_key&client_id&from&to` — scoped delivery log.
+- `GET /api/sms/templates`, `PUT /api/sms/templates/:key`
+- `PUT /api/sms/settings` — on/off, provider, sender ID, reminders, thresholds and statement day.
+- `POST /api/sms/test`
+- `POST /api/sms/refresh-balance`
+- `GET|POST /api/clients/:id/sms-optout`
+
+Payment SMS is created only after a payment is verified/credited. The unique
+key `payment:<payment_id>:payment_received` prevents duplicate SMS from repeated
+webhook delivery. Failed, pending or rejected payments never send SMS.
+See `SMS_PROVIDER_SETUP.md`.
+
+## 19. Lead pipeline additions
+
+- `POST /api/leads/:id/temperature` — `Hot`, `Warm`, `Cold`; changes are logged in `lead_temperature_history`.
+- `POST /api/leads/:id/follow-ups` accepts `contact_type` and `contacted_at`; the register exposes contact count and last-contacted date.
+- `POST /api/leads/:id/status` with `status: "Lost"` requires `lost_reason`.
+- `GET /api/leads?temperature=Hot` and the list response's `temperature_counts` support temperature filters and counts.
+
+## 20. Common validation rules
 
 - Password minimum: 8 characters.
 - Phone: `+0-9() -`, 7–25 characters.
@@ -392,7 +437,7 @@ provider-scoped and unique; repeated deliveries never credit twice.
 
 ---
 
-## 17. Known API gaps
+## 21. Known API gaps
 
 - No client transaction-statement PDF endpoint.
 - No team-performance or customer-performance report type.

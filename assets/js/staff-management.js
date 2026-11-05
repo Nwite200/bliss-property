@@ -10,7 +10,7 @@
 
   function roleOptions() {
     return isMD()
-      ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant"]
+      ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"]
       : ["Team Lead", "Marketer", "Finance Officer"];
   }
 
@@ -144,6 +144,20 @@
     el("staffCommissionAccessGroup").style.display = canGrantCommission ? "" : "none";
     el("staffCommissionAccess").checked = Boolean(row && row.commission_access);
     el("staffCommissionAccess").disabled = !canGrantCommission;
+    const canGrantSpecial = ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role);
+    el("staffPlanAccessGroup").style.display = canGrantSpecial ? "" : "none";
+    el("staffSmsAccessGroup").style.display = canGrantSpecial ? "" : "none";
+    el("staffPlanAccess").checked = Boolean(row && row.property_plans_access);
+    el("staffSmsAccess").checked = Boolean(row && row.sms_access);
+    el("staffPlanAccess").disabled = !canGrantSpecial;
+    el("staffSmsAccess").disabled = !canGrantSpecial;
+    const careRole = el("staffRole").value === "Customer Care";
+    el("staffCareScopeGroup").style.display = careRole ? "" : "none";
+    el("staffCareScope").value = row && row.care_scope ? row.care_scope : "branch";
+    const nationalCare = careRole && el("staffCareScope").value === "national";
+    el("staffBranch").required = !nationalCare;
+    el("staffBranch").disabled = nationalCare;
+    if (nationalCare) el("staffBranch").value = "";
     el("staffPasswordGroup").style.display = row ? "none" : "";
     el("staffPassword").required = !row;
     const selectedTeams = row && row.team_ids ? String(row.team_ids).split(",").map(Number) : [];
@@ -173,7 +187,9 @@
       email: el("staffEmail").value.trim(),
       phone_number: el("staffPhone").value.trim(),
       role_name: el("staffRole").value,
-      branch_id: Number(el("staffBranch").value),
+      branch_id: el("staffRole").value === "Customer Care" && el("staffCareScope").value === "national"
+        ? null : Number(el("staffBranch").value),
+      care_scope: el("staffRole").value === "Customer Care" ? el("staffCareScope").value : null,
       job_title: el("staffJobTitle").value.trim(),
       date_joined: el("staffDateJoined").value || null,
       notes: el("staffNotes").value.trim()
@@ -181,6 +197,10 @@
     if (!id) body.password = el("staffPassword").value;
     if (["Managing Director", "Super Admin"].includes(me.actual_role || me.role)) {
       body.commission_access = el("staffCommissionAccess").checked;
+    }
+    if (["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role)) {
+      body.property_plans_access = el("staffPlanAccess").checked;
+      body.sms_access = el("staffSmsAccess").checked;
     }
     const teamIds = [...el("staffTeamsChecks").querySelectorAll("input[type=checkbox]:checked")].map(input => Number(input.value));
     try {
@@ -313,6 +333,21 @@
         <label class="tag" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:7px 9px">
           <input type="checkbox" value="${row.id}"> ${S.escape(row.full_name)} <span class="muted">${S.escape(row.role_name)}</span>
         </label>`).join("");
+    });
+    el("staffRole").addEventListener("change", () => {
+      const careRole = el("staffRole").value === "Customer Care";
+      el("staffCareScopeGroup").style.display = careRole ? "" : "none";
+      const nationalCare = careRole && el("staffCareScope").value === "national";
+      el("staffBranch").required = !nationalCare;
+      el("staffBranch").disabled = nationalCare;
+      if (nationalCare) el("staffBranch").value = "";
+    });
+    el("staffCareScope").addEventListener("change", () => {
+      const nationalCare = el("staffCareScope").value === "national";
+      el("staffBranch").required = !nationalCare;
+      el("staffBranch").disabled = nationalCare;
+      if (nationalCare) el("staffBranch").value = "";
+      else if (!el("staffBranch").value) el("staffBranch").value = me.branch_id || (branches[0] && branches[0].id) || "";
     });
     el("staffBranch").addEventListener("change", () => {
       const branchId = el("staffBranch").value;

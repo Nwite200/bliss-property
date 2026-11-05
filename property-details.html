@@ -118,6 +118,42 @@
           </div>
         </div>
       </div>
+      <div class="card" id="paymentPlansCard" style="margin-top:24px">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <h3 style="font-size:16px;margin:0">Payment plans offered</h3>
+            <p style="font-size:12px;color:var(--muted);margin:4px 0 0">Only enabled plans are shown during onboarding. Purchase terms are copied and locked to the client when they choose a plan.</p>
+          </div>
+          <button class="btn btn-green btn-sm" type="button" id="addPaymentPlanBtn">+ Add / edit plan</button>
+        </div>
+        <div class="table-responsive mt-16"><table class="table">
+          <thead><tr><th>Plan</th><th>Total price</th><th>Deposit</th><th>Instalment</th><th>Duration / count</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody id="paymentPlanBody"><tr><td colspan="7">Loading plans…</td></tr></tbody>
+        </table></div>
+      </div>
+
+      <div class="modal-backdrop" id="paymentPlanModal">
+        <div class="modal-box">
+          <div class="modal-header"><h3 id="paymentPlanModalTitle">Property payment plan</h3><button class="icon-btn" type="button" data-close-modal="paymentPlanModal">✕</button></div>
+          <form id="paymentPlanForm">
+            <input type="hidden" id="ppExistingId">
+            <div class="form-grid">
+              <div class="field-group"><label class="field-label" for="ppType">Plan type</label><select class="field-input" id="ppType"><option value="outright">Outright</option><option value="part_payment">Part payment</option><option value="daily">Daily (easy buy)</option><option value="weekly">Weekly (easy buy)</option><option value="bi_monthly">Bi-monthly (easy buy)</option><option value="monthly">Monthly (easy buy)</option></select></div>
+              <div class="field-group"><label class="field-label" for="ppEnabled">Status</label><select class="field-input" id="ppEnabled"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
+              <div class="field-group"><label class="field-label" for="ppTotal">Total price (₦)</label><input class="field-input" type="number" min="1" step="0.01" id="ppTotal" required></div>
+              <div class="field-group"><label class="field-label" for="ppDeposit">Initial deposit (₦)</label><input class="field-input" type="number" min="0" step="0.01" id="ppDeposit" value="0"></div>
+              <div class="field-group"><label class="field-label" for="ppInstallment">Instalment amount (₦)</label><input class="field-input" type="number" min="0" step="0.01" id="ppInstallment" value="0"></div>
+              <div class="field-group"><label class="field-label" for="ppCount">Number of instalments</label><input class="field-input" type="number" min="1" max="1000" id="ppCount"></div>
+              <div class="field-group"><label class="field-label" for="ppDuration">Duration (months)</label><input class="field-input" type="number" min="0" max="120" id="ppDuration"></div>
+              <div class="field-group full"><label class="field-label" for="ppNotes">Notes</label><input class="field-input" id="ppNotes"></div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+              <button class="btn btn-ghost" type="button" data-close-modal="paymentPlanModal">Cancel</button>
+              <button class="btn btn-green" type="submit">Save plan</button>
+            </div>
+          </form>
+        </div>
+      </div>
     </main>
   </div>
   <script src="assets/js/property-details.js"></script>

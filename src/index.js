@@ -93,7 +93,7 @@ async function getSessionUser(env, request) {
   const sid = cookies[SESSION_COOKIE];
   if (!sid) return null;
   const row = await env.DB.prepare(
-    "SELECT s.id AS sid, s.expires_at, u.id, u.email, u.full_name, u.role_id, u.branch_id, u.is_active, u.referral_code, u.commission_access, r.name AS role_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.id=?"
+    "SELECT s.id AS sid, s.expires_at, u.id, u.email, u.full_name, u.role_id, u.branch_id, u.is_active, u.referral_code, u.commission_access, u.property_plans_access, u.sms_access, u.care_scope, r.name AS role_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.id=?"
   ).bind(sid).first();
   if (!row) return null;
   if (parseDbDate(row.expires_at) < new Date()) {
@@ -805,7 +805,9 @@ function normalizeLeadImportRow(raw) {
     phone_number: pick("phone_number", "phone", "mobile", "telephone"),
     email_address: pick("email_address", "email"),
     source: pick("source", "campaign", "ad_campaign", "lead_source"),
+    referrer: pick("referrer", "referral", "referred_by"),
     status: pick("status", "stage"),
+    lead_temperature: pick("lead_temperature", "temperature"),
     property_id: pick("property_id", "property"),
     assigned_marketer_id: pick("assigned_marketer_id", "marketer_id", "marketer", "owner", "owner_marketer_id"),
     team_lead_id: pick("team_lead_id", "team_lead"),
@@ -825,10 +827,60 @@ const PAYMENT_PLAN_TYPES = ["outright", "part_payment", "daily", "weekly", "bi_m
 const EASY_BUY_PLAN_TYPES = ["daily", "weekly", "bi_monthly", "monthly"];
 const COMMISSIONABLE_MODES = ["full", "first_months", "percentage", "capped_amount"];
 const DEFAULT_FOLLOW_UP_STATUSES = ["contacted", "promised", "escalated"];
+const LEAD_TEMPERATURES = ["Hot", "Warm", "Cold"];
+const CARE_SCOPES = ["branch", "national"];
+const CARE_CALL_TYPES = ["call", "whatsapp", "visit", "sms", "other"];
+const SMS_FINAL_STATUSES = ["sent", "delivered", "failed", "opted_out", "skipped"];
 const REPORT_TYPES = [
   "sales", "collections", "outstanding", "commission",
   "branch_performance", "marketer_performance", "refunds", "commission_liability"
 ];
+
+function normalizeNigerianPhone(value) {
+  let raw = String(value === undefined || value === null ? "" : value).trim();
+  if (!raw) return null;
+  raw = raw.replace(/[^\d+]/g, "");
+  if (raw.startsWith("+")) raw = raw.slice(1);
+  if (raw.startsWith("00")) raw = raw.slice(2);
+  if (raw.startsWith("234") && raw.length === 13) return "+" + raw;
+  if (raw.startsWith("0") && raw.length === 11) return "+234" + raw.slice(1);
+  if (/^[789]\d{9}$/.test(raw)) return "+234" + raw;
+  return null;
+}
+
+function isValidLeadPhone(value) {
+  return Boolean(normalizeNigerianPhone(value));
+}
+
+function normalizeTemperature(value, fallback = null) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "hot") return "Hot";
+  if (raw === "warm") return "Warm";
+  if (raw === "cold") return "Cold";
+  return fallback;
+}
+
+function canManagePropertyPlans(actor) {
+  if (!actor) return false;
+  const actual = actor.actual_role_name || actor.role_name;
+  if (["Super Admin", "Managing Director", "Head Accountant"].includes(actual)) return true;
+  return Number(actor.property_plans_access || 0) === 1;
+}
+
+function canManageSms(actor) {
+  if (!actor) return false;
+  const actual = actor.actual_role_name || actor.role_name;
+  if (["Super Admin", "Managing Director", "Head Accountant"].includes(actual)) return true;
+  return Number(actor.sms_access || 0) === 1;
+}
+
+function careScopeSql(actor, alias = "c") {
+  const actual = actor.actual_role_name || actor.role_name;
+  if (actual !== "Customer Care") return { clause: "1=0", binds: [] };
+  if (String(actor.care_scope || "").toLowerCase() === "national") return { clause: "1=1", binds: [] };
+  return { clause: `${alias}.assigned_branch_id = ?`, binds: [actor.branch_id] };
+}
+
 
 function dateOnly(value) {
   if (!value) return null;
@@ -2333,6 +2385,74 @@ async function ensureScheduleItems(env, schedule) {
   if (items.length) await replaceScheduleItems(env, schedule.id, items);
 }
 
+function propertyPlanSnapshot(plan) {
+  return {
+    property_payment_plan_id: plan.id,
+    plan_type: normalizePlanType(plan.plan_type),
+    total_price_kobo: Number(plan.total_price_kobo || 0),
+    deposit_kobo: Number(plan.deposit_kobo || 0),
+    installment_kobo: Number(plan.installment_kobo || 0),
+    duration_months: plan.duration_months === null || plan.duration_months === undefined ? null : Number(plan.duration_months),
+    number_of_installments: plan.number_of_installments === null || plan.number_of_installments === undefined ? null : Number(plan.number_of_installments),
+    locked_at: new Date().toISOString()
+  };
+}
+
+async function createScheduleFromPropertyPlan(env, client, plan, actorId, startDateArg) {
+  const planType = normalizePlanType(plan.plan_type);
+  const totalKobo = Number(plan.total_price_kobo || 0);
+  const depositKobo = Math.min(totalKobo, Math.max(0, Number(plan.deposit_kobo || 0)));
+  let installmentKobo = Number(plan.installment_kobo || 0);
+  const number = plan.number_of_installments ? Number(plan.number_of_installments) : null;
+  if (planType === "outright") installmentKobo = totalKobo;
+  if (!Number.isInteger(installmentKobo) || installmentKobo <= 0) {
+    if (number && totalKobo > depositKobo) installmentKobo = Math.ceil((totalKobo - depositKobo) / number);
+    else return { error: "The selected plan needs a positive instalment amount or number of instalments" };
+  }
+  let frequencyDays = planIntervalDays(planType);
+  if (planType === "part_payment") {
+    frequencyDays = number && plan.duration_months
+      ? Math.max(1, Math.round((Number(plan.duration_months) * 30) / number))
+      : 30;
+  }
+  const start = dateOnly(startDateArg) || todayOnly();
+  const items = buildPlanScheduleItems({
+    totalKobo, depositKobo, installmentKobo, planType, startDate: start,
+    frequencyDays, numberOfInstallments: number
+  });
+  if (!items.length) return { error: "Unable to generate the payment schedule" };
+  const nextDue = items[0].due_date;
+  const snapshot = propertyPlanSnapshot(plan);
+  const res = await env.DB.prepare(`
+    INSERT INTO payment_schedules
+      (client_id, property_id, total_amount, total_kobo, deposit_amount, deposit_kobo,
+       installment_amount, installment_kobo, frequency_days, next_due_date, status, notes,
+       created_by, created_at, updated_at, plan_type, start_date, grace_days,
+       number_of_installments, is_easy_buy, schedule_version, property_payment_plan_id, locked_plan_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, datetime('now'), datetime('now'),
+      ?, ?, 0, ?, ?, 1, ?, ?)
+  `).bind(
+    client.id, client.interested_property_id || plan.property_id || null,
+    fromKobo(totalKobo), totalKobo,
+    fromKobo(depositKobo), depositKobo,
+    fromKobo(installmentKobo), installmentKobo,
+    frequencyDays, nextDue,
+    `Locked from property plan at onboarding (${planType}).`,
+    actorId, planType, start, number,
+    isEasyBuyPlan(planType) ? 1 : 0, plan.id, JSON.stringify(snapshot)
+  ).run();
+  const scheduleId = res.meta.last_row_id;
+  await replaceScheduleItems(env, scheduleId, items);
+  await env.DB.prepare(`
+    INSERT INTO payment_schedule_history (schedule_id, action, previous_json, new_json, reason, changed_by, created_at)
+    VALUES (?, 'create', NULL, ?, 'Created from property payment plan at onboarding', ?, datetime('now'))
+  `).bind(scheduleId, JSON.stringify({ snapshot, items }), actorId).run();
+  await audit(env, actorId, "installment.create_from_property_plan", "installment", String(scheduleId), {
+    client_id: client.id, property_payment_plan_id: plan.id, plan_type: planType
+  }, client.assigned_branch_id);
+  return { id: scheduleId, items, snapshot };
+}
+
 // ---------------------------------------------------------------------------
 // Minimal dependency-free PDF writer (used for stored R2 receipts)
 // ---------------------------------------------------------------------------
@@ -2659,6 +2779,49 @@ async function upsertClientPropertyAllocation(env, clientId, propertyId, agreedP
   `).bind(clientId, propertyId, Number(agreedPrice || 0), status || "Active").run();
 }
 
+async function lockClientPurchasePlan(env, clientId, propertyId, plan, status) {
+  const snapshot = propertyPlanSnapshot(plan);
+  await env.DB.prepare(`
+    UPDATE clients SET property_payment_plan_id=?, payment_plan_type=?, payment_plan_total_kobo=?,
+      payment_plan_deposit_kobo=?, payment_plan_installment_kobo=?, payment_plan_duration_months=?,
+      payment_plan_number_of_installments=?, payment_plan_locked_at=?, payment_plan_locked_json=?,
+      agreed_purchase_price=?, updated_at=datetime('now')
+    WHERE id=?
+  `).bind(
+    plan.id, snapshot.plan_type, snapshot.total_price_kobo, snapshot.deposit_kobo,
+    snapshot.installment_kobo, snapshot.duration_months, snapshot.number_of_installments,
+    snapshot.locked_at, JSON.stringify(snapshot), fromKobo(snapshot.total_price_kobo), clientId
+  ).run();
+  await env.DB.prepare(`
+    UPDATE client_properties SET property_payment_plan_id=?, plan_type=?, plan_total_kobo=?,
+      plan_deposit_kobo=?, plan_installment_kobo=?, plan_duration_months=?, plan_number_of_installments=?,
+      plan_locked_at=?, plan_locked_json=?, agreed_purchase_price=?, status=?, updated_at=datetime('now')
+    WHERE client_id=? AND property_id=?
+  `).bind(
+    plan.id, snapshot.plan_type, snapshot.total_price_kobo, snapshot.deposit_kobo,
+    snapshot.installment_kobo, snapshot.duration_months, snapshot.number_of_installments,
+    snapshot.locked_at, JSON.stringify(snapshot), fromKobo(snapshot.total_price_kobo),
+    status || "Active", clientId, propertyId
+  ).run();
+  return snapshot;
+}
+
+async function resolvePropertyPlanForPurchase(env, propertyId, planId) {
+  if (!propertyId) return { plan: null, plans: [] };
+  const property = await env.DB.prepare("SELECT id, title, branch_id, is_published FROM properties WHERE id=?").bind(propertyId).first();
+  if (!property) return { error: "Property not found" };
+  const { results: plans } = await env.DB.prepare(
+    "SELECT * FROM property_payment_plans WHERE property_id=? AND is_enabled=1 ORDER BY plan_type"
+  ).bind(propertyId).all();
+  if (planId) {
+    const plan = plans.find(row => Number(row.id) === Number(planId));
+    if (!plan) return { error: "Selected payment plan is not offered for this property" };
+    return { property, plan, plans };
+  }
+  if (plans.length) return { error: "Select one of the payment plans offered for this property", plans };
+  return { property, plan: null, plans };
+}
+
 async function buildClientPropertyPortfolio(env, client) {
   const { results: allocations } = await env.DB.prepare(`
     SELECT cp.id AS allocation_id, cp.property_id, cp.agreed_purchase_price, cp.status AS allocation_status,
@@ -2907,6 +3070,10 @@ async function createNotification(env, { userId, clientId, type, title, message,
 
 async function processNotificationQueue(env, message) {
   const body = message.body || message;
+  if (body.type === "sms.send" && body.sms_message_id) {
+    await processSmsMessage(env, Number(body.sms_message_id));
+    return;
+  }
   const notificationId = body.notification_id || null;
   if (!notificationId) return;
 
@@ -2929,6 +3096,371 @@ async function processNotificationQueue(env, message) {
     ).bind(notificationId, channel.name, channel.provider || "none", status, detail).run().catch(() => {});
   }
 }
+
+async function getSmsSettings(env) {
+  const { results } = await env.DB.prepare("SELECT setting_key, setting_value FROM sms_settings").all();
+  const values = {};
+  for (const row of results) values[row.setting_key] = row.setting_value;
+  return {
+    enabled: String(values.sms_enabled || "0") === "1",
+    provider: String(env.SMS_PROVIDER || values.sms_provider || "termii").toLowerCase(),
+    senderId: String(env.SMS_SENDER_ID || values.sms_sender_id || "BlissLegacy"),
+    lowCreditThreshold: Number(values.sms_low_credit_threshold || 1000),
+    remindersEnabled: String(values.sms_reminders_enabled || "0") === "1",
+    defaultingRemindersEnabled: String(values.sms_defaulting_reminders_enabled || "0") === "1",
+    reminderDays: Math.max(0, Number(values.sms_reminder_days || 3)),
+    defaultingFrequencyDays: Math.max(1, Number(values.sms_defaulting_frequency_days || 3)),
+    statementDay: Math.min(28, Math.max(1, Number(values.sms_statement_day || 1))),
+    creditBalance: values.sms_credit_balance === "" ? null : Number(values.sms_credit_balance),
+    creditCurrency: values.sms_credit_currency || "NGN",
+    creditCheckedAt: values.sms_credit_checked_at || null,
+    lowBalanceAlertedAt: values.sms_low_balance_alerted_at || null,
+    raw: values
+  };
+}
+
+async function setSmsSetting(env, key, value, actorId) {
+  await env.DB.prepare(`
+    INSERT INTO sms_settings (setting_key, setting_value, updated_by, updated_at)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,
+      updated_by=excluded.updated_by, updated_at=datetime('now')
+  `).bind(key, value === undefined || value === null ? null : String(value), actorId || null).run();
+}
+
+function renderSmsTemplate(template, variables) {
+  let output = String(template || "");
+  for (const [key, value] of Object.entries(variables || {})) {
+    output = output.replace(new RegExp(`\\{${key}\\}`, "g"), value === undefined || value === null ? "" : String(value));
+  }
+  return output.slice(0, 1000);
+}
+
+async function getSmsTemplate(env, templateKey) {
+  return env.DB.prepare("SELECT * FROM sms_templates WHERE template_key=? AND is_active=1").bind(templateKey).first();
+}
+
+async function sendSmsThroughProvider(env, settings, phone, body) {
+  const provider = settings.provider;
+  if (provider === "mock") {
+    if (String(env.ENVIRONMENT || "").toLowerCase() === "production") {
+      throw Object.assign(new Error("Mock SMS adapter is disabled in production"), { permanent: true });
+    }
+    return { provider: "mock", providerMessageId: "mock-" + crypto.randomUUID(), costKobo: 0, status: "sent" };
+  }
+  if (provider === "termii") {
+    const apiKey = env.TERMII_API_KEY;
+    if (!apiKey) throw Object.assign(new Error("TERMII_API_KEY is not configured"), { permanent: true });
+    const response = await fetch("https://api.ng.termii.com/api/sms/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: phone,
+        from: settings.senderId,
+        sms: body,
+        type: "plain",
+        channel: "dnd",
+        api_key: apiKey
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || String(data.code || "").toLowerCase() === "error") {
+      throw new Error(data.message || `Termii SMS failed (${response.status})`);
+    }
+    return {
+      provider: "termii",
+      providerMessageId: data.message_id || data.messageId || null,
+      costKobo: data.cost ? toKobo(data.cost) : null,
+      status: "sent"
+    };
+  }
+  if (provider === "africastalking") {
+    const apiKey = env.AFRICASTALKING_API_KEY;
+    const username = env.AFRICASTALKING_USERNAME;
+    if (!apiKey || !username) throw Object.assign(new Error("Africa's Talking credentials are not configured"), { permanent: true });
+    const form = new URLSearchParams();
+    form.set("username", username);
+    form.set("to", phone);
+    form.set("message", body);
+    if (settings.senderId) form.set("from", settings.senderId);
+    const response = await fetch("https://api.africastalking.com/version1/messaging", {
+      method: "POST",
+      headers: {
+        apiKey,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json"
+      },
+      body: form.toString()
+    });
+    const data = await response.json().catch(() => ({}));
+    const recipient = data.SMSMessageData && data.SMSMessageData.Recipients && data.SMSMessageData.Recipients[0];
+    if (!response.ok || !recipient || String(recipient.status || "").toLowerCase().includes("fail")) {
+      throw new Error((recipient && recipient.status) || `Africa's Talking SMS failed (${response.status})`);
+    }
+    const cost = String(recipient.cost || "").replace(/[^0-9.]/g, "");
+    return {
+      provider: "africastalking",
+      providerMessageId: recipient.messageId || null,
+      costKobo: cost ? toKobo(cost) : null,
+      status: "sent"
+    };
+  }
+  throw Object.assign(new Error(`Unknown SMS provider '${provider}'`), { permanent: true });
+}
+
+async function fetchSmsProviderBalance(env, settings) {
+  if (settings.provider === "termii" && env.TERMII_API_KEY) {
+    const response = await fetch(`https://api.ng.termii.com/api/get-balance?api_key=${encodeURIComponent(env.TERMII_API_KEY)}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `Balance request failed (${response.status})`);
+    const balance = Number(data.balance);
+    return Number.isFinite(balance) ? balance : null;
+  }
+  if (settings.provider === "mock") return null;
+  return null;
+}
+
+async function processSmsMessage(env, messageId) {
+  const message = await env.DB.prepare("SELECT * FROM sms_messages WHERE id=?").bind(messageId).first();
+  if (!message) return { skipped: true, reason: "not_found" };
+  if (["sent", "delivered", "opted_out", "skipped", "failed"].includes(message.status)) return { skipped: true, reason: "already_final" };
+  const settings = await getSmsSettings(env);
+  if (!settings.enabled) {
+    await env.DB.prepare("UPDATE sms_messages SET status='skipped', error='SMS disabled globally', updated_at=datetime('now') WHERE id=?")
+      .bind(message.id).run();
+    return { skipped: true, reason: "disabled" };
+  }
+  if (message.client_id) {
+    const optout = await env.DB.prepare("SELECT opted_out FROM sms_optouts WHERE client_id=?").bind(message.client_id).first();
+    if (optout && Number(optout.opted_out) === 1) {
+      await env.DB.prepare("UPDATE sms_messages SET status='opted_out', updated_at=datetime('now') WHERE id=?").bind(message.id).run();
+      return { skipped: true, reason: "opted_out" };
+    }
+  }
+  try {
+    const result = await sendSmsThroughProvider(env, settings, message.phone_e164, message.body);
+    await env.DB.prepare(`
+      UPDATE sms_messages SET status=?, provider=?, provider_message_id=?, provider_cost_kobo=?,
+        attempts=attempts+1, sent_at=datetime('now'), error=NULL, updated_at=datetime('now')
+      WHERE id=?
+    `).bind(result.status || "sent", result.provider, result.providerMessageId, result.costKobo, message.id).run();
+    if (result.provider === "mock") {
+      await env.DB.prepare("UPDATE sms_messages SET status='delivered', delivered_at=datetime('now'), updated_at=datetime('now') WHERE id=?")
+        .bind(message.id).run();
+    }
+    return { ok: true, status: result.status || "sent" };
+  } catch (error) {
+    const attempts = Number(message.attempts || 0) + 1;
+    const permanent = error.permanent || attempts >= 5;
+    await env.DB.prepare(`
+      UPDATE sms_messages SET status=?, attempts=?, error=?, failed_at=?, next_attempt_at=?, updated_at=datetime('now')
+      WHERE id=?
+    `).bind(
+      permanent ? "failed" : "queued", attempts, String(error.message || "SMS send failed").slice(0, 500),
+      permanent ? new Date().toISOString() : null,
+      permanent ? null : new Date(Date.now() + Math.min(900, 30 * Math.pow(2, attempts)) * 1000).toISOString(),
+      message.id
+    ).run();
+    if (!permanent) throw error;
+    return { ok: false, failed: true, error: error.message };
+  }
+}
+
+async function enqueueSms(env, options) {
+  const settings = await getSmsSettings(env);
+  if (!settings.enabled) return { skipped: true, reason: "disabled" };
+  const phone = normalizeNigerianPhone(options.phone);
+  if (!phone) return { skipped: true, reason: "invalid_phone" };
+  if (options.clientId) {
+    const optout = await env.DB.prepare("SELECT opted_out FROM sms_optouts WHERE client_id=?").bind(options.clientId).first();
+    if (optout && Number(optout.opted_out) === 1) {
+      if (options.idempotencyKey) {
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO sms_messages (client_id, payment_id, schedule_id, template_key, phone_e164, body,
+            status, provider, idempotency_key, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, 'opted_out', ?, ?, ?)
+        `).bind(options.clientId, options.paymentId || null, options.scheduleId || null, options.templateKey || null,
+          phone, options.body || "", settings.provider, options.idempotencyKey, options.createdBy || null).run();
+      }
+      return { skipped: true, reason: "opted_out" };
+    }
+  }
+  const res = await env.DB.prepare(`
+    INSERT OR IGNORE INTO sms_messages (client_id, payment_id, schedule_id, template_key, phone_e164, body,
+      status, provider, idempotency_key, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+  `).bind(
+    options.clientId || null, options.paymentId || null, options.scheduleId || null,
+    options.templateKey || null, phone, options.body || "", settings.provider,
+    options.idempotencyKey || null, options.createdBy || null
+  ).run();
+  if (!res.meta || Number(res.meta.changes) === 0) return { skipped: true, reason: "duplicate" };
+  const messageId = res.meta.last_row_id;
+  if (env.TASKS && typeof env.TASKS.send === "function") {
+    await env.TASKS.send({ type: "sms.send", sms_message_id: messageId }).catch(() => {});
+  } else {
+    await processSmsMessage(env, messageId).catch(() => {});
+  }
+  return { ok: true, id: messageId };
+}
+
+async function sendPaymentReceivedSms(env, paymentId) {
+  const row = await env.DB.prepare(`
+    SELECT p.id, p.client_id, p.amount_kobo, p.amount, p.transaction_ref, p.verified_at, p.is_demo, p.currency,
+           c.full_name, c.phone_number, c.client_reference, c.agreed_purchase_price,
+           COALESCE(prop.title, 'your property') AS property_title
+    FROM payments p JOIN clients c ON c.id=p.client_id
+    LEFT JOIN properties prop ON prop.id=p.property_id
+    WHERE p.id=?
+  `).bind(paymentId).first();
+  if (!row || Number(row.is_demo) === 1 || String(row.currency || "NGN").toUpperCase() !== "NGN") return { skipped: true };
+  const total = await env.DB.prepare(`
+    SELECT COALESCE(SUM(amount_kobo),0) AS paid FROM payments
+    WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+  `).bind(row.client_id).first();
+  const paidKobo = Number(total ? total.paid : 0);
+  const balanceKobo = Math.max(0, toKobo(row.agreed_purchase_price || 0) - paidKobo);
+  const template = await getSmsTemplate(env, "payment_received");
+  const body = renderSmsTemplate(template ? template.body : "Payment received: NGN {amount}. New balance: NGN {balance}. Ref: {reference}. Bliss Legacy.", {
+    name: row.full_name,
+    amount: fromKobo(Number(row.amount_kobo || toKobo(row.amount))).toLocaleString("en-NG"),
+    balance: fromKobo(balanceKobo).toLocaleString("en-NG"),
+    property: row.property_title,
+    date: String(row.verified_at || new Date().toISOString()).slice(0, 10),
+    reference: row.transaction_ref
+  });
+  return enqueueSms(env, {
+    clientId: row.client_id,
+    paymentId: row.id,
+    templateKey: "payment_received",
+    phone: row.phone_number,
+    body,
+    idempotencyKey: `payment:${row.id}:payment_received`,
+    createdBy: null
+  });
+}
+
+async function sendAccountCreatedSms(env, clientId, actorId) {
+  const client = await env.DB.prepare("SELECT id, full_name, phone_number, client_reference, assigned_branch_id FROM clients WHERE id=?")
+    .bind(clientId).first();
+  if (!client) return { skipped: true };
+  const template = await getSmsTemplate(env, "account_created");
+  const body = renderSmsTemplate(template ? template.body : "Welcome {name}. Your Bliss Legacy client reference is {reference}.", {
+    name: client.full_name, reference: client.client_reference
+  });
+  return enqueueSms(env, {
+    clientId: client.id,
+    templateKey: "account_created",
+    phone: client.phone_number,
+    body,
+    idempotencyKey: `client:${client.id}:account_created`,
+    createdBy: actorId || null
+  });
+}
+
+async function checkSmsLowBalance(env, settingsOverride) {
+  const settings = settingsOverride || await getSmsSettings(env);
+  if (settings.creditBalance === null || !Number.isFinite(Number(settings.creditBalance))) return { skipped: true };
+  if (Number(settings.creditBalance) > Number(settings.lowCreditThreshold)) return { ok: true, low: false };
+  const lastAlert = settings.lowBalanceAlertedAt ? new Date(settings.lowBalanceAlertedAt).getTime() : 0;
+  if (Date.now() - lastAlert < 24 * 3600 * 1000) return { ok: true, low: true, alerted: false };
+  const { results: recipients } = await env.DB.prepare(`
+    SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+    WHERE u.is_active=1 AND r.name IN ('Managing Director','Head Accountant','Super Admin')
+  `).all();
+  for (const recipient of recipients) {
+    await createNotification(env, {
+      userId: recipient.id,
+      type: "sms.low_credit",
+      title: "SMS credit is low",
+      message: `Remaining SMS credit is ${settings.creditCurrency} ${Number(settings.creditBalance).toLocaleString()}, below the threshold of ${settings.creditCurrency} ${Number(settings.lowCreditThreshold).toLocaleString()}. Please top up the provider account.`,
+      metadata: { balance: settings.creditBalance, threshold: settings.lowCreditThreshold }
+    });
+  }
+  await setSmsSetting(env, "sms_low_balance_alerted_at", new Date().toISOString(), null);
+  return { ok: true, low: true, alerted: true };
+}
+
+async function dispatchSmsSchedules(env) {
+  const settings = await getSmsSettings(env);
+  if (!settings.enabled) return;
+  const today = todayOnly();
+  const { results: schedules } = await env.DB.prepare(`
+    SELECT s.*, c.full_name, c.phone_number, c.client_reference, c.agreed_purchase_price,
+           COALESCE(prop.title, 'your property') AS property_title
+    FROM payment_schedules s
+    JOIN clients c ON c.id=s.client_id
+    LEFT JOIN properties prop ON prop.id=s.property_id
+    WHERE s.status='active' AND c.is_deleted=0
+  `).all();
+  for (const schedule of schedules) {
+    const { results: items } = await env.DB.prepare(
+      "SELECT * FROM payment_schedule_items WHERE schedule_id=? ORDER BY sequence_no"
+    ).bind(schedule.id).all();
+    if (!items.length) continue;
+    const paidRow = await env.DB.prepare(`
+      SELECT COALESCE(SUM(amount_kobo),0) AS paid FROM payments
+      WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+    `).bind(schedule.client_id).first();
+    const paidKobo = Number(paidRow ? paidRow.paid : 0);
+    const totalKobo = Number(schedule.total_kobo || toKobo(schedule.total_amount));
+    const balanceKobo = Math.max(0, totalKobo - paidKobo);
+    if (balanceKobo <= 0) continue;
+    const state = computeScheduleDefaulting(schedule, items, paidKobo, today);
+    if (settings.remindersEnabled && state.next_due_date && state.next_installment_kobo > 0) {
+      const daysUntil = diffDays(today, state.next_due_date);
+      if (daysUntil >= 0 && daysUntil <= settings.reminderDays) {
+        const template = await getSmsTemplate(env, "payment_reminder");
+        const body = renderSmsTemplate(template ? template.body : "Reminder: NGN {amount} is due on {due_date}. Bliss Legacy.", {
+          amount: fromKobo(state.next_installment_kobo).toLocaleString("en-NG"),
+          due_date: state.next_due_date,
+          property: schedule.property_title,
+          reference: schedule.client_reference
+        });
+        await enqueueSms(env, {
+          clientId: schedule.client_id, scheduleId: schedule.id, templateKey: "payment_reminder",
+          phone: schedule.phone_number, body, idempotencyKey: `reminder:${schedule.id}:${state.next_due_date}`
+        });
+      }
+    }
+    if (settings.defaultingRemindersEnabled && state.status === "defaulting" && state.amount_behind_kobo > 0) {
+      const last = await env.DB.prepare(`
+        SELECT sent_at, created_at FROM sms_messages WHERE schedule_id=? AND template_key='defaulting_reminder'
+        ORDER BY id DESC LIMIT 1
+      `).bind(schedule.id).first();
+      const lastAt = last ? parseDbDate(last.sent_at || last.created_at).getTime() : 0;
+      if (Date.now() - lastAt >= settings.defaultingFrequencyDays * 86400000) {
+        const template = await getSmsTemplate(env, "defaulting_reminder");
+        const body = renderSmsTemplate(template ? template.body : "{days} day(s) overdue: NGN {amount} behind on {property}.", {
+          days: state.days_overdue,
+          amount: fromKobo(state.amount_behind_kobo).toLocaleString("en-NG"),
+          property: schedule.property_title,
+          reference: schedule.client_reference
+        });
+        await enqueueSms(env, {
+          clientId: schedule.client_id, scheduleId: schedule.id, templateKey: "defaulting_reminder",
+          phone: schedule.phone_number, body, idempotencyKey: `defaulting:${schedule.id}:${today}`
+        });
+      }
+    }
+    if (Number(today.slice(8, 10)) === settings.statementDay) {
+      const template = await getSmsTemplate(env, "monthly_statement");
+      const body = renderSmsTemplate(template ? template.body : "Paid NGN {paid} of NGN {total}; outstanding NGN {balance}. Next due {next_due}.", {
+        paid: fromKobo(paidKobo).toLocaleString("en-NG"),
+        total: fromKobo(totalKobo).toLocaleString("en-NG"),
+        balance: fromKobo(balanceKobo).toLocaleString("en-NG"),
+        next_due: state.next_due_date || "none",
+        property: schedule.property_title,
+        reference: schedule.client_reference
+      });
+      await enqueueSms(env, {
+        clientId: schedule.client_id, scheduleId: schedule.id, templateKey: "monthly_statement",
+        phone: schedule.phone_number, body, idempotencyKey: `statement:${schedule.id}:${today.slice(0, 7)}`
+      });
+    }
+  }
+}
+
 
 async function dispatchPaymentReminders(env) {
   const { results: schedules } = await env.DB.prepare(`
@@ -3150,7 +3682,7 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const body = await request.json();
       const {
-        full_name, email, phone_number, password, interested_property_id,
+        full_name, email, phone_number, password, interested_property_id, property_plan_id, plan_start_date,
         alternate_phone, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
         next_of_kin_address, referral_code
       } = body || {};
@@ -3163,6 +3695,8 @@ export default {
       if (!/^[+0-9()\s-]{7,25}$/.test(String(phone_number).trim())) {
         return json({ error: "A valid phone number is required" }, 400);
       }
+      const signupPhone = normalizeNigerianPhone(phone_number);
+      if (!signupPhone) return json({ error: "A valid Nigerian phone number is required" }, 400);
       if (alternate_phone && !/^[+0-9()\s-]{7,25}$/.test(String(alternate_phone).trim())) {
         return json({ error: "Alternate phone number is invalid" }, 400);
       }
@@ -3173,7 +3707,7 @@ export default {
         return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
       }
       const normalizedEmail = String(email).trim().toLowerCase();
-      const normalizedPhone = String(phone_number).trim();
+      const normalizedPhone = signupPhone;
       const signupIp = clientIp(request);
       if (await recentAuditCount(env, "signup.attempt", `ip:${signupIp}`, 60) >= 5) {
         return json({ error: "Too many registration attempts. Please try again later." }, 429);
@@ -3187,7 +3721,7 @@ export default {
       if (existingUser) return json({ error: "An account with this email already exists" }, 409);
       const existingClient = await env.DB.prepare(
         "SELECT id FROM clients WHERE (LOWER(email_address)=? OR phone_number=?) AND is_deleted=0 LIMIT 1"
-      ).bind(normalizedEmail, normalizedPhone).first();
+      ).bind(normalizedEmail, signupPhone).first();
       if (existingClient) return json({ error: "A client record with this email or phone already exists" }, 409);
 
       const system = await env.DB.prepare(`
@@ -3208,9 +3742,15 @@ export default {
       if (!resolvedBranch) return json({ error: "No branch is available for registration" }, 503);
 
       let propertyId = interested_property_id ? Number(interested_property_id) : null;
+      let signupPlan = null;
       if (propertyId) {
         const property = await env.DB.prepare("SELECT id FROM properties WHERE id=? AND is_published=1").bind(propertyId).first();
         if (!property) return json({ error: "Selected property is not available" }, 400);
+        const planResult = await resolvePropertyPlanForPurchase(env, propertyId, property_plan_id ? Number(property_plan_id) : null);
+        if (planResult.error) return json({ error: planResult.error, plans: planResult.plans || [] }, 400);
+        signupPlan = planResult.plan;
+      } else if (property_plan_id) {
+        return json({ error: "A property is required before selecting a payment plan" }, 400);
       }
 
       const clientRole = await env.DB.prepare("SELECT id FROM roles WHERE name='Client'").first();
@@ -3230,17 +3770,25 @@ export default {
           next_of_kin_relationship, next_of_kin_address, notes, status,
           sale_type, assigned_branch_id, created_by, original_marketer_id, team_lead_id,
           agreed_purchase_price, interested_property_id, referral_code_used, referred_by_staff_id, user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Prospect', 'New Sale', ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Prospect', 'New Sale', ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         clientRef, String(full_name).trim(), normalizedPhone, alternate_phone || null, normalizedEmail,
         null, nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null,
         next_of_kin_relationship || null, next_of_kin_address || null,
         "Self-registered through the public client portal.", resolvedBranch,
         referrer ? referrer.id : system.id, attribution.originalMarketerId, attribution.teamLeadId,
-        propertyId, attribution.referralCodeUsed, attribution.referredByStaffId, userId
+        signupPlan ? fromKobo(Number(signupPlan.total_price_kobo || 0)) : null, propertyId,
+        attribution.referralCodeUsed, attribution.referredByStaffId, userId
       ).run();
       const clientId = clientRes.meta.last_row_id;
-      if (propertyId) await upsertClientPropertyAllocation(env, clientId, propertyId, 0, "Prospect");
+      if (propertyId) await upsertClientPropertyAllocation(env, clientId, propertyId, signupPlan ? fromKobo(Number(signupPlan.total_price_kobo || 0)) : 0, "Prospect");
+      if (signupPlan) {
+        await lockClientPurchasePlan(env, clientId, propertyId, signupPlan, "Prospect");
+        const schedule = await createScheduleFromPropertyPlan(env, {
+          id: clientId, interested_property_id: propertyId, assigned_branch_id: resolvedBranch
+        }, signupPlan, system.id, plan_start_date || todayOnly());
+        if (schedule.error) return json({ error: schedule.error }, 400);
+      }
       await env.DB.prepare(`
         INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by)
         VALUES (?, ?, ?, ?, ?)
@@ -3269,6 +3817,7 @@ export default {
         team_lead_id: attribution.teamLeadId,
         referred_by_staff_id: attribution.referredByStaffId
       }, userId);
+      await sendAccountCreatedSms(env, clientId, userId);
       const session = await createSession(env, userId);
       const cookie = `${SESSION_COOKIE}=${session.id}; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=${new Date(session.expires).toUTCString()}`;
       return json({
@@ -3430,6 +3979,9 @@ export default {
         referral_code: user.role_name !== "Client" ? user.referral_code : null,
         commission_access: Number(user.commission_access || 0) === 1,
         can_access_commissions: canAccessCommissions(user),
+        property_plans_access: Number(user.property_plans_access || 0) === 1,
+        sms_access: Number(user.sms_access || 0) === 1,
+        care_scope: user.care_scope || null,
         referral_link: user.role_name !== "Client" && user.referral_code
           ? `${new URL(request.url).origin}/signup?ref=${encodeURIComponent(user.referral_code)}`
           : null,
@@ -3795,21 +4347,28 @@ export default {
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
-      const { email, password, full_name, role_name, branch_name, branch_id, team_id } = body || {};
+      const { email, password, full_name, role_name, branch_name, branch_id, team_id, care_scope } = body || {};
       if (!email || !password || !full_name || !role_name) return json({ error: "Missing fields" }, 400);
       const allowedForBM = ["Team Lead", "Marketer", "Finance Officer", "Client"];
       if (actor.role_name === "Branch Manager" && !allowedForBM.includes(role_name)) return json({ error: "Forbidden role" }, 403);
       if (role_name === "Managing Director") return json({ error: "Cannot create MD" }, 403);
+      if (role_name === "Customer Care" && !["Managing Director", "Super Admin"].includes(actor.actual_role_name || actor.role_name)) {
+        return json({ error: "Only the MD or Super Admin can create customer care accounts" }, 403);
+      }
       const role = await env.DB.prepare("SELECT id FROM roles WHERE name=?").bind(role_name).first();
       if (!role) return json({ error: "Unknown role" }, 400);
+      const resolvedCareScope = role_name === "Customer Care"
+        ? (CARE_SCOPES.includes(String(care_scope || "").toLowerCase()) ? String(care_scope).toLowerCase() : "branch")
+        : null;
       let branchId = branch_id || null;
       if (!branchId && branch_name) {
         const branch = await env.DB.prepare("SELECT id FROM branches WHERE name=?").bind(branch_name).first();
         if (branch) branchId = branch.id;
       }
-      if (!branchId) return json({ error: "Branch is required" }, 400);
-      const branch = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(branchId).first();
-      if (!branch) return json({ error: "Unknown branch" }, 400);
+      if (resolvedCareScope === "national") branchId = null;
+      if (!branchId && resolvedCareScope !== "national") return json({ error: "Branch is required" }, 400);
+      const branch = branchId ? await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(branchId).first() : null;
+      if (branchId && !branch) return json({ error: "Unknown branch" }, 400);
       if (actor.role_name === "Branch Manager" && Number(branchId) !== actor.branch_id) {
         return json({ error: "Cross-branch forbidden" }, 403);
       }
@@ -3817,8 +4376,8 @@ export default {
       if (existing) return json({ error: "Email already used" }, 409);
       const hash = await hashPassword(password);
       const referralCode = await allocateReferralCode(env);
-      const res = await env.DB.prepare("INSERT INTO users (email, password_hash, full_name, role_id, branch_id, referral_code) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(email.toLowerCase(), hash, full_name, role.id, branchId, referralCode).run();
+      const res = await env.DB.prepare("INSERT INTO users (email, password_hash, full_name, role_id, branch_id, referral_code, care_scope) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(email.toLowerCase(), hash, full_name, role.id, branchId, referralCode, resolvedCareScope).run();
       const newId = res.meta.last_row_id;
       if (role_name === "Marketer" && team_id) {
         const team = await env.DB.prepare("SELECT id, branch_id FROM teams WHERE id=?").bind(team_id).first();
@@ -3989,7 +4548,93 @@ export default {
         const result = await env.DB.prepare("SELECT id, r2_key, filename FROM property_documents WHERE property_id=?").bind(id).all();
         documents = result.results;
       }
-      return json({ property: prop, images, documents });
+      const planWhere = canManagePropertyPlans(actor) ? "" : " AND is_enabled=1";
+      const { results: paymentPlans } = await env.DB.prepare(`
+        SELECT * FROM property_payment_plans WHERE property_id=?${planWhere}
+        ORDER BY CASE plan_type WHEN 'outright' THEN 1 WHEN 'part_payment' THEN 2 WHEN 'daily' THEN 3
+          WHEN 'weekly' THEN 4 WHEN 'bi_monthly' THEN 5 WHEN 'monthly' THEN 6 ELSE 7 END
+      `).bind(id).all();
+      return json({ property: prop, images, documents, payment_plans: paymentPlans });
+    }
+
+    const propertyPlansMatch = path.match(/^\/api\/properties\/(\d+)\/payment-plans$/);
+    if (propertyPlansMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      const propertyId = propertyPlansMatch[1];
+      const property = await env.DB.prepare("SELECT id, branch_id, is_published FROM properties WHERE id=?").bind(propertyId).first();
+      if (!property) return json({ error: "Property not found" }, 404);
+      if ((!actor || actor.role_name === "Client") && !property.is_published) return json({ error: "Not found" }, 404);
+      const includeDisabled = canManagePropertyPlans(actor) && url.searchParams.get("all") === "1";
+      const { results } = await env.DB.prepare(`
+        SELECT * FROM property_payment_plans WHERE property_id=?${includeDisabled ? "" : " AND is_enabled=1"}
+        ORDER BY CASE plan_type WHEN 'outright' THEN 1 WHEN 'part_payment' THEN 2 WHEN 'daily' THEN 3
+          WHEN 'weekly' THEN 4 WHEN 'bi_monthly' THEN 5 WHEN 'monthly' THEN 6 ELSE 7 END
+      `).bind(propertyId).all();
+      return json({
+        property_id: Number(propertyId),
+        plans: results.map(plan => ({ ...plan, plan_type: normalizePlanType(plan.plan_type), is_easy_buy: isEasyBuyPlan(plan.plan_type) }))
+      });
+    }
+
+    if (propertyPlansMatch && request.method === "PUT") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManagePropertyPlans(actor)) return json({ error: "Property plan management access is required" }, 403);
+      const propertyId = propertyPlansMatch[1];
+      const property = await env.DB.prepare("SELECT id, branch_id FROM properties WHERE id=?").bind(propertyId).first();
+      if (!property) return json({ error: "Property not found" }, 404);
+      const body = await request.json();
+      if (!Array.isArray(body.plans)) return json({ error: "A plans array is required" }, 400);
+      const seen = new Set();
+      for (const raw of body.plans) {
+        const planType = normalizePlanType(raw.plan_type, null);
+        if (!planType || !PAYMENT_PLAN_TYPES.includes(planType)) return json({ error: "Invalid payment plan type" }, 400);
+        if (seen.has(planType)) return json({ error: `Duplicate plan type: ${planType}` }, 400);
+        seen.add(planType);
+        const totalKobo = raw.total_price_kobo !== undefined ? Number(raw.total_price_kobo) : toKobo(raw.total_price);
+        const depositKobo = raw.deposit_kobo !== undefined ? Number(raw.deposit_kobo) : toKobo(raw.deposit || 0);
+        let installmentKobo = raw.installment_kobo !== undefined ? Number(raw.installment_kobo) : toKobo(raw.installment || 0);
+        const durationMonths = raw.duration_months === undefined || raw.duration_months === null || raw.duration_months === ""
+          ? null : Number(raw.duration_months);
+        const number = raw.number_of_installments === undefined || raw.number_of_installments === null || raw.number_of_installments === ""
+          ? null : Number(raw.number_of_installments);
+        if (!Number.isInteger(totalKobo) || totalKobo <= 0) return json({ error: "Plan total price must be positive" }, 400);
+        if (!Number.isInteger(depositKobo) || depositKobo < 0 || depositKobo > totalKobo) return json({ error: "Plan deposit is invalid" }, 400);
+        if (durationMonths !== null && (!Number.isInteger(durationMonths) || durationMonths < 0 || durationMonths > 120)) {
+          return json({ error: "Plan duration must be between 0 and 120 months" }, 400);
+        }
+        if (number !== null && (!Number.isInteger(number) || number < 1 || number > 1000)) {
+          return json({ error: "Plan number of instalments must be between 1 and 1000" }, 400);
+        }
+        if (planType === "outright") {
+          installmentKobo = totalKobo;
+        } else if ((!Number.isFinite(installmentKobo) || installmentKobo < 0) && !number) {
+          return json({ error: "Non-outright plans need an instalment amount or number of instalments" }, 400);
+        }
+        await env.DB.prepare(`
+          INSERT INTO property_payment_plans
+            (property_id, plan_type, total_price_kobo, deposit_kobo, installment_kobo,
+             duration_months, number_of_installments, is_enabled, notes, created_by, updated_by, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(property_id, plan_type) DO UPDATE SET
+            total_price_kobo=excluded.total_price_kobo, deposit_kobo=excluded.deposit_kobo,
+            installment_kobo=excluded.installment_kobo, duration_months=excluded.duration_months,
+            number_of_installments=excluded.number_of_installments, is_enabled=excluded.is_enabled,
+            notes=excluded.notes, updated_by=excluded.updated_by, updated_at=datetime('now')
+        `).bind(
+          propertyId, planType, totalKobo, depositKobo, installmentKobo,
+          durationMonths, number, isTruthy(raw.is_enabled) || raw.is_enabled === undefined ? 1 : 0,
+          raw.notes || null, actor.id, actor.id
+        ).run();
+      }
+      await audit(env, actor.id, "property.payment_plans.update", "property", String(propertyId), {
+        plans: body.plans.map(plan => normalizePlanType(plan.plan_type))
+      }, property.branch_id);
+      const { results } = await env.DB.prepare(
+        "SELECT * FROM property_payment_plans WHERE property_id=? ORDER BY plan_type"
+      ).bind(propertyId).all();
+      return json({ ok: true, plans: results });
     }
 
     // ---- Create property (Phase 3) ----
@@ -4394,9 +5039,12 @@ export default {
         full_name, phone_number, alternate_phone, email_address, residential_address, state, city,
         next_of_kin, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
         next_of_kin_address, notes, preferred_channel, status, assigned_branch_id,
-        agreed_purchase_price, interested_property_id, sale_type, referral_code
+        agreed_purchase_price, interested_property_id, sale_type, referral_code, property_plan_id,
+        plan_start_date
       } = body || {};
       if (!full_name || !phone_number) return json({ error: "Full name and phone number required" }, 400);
+      const normalizedPhone = normalizeNigerianPhone(phone_number);
+      if (!normalizedPhone) return json({ error: "A valid Nigerian phone number is required" }, 400);
       if (alternate_phone && !/^[+0-9()\s-]{7,25}$/.test(String(alternate_phone).trim())) {
         return json({ error: "Alternate phone number is invalid" }, 400);
       }
@@ -4424,16 +5072,29 @@ export default {
       const branch = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(resolvedBranchId).first();
       if (!branch) return json({ error: "Branch not found" }, 400);
 
-      if (agreed_purchase_price !== undefined && agreed_purchase_price !== null && agreed_purchase_price !== "") {
+      let purchasePlan = null;
+      if (interested_property_id) {
+        const planResult = await resolvePropertyPlanForPurchase(env, Number(interested_property_id), property_plan_id ? Number(property_plan_id) : null);
+        if (planResult.error) return json({ error: planResult.error, plans: planResult.plans || [] }, 400);
+        purchasePlan = planResult.plan;
+      } else if (property_plan_id) {
+        return json({ error: "A property is required before selecting a payment plan" }, 400);
+      }
+
+      let normalizedAgreedPrice = null;
+      if (purchasePlan) {
+        normalizedAgreedPrice = fromKobo(Number(purchasePlan.total_price_kobo || 0));
+      } else if (agreed_purchase_price !== undefined && agreed_purchase_price !== null && agreed_purchase_price !== "") {
         if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) {
           return json({ error: "Only a Managing Director or Branch Manager can establish a contract price" }, 403);
         }
         const price = Number(agreed_purchase_price);
         if (!Number.isFinite(price) || price < 0) return json({ error: "Agreed purchase price is invalid" }, 400);
+        normalizedAgreedPrice = price;
       }
 
       const dup = await env.DB.prepare("SELECT id FROM clients WHERE phone_number = ? AND assigned_branch_id = ? AND is_deleted = 0 LIMIT 1")
-        .bind(phone_number, resolvedBranchId).first();
+        .bind(normalizedPhone, resolvedBranchId).first();
       if (dup) return json({ error: "A client with this phone number already exists in this branch" }, 409);
 
       const referrer = referral_code ? await resolveReferralStaff(env, referral_code) : actor;
@@ -4442,14 +5103,22 @@ export default {
         .filter(Boolean).join(" ").trim() || next_of_kin || null;
       const ref = "BLC-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
       const teamLeadId = actor.role_name === "Team Lead" ? actor.id : null;
-      const agreedPrice = agreed_purchase_price === undefined || agreed_purchase_price === null || agreed_purchase_price === ""
-        ? null : Number(agreed_purchase_price);
+      const agreedPrice = normalizedAgreedPrice;
 
       const res = await env.DB.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, alternate_phone, email_address, residential_address, state, city, next_of_kin, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship, next_of_kin_address, notes, preferred_channel, status, assigned_branch_id, created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id, sale_type, referral_code_used, referred_by_staff_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .bind(ref, full_name, phone_number, alternate_phone || null, email_address || null, residential_address || null, state || null, city || null, nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null, next_of_kin_relationship || null, next_of_kin_address || null, notes || null, preferred_channel || null, status || "Prospect", resolvedBranchId, actor.id, actor.id, teamLeadId, agreedPrice, interested_property_id || null, resolvedSaleType, referrer ? referrer.referral_code : null, referrer ? referrer.id : null).run();
+        .bind(ref, full_name, normalizedPhone, alternate_phone || null, email_address || null, residential_address || null, state || null, city || null, nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null, next_of_kin_relationship || null, next_of_kin_address || null, notes || null, preferred_channel || null, status || "Prospect", resolvedBranchId, actor.id, actor.id, teamLeadId, agreedPrice, interested_property_id || null, resolvedSaleType, referrer ? referrer.referral_code : null, referrer ? referrer.id : null).run();
       const newId = res.meta.last_row_id;
       if (interested_property_id) {
         await upsertClientPropertyAllocation(env, newId, Number(interested_property_id), agreedPrice || 0, status || "Prospect");
+      }
+      let createdScheduleId = null;
+      if (purchasePlan) {
+        await lockClientPurchasePlan(env, newId, Number(interested_property_id), purchasePlan, status || "Prospect");
+        const schedule = await createScheduleFromPropertyPlan(env, {
+          id: newId, interested_property_id: Number(interested_property_id), assigned_branch_id: resolvedBranchId
+        }, purchasePlan, actor.id, plan_start_date || todayOnly());
+        if (schedule.error) return json({ error: schedule.error }, 400);
+        createdScheduleId = schedule.id;
       }
 
       await env.DB.prepare("INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by) VALUES (?, ?, ?, ?, ?)")
@@ -4470,11 +5139,12 @@ export default {
         team_lead_id: teamLeadId,
         referred_by_staff_id: referrer ? referrer.id : actor.id
       }, actor.id);
+      await sendAccountCreatedSms(env, newId, actor.id);
       if (env.TASKS && typeof env.TASKS.send === "function") {
         await env.TASKS.send({ type: "client.registered", client_id: newId }).catch(() => {});
       }
 
-      return json({ ok: true, id: newId, client_reference: ref });
+      return json({ ok: true, id: newId, client_reference: ref, schedule_id: createdScheduleId });
     }
 
     // ---- Client details (Phase 4) ----
@@ -4595,6 +5265,11 @@ export default {
         if (body[field] && !/^[+0-9()\s-]{7,25}$/.test(String(body[field]).trim())) {
           return json({ error: `${field.replace(/_/g, " ")} is invalid` }, 400);
         }
+      }
+      if (body.phone_number !== undefined) {
+        const normalized = normalizeNigerianPhone(body.phone_number);
+        if (!normalized) return json({ error: "A valid Nigerian phone number is required" }, 400);
+        body.phone_number = normalized;
       }
       const fields = ["full_name", "phone_number", "alternate_phone", "email_address", "residential_address",
         "state", "city", "next_of_kin", "next_of_kin_name", "next_of_kin_phone",
@@ -6008,6 +6683,7 @@ export default {
         metadata: { payment_id: payment.id, receipt_ref: receiptRef, transaction_ref: payment.transaction_ref }
       });
       await notifyPaymentVerified(env, payment, actor.id);
+      await sendPaymentReceivedSms(env, payment.id);
 
       return json({ ok: true, receipt_ref: receiptRef, remaining_balance_kobo: remainingKobo });
     }
@@ -6404,6 +7080,7 @@ export default {
         metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, order_id: orderId, source: "alatpay" }
       });
       await notifyPaymentVerified(env, payment, null);
+      await sendPaymentReceivedSms(env, payment.id);
       await audit(env, null, "webhook.received", "payment", String(payment.id), {
         event_id: eventId, order_id: orderId, transaction_id: transactionId, result: "verified"
       });
@@ -6547,6 +7224,7 @@ export default {
         metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, transaction_ref: payment.transaction_ref, source: "webhook" }
       });
       await notifyPaymentVerified(env, payment, null);
+      await sendPaymentReceivedSms(env, payment.id);
 
       await recordEvent("verified", payment.id);
       return json({ ok: true, status: "verified", receipt_ref: receipt.receipt_ref });
@@ -6699,6 +7377,7 @@ export default {
         metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, provider: providerKey }
       });
       await notifyPaymentVerified(env, payment, null);
+      await sendPaymentReceivedSms(env, payment.id);
       await audit(env, null, "webhook.received", "payment", String(payment.id), {
         provider: providerKey, event_id: event.eventId, reference: event.reference, result: "verified"
       });
@@ -7302,6 +7981,443 @@ export default {
     }
 
     // =========================================================================
+    // CUSTOMER CARE — branch-level and national scopes
+    // =========================================================================
+    function isCustomerCare(actor) {
+      return (actor.actual_role_name || actor.role_name) === "Customer Care";
+    }
+
+    async function careClientForActor(actor, clientId) {
+      const scope = careScopeSql(actor, "c");
+      return env.DB.prepare(`
+        SELECT c.*, b.name AS branch_name,
+               COALESCE(cc.care_status, 'pending_clearance') AS care_status,
+               cc.clearance_note, cc.cleared_at, cc.last_call_at, cc.next_follow_up_date,
+               cc.assigned_user_id, u.full_name AS assigned_user_name
+        FROM clients c
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        LEFT JOIN client_care_records cc ON cc.client_id=c.id
+        LEFT JOIN users u ON u.id=cc.assigned_user_id
+        WHERE c.id=? AND c.is_deleted=0 AND ${scope.clause}
+      `).bind(clientId, ...scope.binds).first();
+    }
+
+    if (path === "/api/customer-care/overview" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isCustomerCare(actor)) return json({ error: "Customer care access is required" }, 403);
+      const scope = careScopeSql(actor, "c");
+      const pending = await env.DB.prepare(`
+        SELECT COUNT(*) AS c FROM clients c
+        LEFT JOIN client_care_records cc ON cc.client_id=c.id
+        WHERE c.is_deleted=0 AND COALESCE(cc.care_status,'pending_clearance')='pending_clearance' AND ${scope.clause}
+      `).bind(...scope.binds).first();
+      const cleared = await env.DB.prepare(`
+        SELECT COUNT(*) AS c FROM clients c
+        JOIN client_care_records cc ON cc.client_id=c.id
+        WHERE c.is_deleted=0 AND cc.care_status='cleared' AND ${scope.clause}
+      `).bind(...scope.binds).first();
+      const callsToday = await env.DB.prepare(`
+        SELECT COUNT(*) AS c FROM client_care_calls call
+        JOIN clients c ON c.id=call.client_id
+        WHERE date(call.created_at)=date('now') AND ${scope.clause}
+      `).bind(...scope.binds).first();
+      const total = await env.DB.prepare(`SELECT COUNT(*) AS c FROM clients c WHERE c.is_deleted=0 AND ${scope.clause}`)
+        .bind(...scope.binds).first();
+      return json({
+        scope: String(actor.care_scope || "branch").toLowerCase(),
+        branch_id: actor.branch_id,
+        branch_name: actor.branch_name || null,
+        pending_clearance: Number(pending ? pending.c : 0),
+        cleared: Number(cleared ? cleared.c : 0),
+        calls_today: Number(callsToday ? callsToday.c : 0),
+        total_clients: Number(total ? total.c : 0)
+      });
+    }
+
+    if (path === "/api/customer-care/clients" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isCustomerCare(actor)) return json({ error: "Customer care access is required" }, 403);
+      const scope = careScopeSql(actor, "c");
+      const clauses = ["c.is_deleted=0", scope.clause];
+      const binds = [...scope.binds];
+      const status = url.searchParams.get("status");
+      if (["pending_clearance", "cleared"].includes(status)) {
+        clauses.push("COALESCE(cc.care_status,'pending_clearance')=?"); binds.push(status);
+      }
+      const q = url.searchParams.get("q");
+      if (q) {
+        clauses.push("(c.full_name LIKE ? OR c.client_reference LIKE ? OR c.phone_number LIKE ?)");
+        binds.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      }
+      const branchId = url.searchParams.get("branch_id");
+      if (branchId && String(actor.care_scope || "").toLowerCase() === "national") {
+        clauses.push("c.assigned_branch_id=?"); binds.push(Number(branchId));
+      }
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+      const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "20", 10)));
+      const offset = (page - 1) * limit;
+      const whereSql = "WHERE " + clauses.join(" AND ");
+      const { results } = await env.DB.prepare(`
+        SELECT c.id, c.client_reference, c.full_name, c.phone_number, c.email_address, c.status,
+               c.assigned_branch_id, b.name AS branch_name, c.created_at, c.agreed_purchase_price,
+               COALESCE(cc.care_status,'pending_clearance') AS care_status,
+               cc.clearance_note, cc.cleared_at, cc.last_call_at, cc.next_follow_up_date,
+               cc.assigned_user_id, u.full_name AS assigned_user_name,
+               (SELECT COUNT(*) FROM client_care_calls call WHERE call.client_id=c.id) AS call_count
+        FROM clients c
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        LEFT JOIN client_care_records cc ON cc.client_id=c.id
+        LEFT JOIN users u ON u.id=cc.assigned_user_id
+        ${whereSql}
+        ORDER BY CASE COALESCE(cc.care_status,'pending_clearance') WHEN 'pending_clearance' THEN 0 ELSE 1 END,
+                 c.created_at DESC
+        LIMIT ? OFFSET ?
+      `).bind(...binds, limit, offset).all();
+      const count = await env.DB.prepare(`
+        SELECT COUNT(*) AS c FROM clients c LEFT JOIN client_care_records cc ON cc.client_id=c.id ${whereSql}
+      `).bind(...binds).first();
+      return json({ clients: results, pagination: { page, limit, total: Number(count ? count.c : 0) } });
+    }
+
+    const careClientMatch = path.match(/^\/api\/customer-care\/clients\/(\d+)$/);
+    if (careClientMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isCustomerCare(actor)) return json({ error: "Customer care access is required" }, 403);
+      const client = await careClientForActor(actor, careClientMatch[1]);
+      if (!client) return json({ error: "Client not found in your care scope" }, 404);
+      const { results: calls } = await env.DB.prepare(`
+        SELECT call.*, u.full_name AS care_user_name FROM client_care_calls call
+        LEFT JOIN users u ON u.id=call.care_user_id
+        WHERE call.client_id=? ORDER BY call.created_at DESC, call.id DESC
+      `).bind(client.id).all();
+      const { results: payments } = await env.DB.prepare(`
+        SELECT id, transaction_ref, amount_kobo, status, verified_at, method FROM payments
+        WHERE client_id=? ORDER BY id DESC LIMIT 10
+      `).bind(client.id).all();
+      return json({ client, calls, payments });
+    }
+
+    const careClearanceMatch = path.match(/^\/api\/customer-care\/clients\/(\d+)\/clearance$/);
+    if (careClearanceMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isCustomerCare(actor)) return json({ error: "Customer care access is required" }, 403);
+      const client = await careClientForActor(actor, careClearanceMatch[1]);
+      if (!client) return json({ error: "Client not found in your care scope" }, 404);
+      const body = await request.json();
+      const status = body.status || "cleared";
+      if (!["pending_clearance", "cleared"].includes(status)) return json({ error: "Invalid care status" }, 400);
+      const note = body.note ? String(body.note).trim() : null;
+      const existing = await env.DB.prepare("SELECT * FROM client_care_records WHERE client_id=?").bind(client.id).first();
+      if (existing) {
+        await env.DB.prepare(`
+          UPDATE client_care_records SET care_status=?, clearance_note=?, cleared_by=?, cleared_at=?,
+            updated_by=?, updated_at=datetime('now') WHERE client_id=?
+        `).bind(status, note, status === "cleared" ? actor.id : null,
+          status === "cleared" ? new Date().toISOString() : null, actor.id, client.id).run();
+      } else {
+        await env.DB.prepare(`
+          INSERT INTO client_care_records (client_id, care_status, assigned_user_id, clearance_note,
+            cleared_by, cleared_at, updated_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).bind(client.id, status, actor.id, note,
+          status === "cleared" ? actor.id : null,
+          status === "cleared" ? new Date().toISOString() : null, actor.id).run();
+      }
+      await audit(env, actor.id, "customer_care.clearance", "client", String(client.id), { status, note }, client.assigned_branch_id);
+      return json({ ok: true, care_status: status });
+    }
+
+    const careCallMatch = path.match(/^\/api\/customer-care\/clients\/(\d+)\/calls$/);
+    if (careCallMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isCustomerCare(actor)) return json({ error: "Customer care access is required" }, 403);
+      const client = await careClientForActor(actor, careCallMatch[1]);
+      if (!client) return json({ error: "Client not found in your care scope" }, 404);
+      const { results } = await env.DB.prepare(`
+        SELECT call.*, u.full_name AS care_user_name FROM client_care_calls call
+        LEFT JOIN users u ON u.id=call.care_user_id
+        WHERE call.client_id=? ORDER BY call.created_at DESC, call.id DESC
+      `).bind(client.id).all();
+      return json({ calls: results });
+    }
+
+    if (careCallMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isCustomerCare(actor)) return json({ error: "Customer care access is required" }, 403);
+      const client = await careClientForActor(actor, careCallMatch[1]);
+      if (!client) return json({ error: "Client not found in your care scope" }, 404);
+      const body = await request.json();
+      const note = String(body.note || "").trim();
+      if (!note) return json({ error: "Call note is required" }, 400);
+      if (note.length > 4000) return json({ error: "Call note is too long" }, 400);
+      const callType = CARE_CALL_TYPES.includes(body.call_type) ? body.call_type : "call";
+      const nextDate = body.next_follow_up_date ? dateOnly(body.next_follow_up_date) : null;
+      if (body.next_follow_up_date && !nextDate) return json({ error: "Invalid next follow-up date" }, 400);
+      const res = await env.DB.prepare(`
+        INSERT INTO client_care_calls (client_id, care_user_id, call_type, note, outcome, next_follow_up_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(client.id, actor.id, callType, note, body.outcome ? String(body.outcome).trim() : null, nextDate).run();
+      await env.DB.prepare(`
+        INSERT INTO client_care_records (client_id, care_status, assigned_user_id, last_call_at, next_follow_up_date, updated_by)
+        VALUES (?, COALESCE((SELECT care_status FROM client_care_records WHERE client_id=?), 'pending_clearance'), ?, datetime('now'), ?, ?)
+        ON CONFLICT(client_id) DO UPDATE SET assigned_user_id=excluded.assigned_user_id,
+          last_call_at=datetime('now'), next_follow_up_date=excluded.next_follow_up_date,
+          updated_by=excluded.updated_by, updated_at=datetime('now')
+      `).bind(client.id, client.id, actor.id, nextDate, actor.id).run();
+      await audit(env, actor.id, "customer_care.call", "client", String(client.id), {
+        call_id: res.meta.last_row_id, call_type: callType, next_follow_up_date: nextDate
+      }, client.assigned_branch_id);
+      return json({ ok: true, id: res.meta.last_row_id });
+    }
+
+    // =========================================================================
+    // SMS DELIVERY, TEMPLATES, CONTROLS AND DELIVERY LOG
+    // =========================================================================
+    function smsScopeSql(actor, alias = "c") {
+      const actual = actor.actual_role_name || actor.role_name;
+      if (["Super Admin", "Managing Director", "Head Accountant", "Finance Officer"].includes(actual)) return { clause: "1=1", binds: [] };
+      if (actual === "Customer Care") return careScopeSql(actor, alias);
+      if (["Project Manager", "Branch Manager"].includes(actual)) return { clause: `${alias}.assigned_branch_id = ?`, binds: [actor.branch_id] };
+      if (actual === "Team Lead") {
+        return {
+          clause: `(${alias}.team_lead_id=? OR ${alias}.created_by IN (SELECT user_id FROM team_members tm JOIN teams t ON t.id=tm.team_id WHERE t.team_lead_user_id=? AND t.is_active=1))`,
+          binds: [actor.id, actor.id]
+        };
+      }
+      return { clause: `${alias}.created_by = ?`, binds: [actor.id] };
+    }
+
+    if (path === "/api/sms/overview" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const settings = await getSmsSettings(env);
+      const scope = smsScopeSql(actor, "c");
+      const counts = await env.DB.prepare(`
+        SELECT s.status, COUNT(*) AS c FROM sms_messages s
+        LEFT JOIN clients c ON c.id=s.client_id
+        WHERE ${scope.clause} GROUP BY s.status
+      `).bind(...scope.binds).all();
+      const totals = {};
+      for (const row of counts.results) totals[row.status] = Number(row.c || 0);
+      const providerReady = settings.provider === "mock"
+        || (settings.provider === "termii" && Boolean(env.TERMII_API_KEY))
+        || (settings.provider === "africastalking" && Boolean(env.AFRICASTALKING_API_KEY && env.AFRICASTALKING_USERNAME));
+      return json({
+        enabled: settings.enabled,
+        provider: settings.provider,
+        provider_ready: providerReady,
+        sender_id: settings.senderId,
+        balance: settings.creditBalance,
+        balance_currency: settings.creditCurrency,
+        balance_checked_at: settings.creditCheckedAt,
+        low_credit_threshold: settings.lowCreditThreshold,
+        low_credit: settings.creditBalance !== null && Number(settings.creditBalance) <= Number(settings.lowCreditThreshold),
+        reminders_enabled: settings.remindersEnabled,
+        defaulting_reminders_enabled: settings.defaultingRemindersEnabled,
+        reminder_days: settings.reminderDays,
+        defaulting_frequency_days: settings.defaultingFrequencyDays,
+        statement_day: settings.statementDay,
+        counts: totals,
+        scope: (actor.actual_role_name || actor.role_name)
+      });
+    }
+
+    if (path === "/api/sms/messages" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const scope = smsScopeSql(actor, "c");
+      const clauses = [scope.clause];
+      const binds = [...scope.binds];
+      const status = url.searchParams.get("status");
+      if (status) { clauses.push("s.status=?"); binds.push(status); }
+      const templateKey = url.searchParams.get("template_key");
+      if (templateKey) { clauses.push("s.template_key=?"); binds.push(templateKey); }
+      const clientId = url.searchParams.get("client_id");
+      if (clientId) { clauses.push("s.client_id=?"); binds.push(Number(clientId)); }
+      const from = dateOnly(url.searchParams.get("from"));
+      const to = dateOnly(url.searchParams.get("to"));
+      if (from) { clauses.push("date(s.created_at) >= date(?)"); binds.push(from); }
+      if (to) { clauses.push("date(s.created_at) <= date(?)"); binds.push(to); }
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+      const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "20", 10)));
+      const offset = (page - 1) * limit;
+      const whereSql = "WHERE " + clauses.join(" AND ");
+      const { results } = await env.DB.prepare(`
+        SELECT s.*, c.full_name AS client_name, c.client_reference, c.assigned_branch_id, b.name AS branch_name
+        FROM sms_messages s
+        LEFT JOIN clients c ON c.id=s.client_id
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        ${whereSql} ORDER BY s.id DESC LIMIT ? OFFSET ?
+      `).bind(...binds, limit, offset).all();
+      const count = await env.DB.prepare(`
+        SELECT COUNT(*) AS c FROM sms_messages s LEFT JOIN clients c ON c.id=s.client_id ${whereSql}
+      `).bind(...binds).first();
+      return json({ messages: results, pagination: { page, limit, total: Number(count ? count.c : 0) } });
+    }
+
+    if (path === "/api/sms/templates" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const { results } = await env.DB.prepare("SELECT * FROM sms_templates ORDER BY template_key").all();
+      return json({ templates: results, placeholders: ["{name}", "{amount}", "{balance}", "{paid}", "{total}", "{property}", "{date}", "{reference}", "{due_date}", "{next_due}", "{days}"] });
+    }
+
+    const smsTemplateMatch = path.match(/^\/api\/sms\/templates\/([a-z0-9_]+)$/);
+    if (smsTemplateMatch && request.method === "PUT") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const existing = await env.DB.prepare("SELECT * FROM sms_templates WHERE template_key=?").bind(smsTemplateMatch[1]).first();
+      if (!existing) return json({ error: "SMS template not found" }, 404);
+      const body = await request.json();
+      const name = body.name !== undefined ? String(body.name).trim() : existing.name;
+      const text = body.body !== undefined ? String(body.body).trim() : existing.body;
+      if (!name || !text) return json({ error: "Template name and body are required" }, 400);
+      if (text.length > 1000) return json({ error: "Template body is too long" }, 400);
+      const language = ["en", "pcm", "yo", "ig", "ha"].includes(body.language) ? body.language : existing.language;
+      const active = body.is_active === undefined ? existing.is_active : (isTruthy(body.is_active) ? 1 : 0);
+      await env.DB.prepare(`
+        UPDATE sms_templates SET name=?, body=?, language=?, is_active=?, updated_by=?, updated_at=datetime('now')
+        WHERE template_key=?
+      `).bind(name, text, language, active, actor.id, existing.template_key).run();
+      await audit(env, actor.id, "sms.template.update", "sms_template", String(existing.id), {
+        template_key: existing.template_key, language, active
+      }, null);
+      return json({ ok: true });
+    }
+
+    if (path === "/api/sms/settings" && request.method === "PUT") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const body = await request.json();
+      const booleanKeys = ["sms_enabled", "sms_reminders_enabled", "sms_defaulting_reminders_enabled"];
+      const numberKeys = {
+        sms_low_credit_threshold: { min: 0, max: 100000000 },
+        sms_reminder_days: { min: 0, max: 60 },
+        sms_defaulting_frequency_days: { min: 1, max: 60 },
+        sms_statement_day: { min: 1, max: 28 }
+      };
+      if (body.sms_provider !== undefined && !["termii", "africastalking", "mock"].includes(String(body.sms_provider))) {
+        return json({ error: "Invalid SMS provider" }, 400);
+      }
+      if (String(body.sms_provider) === "mock" && String(env.ENVIRONMENT || "").toLowerCase() === "production") {
+        return json({ error: "Mock SMS provider is disabled in production" }, 400);
+      }
+      for (const key of booleanKeys) {
+        if (body[key] !== undefined) await setSmsSetting(env, key, isTruthy(body[key]) ? "1" : "0", actor.id);
+      }
+      for (const [key, rule] of Object.entries(numberKeys)) {
+        if (body[key] === undefined) continue;
+        const value = Number(body[key]);
+        if (!Number.isFinite(value) || value < rule.min || value > rule.max) return json({ error: `Invalid value for ${key}` }, 400);
+        await setSmsSetting(env, key, String(value), actor.id);
+      }
+      if (body.sms_provider !== undefined) await setSmsSetting(env, "sms_provider", String(body.sms_provider), actor.id);
+      if (body.sms_sender_id !== undefined) {
+        const sender = String(body.sms_sender_id || "").trim();
+        if (sender.length > 11) return json({ error: "Sender ID must be at most 11 characters" }, 400);
+        await setSmsSetting(env, "sms_sender_id", sender, actor.id);
+      }
+      await audit(env, actor.id, "sms.settings.update", "sms_settings", null, {
+        keys: Object.keys(body)
+      }, null);
+      return json({ ok: true });
+    }
+
+    if (path === "/api/sms/test" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const body = await request.json();
+      const phone = normalizeNigerianPhone(body.phone_number);
+      if (!phone) return json({ error: "A valid Nigerian phone number is required" }, 400);
+      let text = String(body.body || "").trim();
+      if (!text && body.template_key) {
+        const template = await getSmsTemplate(env, String(body.template_key));
+        text = renderSmsTemplate(template ? template.body : "Bliss Legacy test message.", {
+          name: actor.full_name, amount: "1,000", balance: "1,000", paid: "1,000", total: "2,000",
+          property: "Test property", date: todayOnly(), reference: "TEST", due_date: todayOnly(),
+          next_due: todayOnly(), days: "1"
+        });
+      }
+      if (!text) return json({ error: "Message body or template is required" }, 400);
+      const result = await enqueueSms(env, {
+        clientId: null, templateKey: "test", phone, body: `[TEST] ${text}`.slice(0, 1000),
+        idempotencyKey: `test:${Date.now()}:${crypto.randomUUID()}`, createdBy: actor.id
+      });
+      return json({ ok: true, ...result, phone_e164: phone });
+    }
+
+    if (path === "/api/sms/refresh-balance" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const settings = await getSmsSettings(env);
+      try {
+        const balance = await fetchSmsProviderBalance(env, settings);
+        if (balance === null) return json({ error: "This provider does not expose a credit balance endpoint" }, 400);
+        await setSmsSetting(env, "sms_credit_balance", balance, actor.id);
+        await setSmsSetting(env, "sms_credit_checked_at", new Date().toISOString(), actor.id);
+        await checkSmsLowBalance(env, { ...settings, creditBalance: balance });
+        return json({ ok: true, balance, currency: settings.creditCurrency });
+      } catch (error) {
+        return json({ error: error.message || "Unable to read provider balance" }, 502);
+      }
+    }
+
+    const smsOptoutMatch = path.match(/^\/api\/clients\/(\d+)\/sms-optout$/);
+    if (smsOptoutMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const client = await env.DB.prepare("SELECT id, assigned_branch_id FROM clients WHERE id=?").bind(smsOptoutMatch[1]).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+      const scope = smsScopeSql(actor, "c");
+      if (scope.clause !== "1=1") {
+        const allowed = await env.DB.prepare(`SELECT 1 AS ok FROM clients c WHERE c.id=? AND ${scope.clause}`)
+          .bind(client.id, ...scope.binds).first();
+        if (!allowed) return json({ error: "Client is outside your scope" }, 403);
+      }
+      const row = await env.DB.prepare("SELECT * FROM sms_optouts WHERE client_id=?").bind(client.id).first();
+      return json({ opted_out: Boolean(row && Number(row.opted_out) === 1), reason: row ? row.reason : null, updated_at: row ? row.updated_at : null });
+    }
+
+    if (smsOptoutMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageSms(actor)) return json({ error: "SMS access is required" }, 403);
+      const client = await env.DB.prepare("SELECT id, assigned_branch_id FROM clients WHERE id=?").bind(smsOptoutMatch[1]).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+      const body = await request.json();
+      const optedOut = body.opted_out === undefined ? true : isTruthy(body.opted_out);
+      await env.DB.prepare(`
+        INSERT INTO sms_optouts (client_id, opted_out, reason, updated_by, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(client_id) DO UPDATE SET opted_out=excluded.opted_out, reason=excluded.reason,
+          updated_by=excluded.updated_by, updated_at=datetime('now')
+      `).bind(client.id, optedOut ? 1 : 0, body.reason ? String(body.reason).trim() : null, actor.id).run();
+      await audit(env, actor.id, optedOut ? "sms.optout" : "sms.optin", "client", String(client.id), { reason: body.reason || null }, client.assigned_branch_id);
+      return json({ ok: true, opted_out: optedOut });
+    }
+
+    // =========================================================================
     // PHASE 6: STAFF DASHBOARDS, PERFORMANCE, STAFF/TEAM, LEADS & ACTIVITY
     // =========================================================================
     if (path === "/api/dashboard" && request.method === "GET") {
@@ -7509,6 +8625,7 @@ export default {
       const { results: staff } = await env.DB.prepare(`
         SELECT u.id, u.email, u.full_name, u.is_active, u.branch_id, u.role_id,
                u.last_login_at, u.created_at, u.deactivated_at, u.commission_access,
+               u.property_plans_access, u.sms_access, u.care_scope,
                r.name AS role_name, b.name AS branch_name,
                sp.phone_number, sp.job_title, sp.date_joined, sp.notes,
                (SELECT GROUP_CONCAT(t.name, ', ') FROM team_members tm JOIN teams t ON t.id=tm.team_id
@@ -7535,14 +8652,14 @@ export default {
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!canManageStaff(actor.role_name)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
-      const { email, password, full_name, role_name, branch_id, branch_name, phone_number, job_title, date_joined, notes, team_id } = body || {};
+      const { email, password, full_name, role_name, branch_id, branch_name, phone_number, job_title, date_joined, notes, team_id, care_scope } = body || {};
       if (!email || !password || !full_name || !role_name) return json({ error: "Email, password, full name and role are required" }, 400);
       if (!validPassword(password)) return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
       const actorActualRole = actor.actual_role_name || actor.role_name;
       const allowed = actorActualRole === "Super Admin"
-        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Super Admin"]
+        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "Super Admin"]
         : actor.role_name === "Managing Director"
-          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant"]
+          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"]
           : ["Team Lead", "Marketer", "Finance Officer"];
       if (!allowed.includes(role_name)) return json({ error: "Forbidden role" }, 403);
       let resolvedBranch = branch_id || null;
@@ -7550,12 +8667,16 @@ export default {
         const branch = await env.DB.prepare("SELECT id FROM branches WHERE name=?").bind(branch_name).first();
         resolvedBranch = branch ? branch.id : null;
       }
-      if (!resolvedBranch) return json({ error: "Branch is required" }, 400);
+      const resolvedCareScope = role_name === "Customer Care"
+        ? (CARE_SCOPES.includes(String(care_scope || "").toLowerCase()) ? String(care_scope).toLowerCase() : "branch")
+        : null;
+      if (resolvedCareScope === "national") resolvedBranch = null;
+      if (!resolvedBranch && resolvedCareScope !== "national") return json({ error: "Branch is required" }, 400);
       if (actor.role_name === "Branch Manager" && Number(resolvedBranch) !== actor.branch_id) {
         return json({ error: "Cross-branch forbidden" }, 403);
       }
-      const branch = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(resolvedBranch).first();
-      if (!branch) return json({ error: "Branch not found" }, 400);
+      const branch = resolvedBranch ? await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(resolvedBranch).first() : null;
+      if (resolvedBranch && !branch) return json({ error: "Branch not found" }, 400);
       const role = await env.DB.prepare("SELECT id FROM roles WHERE name=?").bind(role_name).first();
       if (!role) return json({ error: "Unknown role" }, 400);
       const existing = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=?").bind(email.toLowerCase().trim()).first();
@@ -7563,15 +8684,23 @@ export default {
       const hash = await hashPassword(password);
       const referralCode = await allocateReferralCode(env);
       const res = await env.DB.prepare(`
-        INSERT INTO users (email, password_hash, full_name, role_id, branch_id, referral_code)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).bind(email.toLowerCase().trim(), hash, full_name.trim(), role.id, resolvedBranch, referralCode).run();
+        INSERT INTO users (email, password_hash, full_name, role_id, branch_id, referral_code, care_scope)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(email.toLowerCase().trim(), hash, full_name.trim(), role.id, resolvedBranch, referralCode, resolvedCareScope).run();
       const newId = res.meta.last_row_id;
       const managerId = await inferManagerId(env, role_name, resolvedBranch, team_id || null);
       await env.DB.prepare("UPDATE users SET manager_id=? WHERE id=?").bind(managerId, newId).run();
       if (body.commission_access !== undefined && ["Managing Director", "Super Admin"].includes(actorActualRole)) {
         await env.DB.prepare("UPDATE users SET commission_access=? WHERE id=?")
           .bind(isTruthy(body.commission_access) ? 1 : 0, newId).run();
+      }
+      if (body.property_plans_access !== undefined && ["Managing Director", "Super Admin", "Head Accountant"].includes(actorActualRole)) {
+        await env.DB.prepare("UPDATE users SET property_plans_access=? WHERE id=?")
+          .bind(isTruthy(body.property_plans_access) ? 1 : 0, newId).run();
+      }
+      if (body.sms_access !== undefined && ["Managing Director", "Super Admin", "Head Accountant"].includes(actorActualRole)) {
+        await env.DB.prepare("UPDATE users SET sms_access=? WHERE id=?")
+          .bind(isTruthy(body.sms_access) ? 1 : 0, newId).run();
       }
       await env.DB.prepare(`
         INSERT INTO staff_profiles (user_id, phone_number, job_title, date_joined, notes, updated_by, updated_at)
@@ -7658,9 +8787,9 @@ export default {
       }
       const body = await request.json();
       const allowedRoles = (actor.actual_role_name || actor.role_name) === "Super Admin"
-        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Super Admin"]
+        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "Super Admin"]
         : actor.role_name === "Managing Director"
-          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant"]
+          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"]
           : ["Team Lead", "Marketer", "Finance Officer"];
       const nextRoleName = body.role_name || target.role_name;
       const editingOwnMdProfile = actor.role_name === "Managing Director" && target.role_name === "Managing Director";
@@ -7671,13 +8800,18 @@ export default {
         return json({ error: "You cannot change your own role" }, 400);
       }
       let nextBranch = body.branch_id !== undefined ? (body.branch_id ? Number(body.branch_id) : null) : target.branch_id;
+      const nextCareScope = nextRoleName === "Customer Care"
+        ? (CARE_SCOPES.includes(String(body.care_scope || target.care_scope || "branch").toLowerCase())
+          ? String(body.care_scope || target.care_scope || "branch").toLowerCase() : "branch")
+        : null;
+      if (nextCareScope === "national") nextBranch = null;
       if (actor.role_name === "Branch Manager" && nextBranch !== actor.branch_id) {
         return json({ error: "Cross-branch forbidden" }, 403);
       }
       if (nextBranch !== null) {
         const branch = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(nextBranch).first();
         if (!branch) return json({ error: "Branch not found" }, 400);
-      } else if (nextRoleName !== "Managing Director") {
+      } else if (nextRoleName !== "Managing Director" && nextCareScope !== "national") {
         return json({ error: "Branch is required for staff accounts" }, 400);
       }
       const role = await env.DB.prepare("SELECT id FROM roles WHERE name=?").bind(nextRoleName).first();
@@ -7690,8 +8824,8 @@ export default {
       if (!fullName) return json({ error: "Full name is required" }, 400);
       const email = body.email !== undefined ? String(body.email).toLowerCase().trim() : target.email;
       await env.DB.prepare(`
-        UPDATE users SET full_name=?, email=?, role_id=?, branch_id=?, updated_at=datetime('now') WHERE id=?
-      `).bind(fullName, email, role.id, nextBranch, target.id).run();
+        UPDATE users SET full_name=?, email=?, role_id=?, branch_id=?, care_scope=?, updated_at=datetime('now') WHERE id=?
+      `).bind(fullName, email, role.id, nextBranch, nextCareScope, target.id).run();
       await env.DB.prepare(`
         INSERT INTO staff_profiles (user_id, phone_number, job_title, date_joined, notes, updated_by, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -7716,6 +8850,20 @@ export default {
         }
         await env.DB.prepare("UPDATE users SET commission_access=? WHERE id=?")
           .bind(isTruthy(body.commission_access) ? 1 : 0, target.id).run();
+      }
+      if (body.property_plans_access !== undefined) {
+        if (!["Managing Director", "Super Admin", "Head Accountant"].includes(actor.actual_role_name || actor.role_name)) {
+          return json({ error: "Only the MD, Head Accountant or Super Admin can grant property plan access" }, 403);
+        }
+        await env.DB.prepare("UPDATE users SET property_plans_access=? WHERE id=?")
+          .bind(isTruthy(body.property_plans_access) ? 1 : 0, target.id).run();
+      }
+      if (body.sms_access !== undefined) {
+        if (!["Managing Director", "Super Admin", "Head Accountant"].includes(actor.actual_role_name || actor.role_name)) {
+          return json({ error: "Only the MD, Head Accountant or Super Admin can grant SMS access" }, 403);
+        }
+        await env.DB.prepare("UPDATE users SET sms_access=? WHERE id=?")
+          .bind(isTruthy(body.sms_access) ? 1 : 0, target.id).run();
       }
       if (body.branch_id !== undefined && Number(nextBranch) !== Number(target.branch_id)) {
         await env.DB.prepare(`
@@ -7895,13 +9043,16 @@ export default {
       const status = url.searchParams.get("status");
       const marketerId = url.searchParams.get("marketer_id");
       const teamLeadId = url.searchParams.get("team_lead_id");
+      const temperature = normalizeTemperature(url.searchParams.get("temperature"));
       const q = url.searchParams.get("q");
       const from = dateOnly(url.searchParams.get("from"));
       const to = dateOnly(url.searchParams.get("to"));
-      if (status) { clauses.push("l.status=?"); binds.push(normalizeLeadStatus(status, status)); }
+      const stage = url.searchParams.get("stage");
+      if (status || stage) { clauses.push("l.status=?"); binds.push(normalizeLeadStatus(status || stage, status || stage)); }
       if (marketerId) { clauses.push("l.assigned_marketer_id=?"); binds.push(marketerId); }
       if (teamLeadId) { clauses.push("l.team_lead_id=?"); binds.push(teamLeadId); }
-      if (q) { clauses.push("(l.full_name LIKE ? OR l.phone_number LIKE ? OR l.email_address LIKE ? OR l.lead_reference LIKE ?)"); binds.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
+      if (temperature) { clauses.push("l.lead_temperature=?"); binds.push(temperature); }
+      if (q) { clauses.push("(l.full_name LIKE ? OR l.phone_number LIKE ? OR l.email_address LIKE ? OR l.lead_reference LIKE ? OR l.referrer LIKE ?)"); binds.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
       if (from) { clauses.push("date(l.created_at) >= date(?)"); binds.push(from); }
       if (to) { clauses.push("date(l.created_at) <= date(?)"); binds.push(to); }
       if (url.searchParams.get("follow_up_due") === "1") {
@@ -7914,7 +9065,8 @@ export default {
       const { results: leads } = await env.DB.prepare(`
         SELECT l.*, p.title AS property_title, p.reference AS property_reference,
                b.name AS branch_name, m.full_name AS marketer_name, tl.full_name AS team_lead_name,
-               (SELECT COUNT(*) FROM lead_follow_ups f WHERE f.lead_id=l.id) AS follow_up_count
+               (SELECT COUNT(*) FROM lead_follow_ups f WHERE f.lead_id=l.id) AS follow_up_count,
+               (SELECT COUNT(*) FROM lead_follow_ups f WHERE f.lead_id=l.id AND f.contacted_at IS NOT NULL) AS contact_count
         FROM leads l
         LEFT JOIN properties p ON p.id=l.property_id
         LEFT JOIN branches b ON b.id=l.branch_id
@@ -7923,7 +9075,13 @@ export default {
         ${whereSql} ORDER BY l.created_at DESC LIMIT ? OFFSET ?
       `).bind(...binds, limit, offset).all();
       const count = await env.DB.prepare(`SELECT COUNT(*) AS c FROM leads l ${whereSql}`).bind(...binds).first();
-      return json({ leads, pagination: { page, limit, total: count ? count.c : 0 } });
+      const temperatureRows = await env.DB.prepare(`
+        SELECT COALESCE(l.lead_temperature,'Unset') AS temperature, COUNT(*) AS c
+        FROM leads l ${whereSql} GROUP BY COALESCE(l.lead_temperature,'Unset')
+      `).bind(...binds).all();
+      const temperatureCounts = { Hot: 0, Warm: 0, Cold: 0, Unset: 0 };
+      for (const row of temperatureRows.results) temperatureCounts[row.temperature] = Number(row.c || 0);
+      return json({ leads, temperature_counts: temperatureCounts, pagination: { page, limit, total: count ? count.c : 0 } });
     }
 
     if (path === "/api/leads" && request.method === "POST") {
@@ -7933,11 +9091,18 @@ export default {
       if (!canManageLeads(actor.role_name)) return json({ error: "Forbidden" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
       const body = await request.json();
-      const { full_name, phone_number, email_address, source, status, property_id, assigned_marketer_id, team_lead_id, branch_id, estimated_value, notes, next_follow_up_date } = body || {};
+      const { full_name, phone_number, email_address, source, referrer, status, lead_temperature, property_id, assigned_marketer_id, team_lead_id, branch_id, estimated_value, notes, next_follow_up_date, lost_reason } = body || {};
       if (!full_name || !phone_number) return json({ error: "Full name and phone number are required" }, 400);
+      if (!isValidLeadPhone(phone_number)) return json({ error: "A valid Nigerian phone number is required" }, 400);
+      const normalizedLeadPhone = normalizeNigerianPhone(phone_number);
       const leadStatus = normalizeLeadStatus(status, "New Lead");
       if (!LEAD_STATUSES.includes(leadStatus) || leadStatus === "Converted") {
         return json({ error: "Invalid initial lead status" }, 400);
+      }
+      const temperature = normalizeTemperature(lead_temperature);
+      if (lead_temperature && !temperature) return json({ error: "Lead temperature must be Hot, Warm or Cold" }, 400);
+      if (leadStatus === "Lost" && !String(lost_reason || "").trim()) {
+        return json({ error: "A lost reason is required" }, 400);
       }
       if (actor.role_name !== "Managing Director" && branch_id && Number(branch_id) !== Number(actor.branch_id)) {
         return json({ error: "Cross-branch forbidden" }, 403);
@@ -7989,12 +9154,15 @@ export default {
       if (!Number.isFinite(estimatedKobo) || estimatedKobo < 0) return json({ error: "Estimated value is invalid" }, 400);
       const ref = "LEAD-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
       const res = await env.DB.prepare(`
-        INSERT INTO leads (lead_reference, full_name, phone_number, email_address, source, status,
+        INSERT INTO leads (lead_reference, full_name, phone_number, email_address, source, referrer, status,
+          lead_temperature, temperature_updated_at, lost_reason,
           property_id, assigned_marketer_id, team_lead_id, branch_id, estimated_value_kobo,
           notes, next_follow_up_date, created_by, is_demo, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
       `).bind(
-        ref, full_name.trim(), phone_number.trim(), email_address || null, source || null, leadStatus,
+        ref, full_name.trim(), normalizedLeadPhone, email_address || null, source || null, referrer || null, leadStatus,
+        temperature, temperature ? new Date().toISOString() : null,
+        leadStatus === "Lost" ? String(lost_reason).trim() : null,
         property_id || null, marketerId, teamLead, resolvedBranch, estimatedKobo,
         notes || null, followUp, actor.id
       ).run();
@@ -8036,7 +9204,11 @@ export default {
         FROM audit_logs al LEFT JOIN users u ON u.id=al.actor_user_id
         WHERE al.target_type='lead' AND al.target_id=? ORDER BY al.id DESC LIMIT 20
       `).bind(String(lead.id)).all();
-      return json({ lead, follow_ups: followUps, activity });
+      const { results: temperatureHistory } = await env.DB.prepare(`
+        SELECT h.*, u.full_name AS changed_by_name FROM lead_temperature_history h
+        LEFT JOIN users u ON u.id=h.changed_by WHERE h.lead_id=? ORDER BY h.id DESC
+      `).bind(lead.id).all();
+      return json({ lead, follow_ups: followUps, temperature_history: temperatureHistory, activity });
     }
 
     if (leadMatch && request.method === "PUT") {
@@ -8105,17 +9277,37 @@ export default {
           return json({ error: "A converted lead cannot be moved back into the open pipeline" }, 409);
         }
       }
+      const nextTemperature = body.lead_temperature !== undefined || body.temperature !== undefined
+        ? normalizeTemperature(body.lead_temperature !== undefined ? body.lead_temperature : body.temperature)
+        : lead.lead_temperature;
+      if ((body.lead_temperature !== undefined || body.temperature !== undefined) && !nextTemperature) {
+        return json({ error: "Lead temperature must be Hot, Warm or Cold" }, 400);
+      }
+      const nextLostReason = nextStatus === "Lost"
+        ? String(body.lost_reason !== undefined ? body.lost_reason : (lead.lost_reason || "")).trim()
+        : null;
+      if (nextStatus === "Lost" && !nextLostReason) return json({ error: "A lost reason is required" }, 400);
+      let nextPhone = lead.phone_number;
+      if (body.phone_number !== undefined) {
+        nextPhone = normalizeNigerianPhone(body.phone_number);
+        if (!nextPhone) return json({ error: "A valid Nigerian phone number is required" }, 400);
+      }
       await env.DB.prepare(`
-        UPDATE leads SET full_name=?, phone_number=?, email_address=?, source=?, status=?,
+        UPDATE leads SET full_name=?, phone_number=?, email_address=?, source=?, referrer=?, status=?,
+          lead_temperature=?, temperature_updated_at=?, lost_reason=?,
           property_id=?, assigned_marketer_id=?, team_lead_id=?, branch_id=?,
           estimated_value_kobo=?, notes=?, next_follow_up_date=?, updated_at=datetime('now')
         WHERE id=?
       `).bind(
         body.full_name !== undefined ? String(body.full_name).trim() : lead.full_name,
-        body.phone_number !== undefined ? String(body.phone_number).trim() : lead.phone_number,
+        nextPhone,
         body.email_address !== undefined ? (body.email_address || null) : lead.email_address,
         body.source !== undefined ? (body.source || null) : lead.source,
+        body.referrer !== undefined ? (body.referrer || null) : lead.referrer,
         nextStatus,
+        nextTemperature,
+        nextTemperature !== lead.lead_temperature ? new Date().toISOString() : lead.temperature_updated_at,
+        nextLostReason,
         body.property_id !== undefined ? (body.property_id || null) : lead.property_id,
         nextMarketer,
         nextTeamLead,
@@ -8125,9 +9317,15 @@ export default {
         followUp,
         lead.id
       ).run();
+      if (nextTemperature !== lead.lead_temperature) {
+        await env.DB.prepare(`
+          INSERT INTO lead_temperature_history (lead_id, old_temperature, new_temperature, changed_by, reason)
+          VALUES (?, ?, ?, ?, ?)
+        `).bind(lead.id, lead.lead_temperature || null, nextTemperature, actor.id, body.temperature_reason || null).run();
+      }
       await audit(env, actor.id, "lead.update", "lead", String(lead.id), {
-        before: { status: lead.status, marketer: lead.assigned_marketer_id, branch_id: lead.branch_id },
-        after: { status: nextStatus, marketer: nextMarketer, branch_id: nextBranch }
+        before: { status: lead.status, marketer: lead.assigned_marketer_id, branch_id: lead.branch_id, temperature: lead.lead_temperature },
+        after: { status: nextStatus, marketer: nextMarketer, branch_id: nextBranch, temperature: nextTemperature, lost_reason: nextLostReason }
       }, nextBranch);
       if (nextMarketer && Number(nextMarketer) !== Number(lead.assigned_marketer_id)) {
         await createNotification(env, {
@@ -8157,10 +9355,12 @@ export default {
       if (lead.converted_client_id || lead.status === "Converted") {
         return json({ error: "A converted lead cannot be moved back into the open pipeline" }, 409);
       }
+      const lostReason = status === "Lost" ? String(body.lost_reason || "").trim() : null;
+      if (status === "Lost" && !lostReason) return json({ error: "A lost reason is required" }, 400);
       await env.DB.prepare(`
-        UPDATE leads SET status=?, last_contact_at=datetime('now'), updated_at=datetime('now') WHERE id=?
-      `).bind(status, lead.id).run();
-      await audit(env, actor.id, "lead.status", "lead", String(lead.id), { from: lead.status, to: status }, lead.branch_id);
+        UPDATE leads SET status=?, lost_reason=?, last_contact_at=datetime('now'), updated_at=datetime('now') WHERE id=?
+      `).bind(status, lostReason, lead.id).run();
+      await audit(env, actor.id, "lead.status", "lead", String(lead.id), { from: lead.status, to: status, lost_reason: lostReason }, lead.branch_id);
       await createNotification(env, {
         userId: lead.assigned_marketer_id || actor.id,
         type: "lead.status",
@@ -8169,6 +9369,32 @@ export default {
         metadata: { lead_id: lead.id, status }
       });
       return json({ ok: true, status });
+    }
+
+    const leadTemperatureMatch = path.match(/^\/api\/leads\/(\d+)\/temperature$/);
+    if (leadTemperatureMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageLeads(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const scope = await resolvePhase6Scope(env, actor);
+      const lead = await env.DB.prepare("SELECT * FROM leads WHERE id=?").bind(leadTemperatureMatch[1]).first();
+      if (!lead || lead.is_demo || !canAccessLeadScope(scope, lead)) return json({ error: "Lead not found" }, 404);
+      const body = await request.json();
+      const temperature = normalizeTemperature(body.temperature);
+      if (!temperature) return json({ error: "Lead temperature must be Hot, Warm or Cold" }, 400);
+      if (temperature === lead.lead_temperature) return json({ ok: true, temperature, unchanged: true });
+      await env.DB.prepare(`
+        UPDATE leads SET lead_temperature=?, temperature_updated_at=datetime('now'), updated_at=datetime('now') WHERE id=?
+      `).bind(temperature, lead.id).run();
+      await env.DB.prepare(`
+        INSERT INTO lead_temperature_history (lead_id, old_temperature, new_temperature, changed_by, reason)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(lead.id, lead.lead_temperature || null, temperature, actor.id, body.reason ? String(body.reason).trim() : null).run();
+      await audit(env, actor.id, "lead.temperature", "lead", String(lead.id), {
+        from: lead.lead_temperature || null, to: temperature, reason: body.reason || null
+      }, lead.branch_id);
+      return json({ ok: true, temperature });
     }
 
     const leadFollowUpMatch = path.match(/^\/api\/leads\/(\d+)\/follow-ups$/);
@@ -8186,14 +9412,17 @@ export default {
       if (note.length > 2000) return json({ error: "Follow-up note is too long" }, 400);
       const followUpDate = body.follow_up_date ? dateOnly(body.follow_up_date) : null;
       if (body.follow_up_date && !followUpDate) return json({ error: "Invalid follow-up date" }, 400);
+      const contactType = CARE_CALL_TYPES.includes(body.contact_type) ? body.contact_type : (body.channel || "call");
+      const contactedAt = body.contacted_at ? new Date(body.contacted_at) : new Date();
+      if (body.contacted_at && isNaN(contactedAt.getTime())) return json({ error: "Invalid contact date" }, 400);
       const res = await env.DB.prepare(`
-        INSERT INTO lead_follow_ups (lead_id, staff_id, note, channel, outcome, follow_up_date)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).bind(lead.id, actor.id, note, body.channel || null, body.outcome || null, followUpDate).run();
+        INSERT INTO lead_follow_ups (lead_id, staff_id, note, channel, outcome, follow_up_date, contact_type, contacted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(lead.id, actor.id, note, body.channel || contactType, body.outcome || null, followUpDate, contactType, contactedAt.toISOString()).run();
       await env.DB.prepare(`
-        UPDATE leads SET last_contact_at=datetime('now'), next_follow_up_date=COALESCE(?, next_follow_up_date),
+        UPDATE leads SET last_contact_at=?, next_follow_up_date=COALESCE(?, next_follow_up_date),
           updated_at=datetime('now') WHERE id=?
-      `).bind(followUpDate, lead.id).run();
+      `).bind(contactedAt.toISOString(), followUpDate, lead.id).run();
       await audit(env, actor.id, "lead.followup", "lead", String(lead.id), { follow_up_id: res.meta.last_row_id, follow_up_date: followUpDate }, lead.branch_id);
       await createNotification(env, {
         userId: lead.assigned_marketer_id || actor.id,
@@ -8226,10 +9455,13 @@ export default {
         : followUp.follow_up_date;
       if (body.follow_up_date && !followUpDate) return json({ error: "Invalid follow-up date" }, 400);
       await env.DB.prepare(`
-        UPDATE lead_follow_ups SET note=?, channel=?, outcome=?, follow_up_date=? WHERE id=?
+        UPDATE lead_follow_ups SET note=?, channel=?, outcome=?, follow_up_date=?, contact_type=?, contacted_at=? WHERE id=?
       `).bind(note, body.channel !== undefined ? (body.channel || null) : followUp.channel,
         body.outcome !== undefined ? (body.outcome || null) : followUp.outcome,
-        followUpDate, followUp.id).run();
+        followUpDate,
+        body.contact_type !== undefined ? (CARE_CALL_TYPES.includes(body.contact_type) ? body.contact_type : followUp.contact_type) : followUp.contact_type,
+        body.contacted_at !== undefined ? (body.contacted_at ? new Date(body.contacted_at).toISOString() : null) : followUp.contacted_at,
+        followUp.id).run();
       if (body.follow_up_date !== undefined) {
         await env.DB.prepare("UPDATE leads SET next_follow_up_date=?, updated_at=datetime('now') WHERE id=?")
           .bind(followUpDate, lead.id).run();
@@ -8355,6 +9587,10 @@ export default {
           skipped.push({ row: index + 1, reason: "Full name and phone number are required" });
           continue;
         }
+        if (!isValidLeadPhone(row.phone_number)) {
+          skipped.push({ row: index + 1, reason: "A valid Nigerian phone number is required" });
+          continue;
+        }
         const status = normalizeLeadStatus(row.status, "New Lead");
         if (!LEAD_STATUSES.includes(status) || status === "Converted") {
           skipped.push({ row: index + 1, reason: "Invalid lead status" });
@@ -8413,13 +9649,14 @@ export default {
         }
         const ref = "LEAD-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
         const res = await env.DB.prepare(`
-          INSERT INTO leads (lead_reference, full_name, phone_number, email_address, source, status,
+          INSERT INTO leads (lead_reference, full_name, phone_number, email_address, source, referrer, status, lead_temperature,
             property_id, assigned_marketer_id, team_lead_id, branch_id, estimated_value_kobo,
             notes, next_follow_up_date, created_by, is_demo, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
         `).bind(
-          ref, row.full_name, row.phone_number, row.email_address || null, row.source || body.source || "Bulk import",
-          status, propertyId, marketerId, teamLeadId, branchId, estimatedKobo,
+          ref, row.full_name, normalizeNigerianPhone(row.phone_number) || row.phone_number,
+          row.email_address || null, row.source || body.source || "Bulk import", row.referrer || null,
+          status, normalizeTemperature(row.lead_temperature), propertyId, marketerId, teamLeadId, branchId, estimatedKobo,
           row.notes || null, row.next_follow_up_date ? dateOnly(row.next_follow_up_date) : null, actor.id
         ).run();
         created.push({ id: res.meta.last_row_id, lead_reference: ref, full_name: row.full_name });
@@ -8444,7 +9681,17 @@ export default {
       if (lead.converted_client_id || lead.status === "Converted") return json({ error: "Lead has already been converted" }, 409);
       const body = await request.json().catch(() => ({}));
       let agreedPrice = null;
-      if (body.agreed_purchase_price !== undefined && body.agreed_purchase_price !== null && body.agreed_purchase_price !== "") {
+      let conversionPlan = null;
+      if (lead.property_id) {
+        const planResult = await resolvePropertyPlanForPurchase(env, Number(lead.property_id), body.property_plan_id ? Number(body.property_plan_id) : null);
+        if (planResult.error) return json({ error: planResult.error, plans: planResult.plans || [] }, 400);
+        conversionPlan = planResult.plan;
+      } else if (body.property_plan_id) {
+        return json({ error: "This lead has no property to attach a payment plan to" }, 400);
+      }
+      if (conversionPlan) {
+        agreedPrice = fromKobo(Number(conversionPlan.total_price_kobo || 0));
+      } else if (body.agreed_purchase_price !== undefined && body.agreed_purchase_price !== null && body.agreed_purchase_price !== "") {
         if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) {
           return json({ error: "Only a Managing Director or Branch Manager can set the contract price during conversion" }, 403);
         }
@@ -8462,13 +9709,22 @@ export default {
           agreed_purchase_price, interested_property_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
-        ref, lead.full_name, lead.phone_number, lead.email_address, lead.notes, clientStatus,
+        ref, lead.full_name, normalizeNigerianPhone(lead.phone_number) || lead.phone_number, lead.email_address, lead.notes, clientStatus,
         lead.branch_id, marketerId, marketerId, lead.team_lead_id || null,
         agreedPrice, lead.property_id || null
       ).run();
       const clientId = res.meta.last_row_id;
       if (lead.property_id) {
         await upsertClientPropertyAllocation(env, clientId, Number(lead.property_id), agreedPrice || 0, clientStatus);
+      }
+      let conversionScheduleId = null;
+      if (conversionPlan) {
+        await lockClientPurchasePlan(env, clientId, Number(lead.property_id), conversionPlan, clientStatus);
+        const schedule = await createScheduleFromPropertyPlan(env, {
+          id: clientId, interested_property_id: Number(lead.property_id), assigned_branch_id: lead.branch_id
+        }, conversionPlan, actor.id, body.plan_start_date || todayOnly());
+        if (schedule.error) return json({ error: schedule.error }, 400);
+        conversionScheduleId = schedule.id;
       }
       await env.DB.prepare(`
         INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by)
@@ -8491,7 +9747,8 @@ export default {
         message: `Lead ${lead.lead_reference} has been converted to client ${ref}.`,
         metadata: { lead_id: lead.id, client_id: clientId, client_reference: ref }
       });
-      return json({ ok: true, client_id: clientId, client_reference: ref });
+      await sendAccountCreatedSms(env, clientId, actor.id);
+      return json({ ok: true, client_id: clientId, client_reference: ref, schedule_id: conversionScheduleId });
     }
 
     // =========================================================================
@@ -9177,21 +10434,49 @@ export default {
     }
   },
 
-  // Cloudflare Queues consumer: records configurable email/WhatsApp delivery attempts.
+  // Cloudflare Queues consumer: notification delivery and SMS retries.
   async queue(batch, env) {
     for (const message of batch.messages || []) {
       try {
         await processNotificationQueue(env, message);
         if (message.ack) message.ack();
       } catch {
-        if (message.retry) message.retry();
+        const body = message.body || message;
+        if (body.type === "sms.send" && body.sms_message_id) {
+          const row = await env.DB.prepare("SELECT attempts, status FROM sms_messages WHERE id=?")
+            .bind(Number(body.sms_message_id)).first().catch(() => null);
+          if (row && ["failed", "sent", "delivered", "opted_out", "skipped"].includes(row.status)) {
+            if (message.ack) message.ack();
+            continue;
+          }
+          const attempts = Number(row ? row.attempts : 1);
+          const delaySeconds = Math.min(900, 30 * Math.pow(2, Math.max(1, attempts)));
+          if (message.retry) message.retry({ delaySeconds });
+        } else if (message.retry) {
+          message.retry();
+        }
       }
     }
   },
 
-  // Cron trigger: upcoming / overdue installment notifications (deduplicated).
+  // Cron trigger: upcoming / overdue installment notifications (deduplicated)
+  // and configurable SMS statements/reminders.
   async scheduled(event, env, ctx) {
-    const task = dispatchPaymentReminders(env);
+    const task = (async () => {
+      await dispatchPaymentReminders(env);
+      await dispatchSmsSchedules(env);
+      const settings = await getSmsSettings(env);
+      if (settings.enabled && settings.provider !== "mock") {
+        try {
+          const balance = await fetchSmsProviderBalance(env, settings);
+          if (balance !== null) {
+            await setSmsSetting(env, "sms_credit_balance", balance, null);
+            await setSmsSetting(env, "sms_credit_checked_at", new Date().toISOString(), null);
+            await checkSmsLowBalance(env, { ...settings, creditBalance: balance });
+          }
+        } catch { /* provider balance is optional */ }
+      }
+    })();
     if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(task);
     await task;
   }

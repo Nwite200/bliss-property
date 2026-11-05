@@ -41,6 +41,9 @@ This is an honest list of what the current implementation does **not** provide. 
 7. Defaulting is calculated on read from the generated schedule and verified payments; it clears automatically on catch-up. It is not a nightly materialised balance table.
 8. Commission generation is explicit; it is not automatically triggered by every payment webhook.
 9. Commission plan edits create versions, and new versions do not retroactively commission payments from before the version was created.
+10. Property payment plans support enabled/disabled catalogues and lock purchase terms at onboarding. Editing a property plan does not migrate existing clients; this is intentional.
+11. SMS delivery is adapter-based. Termii is the first production adapter; Africa's Talking is registered as an alternative. Delivery receipts from the provider are not yet ingested, so `delivered` is currently confirmed only by the mock adapter.
+12. Customer Care uses a dedicated dashboard and only branch/national client-care scope. It has no commission, lead or finance access.
 
 ---
 

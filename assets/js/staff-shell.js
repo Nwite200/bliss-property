@@ -10,11 +10,12 @@
     "Team Lead": "TL",
     "Marketer": "MK",
     "Finance Officer": "FIN",
-    "Head Accountant": "HA"
+    "Head Accountant": "HA",
+    "Customer Care": "CC"
   };
 
   BlissStaff.isStaffRole = function (role) {
-    return ["Super Admin", "Managing Director", "Project Manager", "Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant"].includes(role);
+    return ["Super Admin", "Managing Director", "Project Manager", "Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"].includes(role);
   };
 
   BlissStaff.fetchJson = async function (path, options = {}) {
@@ -131,6 +132,8 @@
       { href: "performance.html", label: "📈 Performance", page: "performance", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "revenue.html", label: "💰 Revenue Drill-down", page: "revenue", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "defaulting.html", label: "⚠️ Defaulting Clients", page: "defaulting", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "customer-care.html", label: "☎️ Customer Care", page: "care", roles: ["Customer Care"] },
+      { href: "sms-center.html", label: "✉️ SMS Centre", page: "sms", roles: ["Managing Director", "Head Accountant", "Branch Manager", "Finance Officer"], requiresSmsAccess: true },
       { href: "properties.html", label: "🏡 Properties", page: "properties", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "clients.html", label: "👥 Clients", page: "clients", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Sales & Teams" },
@@ -150,16 +153,22 @@
       { href: "#", label: "🚪 Logout", page: "logout", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"], id: "logoutBtn" }
     ];
     let items = links.filter(item => (!item.roles || item.roles.includes(role)) &&
-      (!item.requiresCommissionAccess || me.can_access_commissions)).map(item => {
+      (!item.requiresCommissionAccess || me.can_access_commissions) &&
+      (!item.requiresSmsAccess || me.sms_access)).map(item => {
       if (item.section) return `<div class="section-label">${item.section}</div>`;
       return `<a href="${item.href}" ${item.page === activePage ? 'class="active"' : ""} ${item.id ? `id="${item.id}"` : ""} ${item.page === "logout" ? 'style="color:#E74C3C"' : ""}>${item.label}</a>`;
     }).join("");
     if (["Super Admin", "Managing Director"].includes(me.actual_role || role)) {
       items += `<div class="section-label">System</div><a href="super-admin.html" class="${activePage === "super-admin" ? "active" : ""}">🛡️ System Administration</a>`;
     }
-    const scopeLabel = ["Managing Director", "Finance Officer", "Head Accountant", "Super Admin"].includes(me.actual_role || role)
-      ? "Company-wide"
-      : (me.branch_name || "Branch");
+    if (role === "Customer Care") {
+      items += `<div class="section-label">Account</div><a href="index.html">🌐 Public Website</a><a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Logout</a>`;
+    }
+    const scopeLabel = role === "Customer Care"
+      ? (me.care_scope === "national" ? "National" : (me.branch_name || "Branch"))
+      : (["Managing Director", "Finance Officer", "Head Accountant", "Super Admin"].includes(me.actual_role || role)
+        ? "Company-wide"
+        : (me.branch_name || "Branch"));
     return `
       <div class="brand"><a href="dashboard.html"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" onerror="this.src='bliss-legacy-logo.png'"></a></div>
       <div style="padding:0 8px 8px;font-size:11px;color:#9FB2A3">${BlissStaff.escape(me.full_name)}<br><span style="color:#6F8575">${BlissStaff.escape(me.actual_role || role)} · ${BlissStaff.escape(scopeLabel)}</span></div>

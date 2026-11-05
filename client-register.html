@@ -49,8 +49,13 @@
           <div style="grid-column:1/-1"><label class="field-label">Referral code (optional)</label><input id="referral_code" type="text" placeholder="Staff referral code"></div>
           <div style="grid-column:1/-1"><label class="field-label">Preferred channel</label><select id="preferred_channel"><option>WhatsApp</option><option>Email</option><option>Phone</option><option>WhatsApp + Email</option></select></div>
           <div style="grid-column:1/-1"><label class="field-label">Sale type</label><select id="sale_type"><option>New Sale</option><option>Resale</option><option>Referral</option><option>Other</option></select></div>
-          <div style="grid-column:1/-1"><label class="field-label">Interested property</label><input id="interested_property_id" type="text" placeholder="Property reference or ID"></div>
-          <div style="grid-column:1/-1"><label class="field-label">Agreed purchase price (₦)</label><input id="agreed_purchase_price" type="number" placeholder="Stored separately from advertised price"></div>
+          <div style="grid-column:1/-1"><label class="field-label">Interested property</label><select id="interested_property_id"><option value="">No property selected</option></select></div>
+          <div style="grid-column:1/-1" id="planOfferingWrap">
+            <label class="field-label">Payment plan offered for this property</label>
+            <div id="planOffering" class="quick-links"><span class="small muted">Select a property to see its payment plans.</span></div>
+            <input type="hidden" id="property_plan_id">
+          </div>
+          <div style="grid-column:1/-1"><label class="field-label">Agreed purchase price (₦)</label><input id="agreed_purchase_price" type="number" placeholder="Locked automatically when a property plan is selected"></div>
           <div style="grid-column:1/-1" style="display:flex;gap:12px;align-items:end">
             <div style="flex:1"><label class="field-label">Assigned branch</label><select id="assigned_branch_id"></select></div>
             <div style="flex:1"><label class="field-label">Status</label><select id="status"><option>Prospect</option><option>Interested</option><option>Negotiation</option><option>Reserved</option><option>Active Buyer</option><option>Completed</option><option>Cancelled</option><option>Inactive</option></select></div>

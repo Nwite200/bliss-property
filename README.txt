@@ -37,8 +37,8 @@ Tests
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm run test:phase8  (30 tests)
-- npm test              (all suites, 139 tests)
+- npm run test:phase8  (33 tests)
+- npm test              (all suites, 142 tests)
 
 Documentation
 -------------
@@ -76,7 +76,11 @@ Architecture and safety
 - Lead inspection scheduling, bulk CSV import and inspection counts
 - Versioned commission plans with easy-buy commissionable basis and restricted access
 - Multi-provider payment adapter layer (ALATPay first, Wema ALAT and Paystack registered)
-- See PAYMENT_PROVIDER_SECRETS.md for the provider secret checklist
+- Property payment-plan catalogue, onboarding plan choice and purchase-term locking
+- Customer Care role with branch/national scope, clearance queue and call history
+- SMS provider adapter, templates, opt-out, queued delivery log and credit alerts
+- Lead temperature, contact count/last contact and required lost reason
+- See PAYMENT_PROVIDER_SECRETS.md and SMS_PROVIDER_SETUP.md for the secret checklists
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
 - There is no separate Super Admin role; the Managing Director is the highest implemented role.

@@ -39,6 +39,7 @@
       <div class="card">
         <div class="card-head"><h3>Pipeline snapshot</h3><span class="small muted">Live leads only</span></div>
         <div class="pipeline-board" id="pipelineBoard"><div class="empty-state">Loading pipeline…</div></div>
+        <div class="toolbar mt-16" id="temperatureCounts"></div>
       </div>
 
       <div class="card section-gap">
@@ -55,6 +56,7 @@
         <div class="filters mb-16">
           <input type="search" id="leadSearch" placeholder="Search name, phone, email or reference…">
           <select id="leadStatusFilter"><option value="">All statuses</option><option>New Lead</option><option>Contacted</option><option>Interested</option><option>Inspection Scheduled</option><option>Negotiation</option><option>Converted</option><option>Lost</option></select>
+          <select id="leadTemperatureFilter"><option value="">All temperatures</option><option>Hot</option><option>Warm</option><option>Cold</option></select>
           <select id="leadMarketerFilter"><option value="">All marketers</option></select>
           <select id="leadBranchFilter"><option value="">All branches</option></select>
           <label class="tag" style="display:inline-flex;align-items:center;gap:6px;padding:9px 10px"><input type="checkbox" id="followUpDueFilter"> Follow-ups due</label>
@@ -62,7 +64,7 @@
           <button class="btn btn-ghost btn-sm" type="button" id="resetLeadFilters">Reset</button>
         </div>
         <div class="table-responsive"><table class="table">
-          <thead><tr><th>Lead</th><th>Status</th><th>Marketer</th><th>Branch</th><th>Property</th><th>Inspection</th><th>Next follow-up</th><th>Estimated value</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Lead</th><th>Status</th><th>Temperature</th><th>Marketer</th><th>Branch</th><th>Property</th><th>Inspection</th><th>Contacts</th><th>Next follow-up</th><th>Estimated value</th><th>Actions</th></tr></thead>
           <tbody id="leadBody"></tbody>
         </table></div>
         <div class="toolbar mt-16" style="justify-content:space-between">
@@ -86,6 +88,8 @@
           <div class="field-group"><label class="field-label" for="leadPhone">Phone</label><input class="field-input" id="leadPhone" required></div>
           <div class="field-group"><label class="field-label" for="leadEmail">Email</label><input class="field-input" type="email" id="leadEmail"></div>
           <div class="field-group"><label class="field-label" for="leadSource">Source</label><input class="field-input" id="leadSource" placeholder="Website, referral, walk-in…"></div>
+          <div class="field-group"><label class="field-label" for="leadReferrer">Referrer</label><input class="field-input" id="leadReferrer" placeholder="Person or campaign that referred the lead"></div>
+          <div class="field-group"><label class="field-label" for="leadTemperature">Temperature</label><select class="field-input" id="leadTemperature"><option value="">Not set</option><option>Hot</option><option>Warm</option><option>Cold</option></select></div>
           <div class="field-group"><label class="field-label" for="leadStatus">Status</label><select class="field-input" id="leadStatus"></select></div>
           <div class="field-group" id="leadBranchGroup"><label class="field-label" for="leadBranch">Branch</label><select class="field-input" id="leadBranch"><option value="">Select branch</option></select></div>
           <div class="field-group" id="leadMarketerGroup"><label class="field-label" for="leadMarketer">Assigned marketer</label><select class="field-input" id="leadMarketer"><option value="">Unassigned</option></select></div>

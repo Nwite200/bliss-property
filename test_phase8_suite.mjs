@@ -68,6 +68,12 @@ db.exec(`
   DELETE FROM commission_entries;
   DELETE FROM commission_plan_rules;
   DELETE FROM commission_plans;
+  DELETE FROM sms_messages;
+  DELETE FROM sms_optouts;
+  DELETE FROM client_care_calls;
+  DELETE FROM client_care_records;
+  DELETE FROM property_payment_plans;
+  DELETE FROM lead_temperature_history;
   DELETE FROM financial_report_jobs;
   DELETE FROM financial_adjustments;
   DELETE FROM receipts;
@@ -112,6 +118,10 @@ const saId = upsertUser('sa.p8@bliss.com', 'Phase 8 Super Admin', 'Super Admin',
 const pmId = upsertUser('pm.ikeja.p8@bliss.com', 'Phase 8 Project Manager', 'Project Manager', ikeja);
 const haId = upsertUser('ha.p8@bliss.com', 'Phase 8 Head Accountant', 'Head Accountant', headOffice);
 const mktNoTeamId = upsertUser('mkt.noteam.p8@bliss.com', 'Phase 8 Ikeja Direct Marketer', 'Marketer', ikeja);
+const careBranchId = upsertUser('care.branch.p8@bliss.com', 'Phase 13 Branch Care', 'Customer Care', ikeja);
+const careNationalId = upsertUser('care.national.p8@bliss.com', 'Phase 13 National Care', 'Customer Care', null);
+db.prepare("UPDATE users SET care_scope='branch' WHERE id=?").run(careBranchId);
+db.prepare("UPDATE users SET care_scope='national' WHERE id=?").run(careNationalId);
 db.prepare("UPDATE users SET referral_code='BL-P8-MD' WHERE id=?").run(mdId);
 db.prepare("UPDATE users SET referral_code='BL-P8-MKT' WHERE id=?").run(mkt1Id);
 
@@ -238,6 +248,8 @@ const saCookie = await login('sa.p8@bliss.com');
 const pmCookie = await login('pm.ikeja.p8@bliss.com');
 const haCookie = await login('ha.p8@bliss.com');
 const mktNoTeamCookie = await login('mkt.noteam.p8@bliss.com');
+const careBranchCookie = await login('care.branch.p8@bliss.com');
+const careNationalCookie = await login('care.national.p8@bliss.com');
 const clientCookie = await login('client.p8@example.com');
 
 console.log('--- 1. Authentication, sessions and CSRF ---');
@@ -921,14 +933,181 @@ await test('duplicate webhook delivery is idempotent across multiple active prov
   assert(db.prepare("SELECT provider FROM payments WHERE id=?").get(wemaPending).provider === 'wema_alat', 'wema provider not stored');
 });
 
-console.log('\n--- 8. Migration reproducibility and database integrity ---');
+console.log('\n--- 8. Property plans, customer care and SMS ---');
+
+async function createPropertyPlanProperty(ref) {
+  return Number(db.prepare(`INSERT INTO properties (reference,title,description,category_id,sale_price,state,city,address,branch_id,status,is_published,created_by)
+    VALUES (?, ?, 'Plan catalogue property', ?, 20000000, 'Lagos', 'Ikeja', 'Plan Close', ?, 'Available', 1, ?)`)
+    .run(ref, 'Phase 13 Plan Property', categoryId, ikeja, mdId).lastInsertRowid);
+}
+
+await test('properties expose only enabled plans and onboarding locks the chosen plan and schedule', async () => {
+  const propertyId = await createPropertyPlanProperty('BLP-P13-PLAN');
+  const plans = await request(`/api/properties/${propertyId}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { plans: [
+      { plan_type: 'outright', is_enabled: true, total_price: 20000000, deposit: 0, installment: 20000000, number_of_installments: 1 },
+      { plan_type: 'weekly', is_enabled: true, total_price: 21000000, deposit: 1000000, installment: 1000000, number_of_installments: 20 },
+      { plan_type: 'monthly', is_enabled: false, total_price: 22000000, deposit: 1000000, installment: 2000000, number_of_installments: 10 }
+    ] }
+  });
+  assert(plans.status === 200, `property plans save expected 200, got ${plans.status}: ${JSON.stringify(plans.data)}`);
+  const publicPlans = await request(`/api/properties/${propertyId}/payment-plans`, { headers: { Cookie: mkt1Cookie } });
+  assert(publicPlans.status === 200 && publicPlans.data.plans.length === 2, 'only enabled plans should be offered');
+  assert(!publicPlans.data.plans.some(plan => plan.plan_type === 'monthly'), 'disabled monthly plan leaked to onboarding');
+  const disabledPlanId = db.prepare("SELECT id FROM property_payment_plans WHERE property_id=? AND plan_type='monthly'").get(propertyId).id;
+  const weeklyPlanId = db.prepare("SELECT id FROM property_payment_plans WHERE property_id=? AND plan_type='weekly'").get(propertyId).id;
+
+  const disabledAttempt = await request('/api/clients', {
+    method: 'POST', headers: { Cookie: mkt1Cookie }, body: {
+      full_name: 'Phase 13 Disabled Plan', phone_number: '08081330001', interested_property_id: propertyId,
+      property_plan_id: disabledPlanId, assigned_branch_id: ikeja
+    }
+  });
+  assert(disabledAttempt.status === 400, 'a disabled property plan must not be selectable');
+
+  const created = await request('/api/clients', {
+    method: 'POST', headers: { Cookie: mkt1Cookie }, body: {
+      full_name: 'Phase 13 Weekly Plan Client', phone_number: '08081330002', interested_property_id: propertyId,
+      property_plan_id: weeklyPlanId, assigned_branch_id: ikeja,
+      plan_start_date: new Date(Date.now() - 10 * 86400000).toISOString().slice(0, 10)
+    }
+  });
+  assert(created.status === 200, `plan onboarding expected 200, got ${created.status}: ${JSON.stringify(created.data)}`);
+  const client = db.prepare('SELECT * FROM clients WHERE id=?').get(created.data.id);
+  assert(client.property_payment_plan_id === weeklyPlanId && client.payment_plan_type === 'weekly', 'chosen plan not locked to client');
+  assert(client.agreed_purchase_price === 21000000 && client.payment_plan_total_kobo === 2100000000, 'locked purchase total incorrect');
+  const schedule = db.prepare('SELECT * FROM payment_schedules WHERE client_id=? AND status=\'active\' ORDER BY id DESC LIMIT 1').get(created.data.id);
+  assert(schedule && schedule.plan_type === 'weekly' && schedule.total_kobo === 2100000000, 'plan did not drive the payment schedule');
+  assert(db.prepare('SELECT COUNT(*) AS c FROM payment_schedule_items WHERE schedule_id=?').get(schedule.id).c > 0, 'expected schedule items were not generated');
+  const defaulting = await request('/api/defaulting-clients?limit=200&q=Phase%2013%20Weekly', { headers: { Cookie: mdCookie } });
+  assert(defaulting.status === 200 && defaulting.data.clients.some(row => row.client_id === created.data.id && row.plan_type === 'weekly'), 'plan choice did not drive defaulting detection');
+
+  const edit = await request(`/api/properties/${propertyId}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { plans: [
+      { plan_type: 'weekly', is_enabled: true, total_price: 30000000, deposit: 1000000, installment: 1000000, number_of_installments: 20 }
+    ] }
+  });
+  assert(edit.status === 200, 'property plan edit expected 200');
+  const lockedClient = db.prepare('SELECT agreed_purchase_price, payment_plan_total_kobo FROM clients WHERE id=?').get(created.data.id);
+  const lockedSchedule = db.prepare('SELECT total_kobo, locked_plan_json FROM payment_schedules WHERE id=?').get(schedule.id);
+  assert(lockedClient.agreed_purchase_price === 21000000 && lockedClient.payment_plan_total_kobo === 2100000000, 'later property edit changed locked purchase price');
+  assert(lockedSchedule.total_kobo === 2100000000 && lockedSchedule.locked_plan_json, 'later property edit changed locked schedule terms');
+
+  insertPlanPayment(created.data.id, 'TX-P13-PLAN-COMMISSION', 30000000, 1);
+  const commissionPlan = await request('/api/commission-plans', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {
+      name: 'Phase 13 Easy Buy Plan Basis', calculation_basis: 'verified_collections',
+      commissionable_mode: 'capped_amount', commissionable_cap_amount: 200000,
+      approval_required: false, separation_of_duties: false,
+      rules: [{ role_name: 'Marketer', rate_percent: 10 }]
+    }
+  });
+  assert(commissionPlan.status === 200, 'commission plan create expected 200');
+  const generated = await request('/api/commissions/generate', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { plan_id: commissionPlan.data.id, client_id: created.data.id }
+  });
+  assert(generated.status === 200, 'commission generation expected 200');
+  const entry = db.prepare('SELECT * FROM commission_entries WHERE plan_id=? AND client_id=?').get(commissionPlan.data.id, created.data.id);
+  assert(entry && entry.qualifying_amount_kobo === 20000000, 'plan choice did not drive the easy-buy commissionable basis');
+});
+
+await test('branch and national customer care scopes are enforced server-side', async () => {
+  const branchList = await request('/api/customer-care/clients?limit=100', { headers: { Cookie: careBranchCookie } });
+  const nationalList = await request('/api/customer-care/clients?limit=100', { headers: { Cookie: careNationalCookie } });
+  assert(branchList.status === 200 && branchList.data.clients.every(row => row.assigned_branch_id === ikeja), 'branch care saw another branch');
+  assert(nationalList.status === 200 && nationalList.data.clients.some(row => row.assigned_branch_id === ajah), 'national care did not see all branches');
+  const cross = await request(`/api/customer-care/clients/${ajahClientId}`, { headers: { Cookie: careBranchCookie } });
+  const allowed = await request(`/api/customer-care/clients/${ajahClientId}`, { headers: { Cookie: careNationalCookie } });
+  assert(cross.status === 404, 'branch care must not read another branch client');
+  assert(allowed.status === 200, 'national care should read any branch client');
+  const clearance = await request(`/api/customer-care/clients/${adaId}/clearance`, {
+    method: 'POST', headers: { Cookie: careBranchCookie }, body: { status: 'cleared', note: 'Identity and phone confirmed' }
+  });
+  assert(clearance.status === 200, 'care clearance expected 200');
+  const call = await request(`/api/customer-care/clients/${adaId}/calls`, {
+    method: 'POST', headers: { Cookie: careBranchCookie }, body: { call_type: 'call', note: 'Confirmed client details', outcome: 'Cleared' }
+  });
+  assert(call.status === 200, 'care call log expected 200');
+  assert(db.prepare("SELECT care_status FROM client_care_records WHERE client_id=?").get(adaId).care_status === 'cleared', 'care status not persisted');
+  assert(db.prepare('SELECT COUNT(*) AS c FROM client_care_calls WHERE client_id=?').get(adaId).c >= 1, 'care call not logged');
+  const commission = await request('/api/commissions', { headers: { Cookie: careNationalCookie } });
+  assert(commission.status === 403, 'customer care must never see commission data');
+});
+
+await test('SMS is sent once per confirmed payment, normalises phones, respects opt-out and skips unconfirmed payments', async () => {
+  const configure = await request('/api/sms/settings', {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: {
+      sms_enabled: true, sms_provider: 'mock', sms_sender_id: 'Bliss', sms_low_credit_threshold: 10
+    }
+  });
+  assert(configure.status === 200, 'SMS settings expected 200');
+  const overview = await request('/api/sms/overview', { headers: { Cookie: mdCookie } });
+  assert(overview.status === 200 && overview.data.provider === 'mock', 'SMS overview expected 200 with configured provider');
+  db.prepare("UPDATE provider_configs SET status='Active', webhook_secret='p13-sms-secret' WHERE provider_key='wema_alat'").run();
+  const pending = Number(db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
+    VALUES (?, ?, 'TX-P13-SMS-1', 500000, 'NGN', 'Bank Transfer', 'pending', 50000000, 0, 'wema_alat', 'TX-P13-SMS-1')`)
+    .run(adaId, propPublished).lastInsertRowid);
+  const smsPayload = {
+    id: 'p13-sms-event', event: 'payment.success', timestamp: new Date().toISOString(),
+    data: { transaction_reference: 'TX-P13-SMS-1', amount: 500000, currency: 'NGN', status: 'success' }
+  };
+  const first = await request('/api/webhooks/wema-alat', {
+    method: 'POST', headers: { 'X-Webhook-Secret': 'p13-sms-secret' }, body: smsPayload
+  });
+  assert(first.status === 200 && first.data.status === 'verified', 'SMS payment webhook should verify');
+  const second = await request('/api/webhooks/wema-alat', {
+    method: 'POST', headers: { 'X-Webhook-Secret': 'p13-sms-secret' }, body: smsPayload
+  });
+  assert(second.status === 200 && second.data.already_processed === true, 'duplicate webhook must be idempotent');
+  const messages = db.prepare('SELECT * FROM sms_messages WHERE payment_id=?').all(pending);
+  assert(messages.length === 1, `expected exactly one SMS per payment, got ${messages.length}`);
+  assert(messages[0].template_key === 'payment_received' && messages[0].phone_e164.startsWith('+234'), 'payment SMS template or phone normalisation incorrect');
+  let acked = false;
+  await worker.queue({ messages: [{ body: { type: 'sms.send', sms_message_id: messages[0].id }, ack() { acked = true; } }] }, makeEnv());
+  assert(acked, 'SMS queue message was not acknowledged');
+  assert(db.prepare('SELECT status FROM sms_messages WHERE id=?').get(messages[0].id).status === 'delivered', 'mock provider should mark SMS delivered');
+
+  const unconfirmed = Number(db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
+    VALUES (?, ?, 'TX-P13-SMS-UNCONFIRMED', 100000, 'NGN', 'Bank Transfer', 'pending', 10000000, 0, 'wema_alat', 'TX-P13-SMS-UNCONFIRMED')`)
+    .run(adaId, propPublished).lastInsertRowid);
+  await request('/api/webhooks/wema-alat', {
+    method: 'POST', headers: { 'X-Webhook-Secret': 'p13-sms-secret' },
+    body: { id: 'p13-sms-failed-event', event: 'payment.failed', timestamp: new Date().toISOString(), data: { transaction_reference: 'TX-P13-SMS-UNCONFIRMED', amount: 100000, currency: 'NGN', status: 'failed' } }
+  });
+  assert(db.prepare('SELECT COUNT(*) AS c FROM sms_messages WHERE payment_id=?').get(unconfirmed).c === 0, 'unconfirmed/failed payment must not send SMS');
+
+  const normalized = await request('/api/clients', {
+    method: 'POST', headers: { Cookie: mkt1Cookie }, body: { full_name: 'Phase 13 Phone Client', phone_number: '0803 123 4567', assigned_branch_id: ikeja }
+  });
+  assert(normalized.status === 200, 'phone-normalisation client create expected 200');
+  assert(db.prepare('SELECT phone_number FROM clients WHERE id=?').get(normalized.data.id).phone_number === '+2348031234567', 'phone was not normalised to +234');
+
+  const optout = await request(`/api/clients/${normalized.data.id}/sms-optout`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { opted_out: true, reason: 'Prefers voice calls' }
+  });
+  assert(optout.status === 200, 'SMS opt-out expected 200');
+  const optoutPayment = Number(db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, provider, provider_reference)
+    VALUES (?, ?, 'TX-P13-SMS-OPTOUT', 200000, 'NGN', 'Bank Transfer', 'pending', 20000000, 0, 'wema_alat', 'TX-P13-SMS-OPTOUT')`)
+    .run(normalized.data.id, propPublished).lastInsertRowid);
+  const verified = await request(`/api/finance/payments/${optoutPayment}/verify`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(verified.status === 200, 'manual verify expected 200');
+  const optoutMessages = db.prepare('SELECT status FROM sms_messages WHERE payment_id=?').all(optoutPayment);
+  assert(optoutMessages.length === 1 && optoutMessages[0].status === 'opted_out', 'opt-out must be respected and recorded');
+});
+
+console.log('\n--- 9. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
   for (const suffix of ['', '-wal', '-shm']) rmSync(cleanPath + suffix, { force: true });
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 13, `expected 13 migrations, found ${files.length}`);
+  assert(files.length === 14, `expected 14 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

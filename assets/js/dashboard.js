@@ -78,11 +78,28 @@
     }
   }
 
+  async function loadSmsBalance() {
+    const card = el("smsBalanceCard");
+    if (!card || !me.sms_access) return;
+    card.style.display = "flex";
+    try {
+      const data = await S.fetchJson("/api/sms/overview");
+      el("smsBalanceTotal").textContent = data.balance === null
+        ? "Not available"
+        : `${data.balance_currency} ${Number(data.balance).toLocaleString()}`;
+      el("smsBalanceMeta").textContent = data.low_credit
+        ? `Low credit — threshold ${data.balance_currency} ${Number(data.low_credit_threshold).toLocaleString()}`
+        : `${data.provider} · ${data.enabled ? "SMS enabled" : "SMS disabled globally"}`;
+    } catch {
+      card.style.display = "none";
+    }
+  }
+
   async function load() {
     try {
       dashboard = await S.fetchJson("/api/dashboard?" + queryString());
       render();
-      await Promise.all([loadRevenueToday(), loadDefaulting()]);
+      await Promise.all([loadRevenueToday(), loadDefaulting(), loadSmsBalance()]);
     } catch (error) {
       S.toast(error.message || "Unable to load dashboard", true);
     }
@@ -410,6 +427,10 @@
   document.addEventListener("DOMContentLoaded", async () => {
     me = await S.initShell("dashboard");
     if (!me) return;
+    if (me.role === "Customer Care") {
+      window.location.href = "customer-care.html";
+      return;
+    }
     setDefaults();
     if (["Managing Director", "Finance Officer"].includes(me.role)) await loadBranches();
     el("applyFilters").addEventListener("click", load);

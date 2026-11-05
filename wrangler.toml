@@ -30,6 +30,7 @@ queue = "bliss-legacy-staging-tasks"
 queue = "bliss-legacy-staging-tasks"
 max_batch_size = 10
 max_batch_timeout = 5
+max_retries = 5
 
 [[durable_objects.bindings]]
 name = "CHAT_ROOM"

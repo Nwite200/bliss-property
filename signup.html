@@ -70,6 +70,10 @@
           <label for="property">Interested property</label>
           <select id="property"><option value="">No property selected</option></select>
         </div>
+        <div class="full" id="signupPlanWrap" style="display:none">
+          <label>Payment plan *</label>
+          <div id="signupPlanOptions" class="quick-links"></div>
+        </div>
         <div>
           <label for="nokName">Next of kin name</label>
           <input id="nokName" type="text" autocomplete="name">
@@ -129,6 +133,32 @@
         const properties = await fetch('/api/properties?limit=50').then(r => r.json());
         propertySelect.innerHTML = '<option value="">No property selected</option>' + (properties.properties || []).map(p => `<option value="${p.id}">${p.reference} — ${p.title}</option>`).join('');
       } catch { /* optional */ }
+      function planLabel(type) {
+        return ({ outright: 'Outright', part_payment: 'Part payment', daily: 'Daily', weekly: 'Weekly', bi_monthly: 'Bi-monthly', monthly: 'Monthly' })[type] || type;
+      }
+      propertySelect.addEventListener('change', async () => {
+        const wrap = document.getElementById('signupPlanWrap');
+        const options = document.getElementById('signupPlanOptions');
+        const propertyId = propertySelect.value;
+        if (!propertyId) { wrap.style.display = 'none'; options.innerHTML = ''; return; }
+        try {
+          const data = await fetch(`/api/properties/${propertyId}/payment-plans`).then(r => r.json());
+          const plans = data.plans || [];
+          if (!plans.length) {
+            wrap.style.display = 'none';
+            options.innerHTML = '';
+            return;
+          }
+          wrap.style.display = '';
+          options.innerHTML = plans.map((plan, index) => `
+            <label class="tag" style="cursor:pointer;display:flex;align-items:center;gap:8px;padding:10px;flex-wrap:wrap">
+              <input type="radio" name="signupPlan" value="${plan.id}" ${index === 0 ? 'checked' : ''}>
+              <strong>${planLabel(plan.plan_type)}</strong>
+              <span>₦${(Number(plan.total_price_kobo || 0) / 100).toLocaleString('en-NG')}</span>
+              <span style="font-size:11px;color:var(--muted)">Deposit ₦${(Number(plan.deposit_kobo || 0) / 100).toLocaleString('en-NG')} · Instalment ₦${(Number(plan.installment_kobo || 0) / 100).toLocaleString('en-NG')}</span>
+            </label>`).join('');
+        } catch { wrap.style.display = 'none'; }
+      });
     })();
 
     document.getElementById('signupForm').addEventListener('submit', async (event) => {
@@ -161,6 +191,8 @@
             next_of_kin_address: document.getElementById('nokAddress').value.trim(),
             referral_code: document.getElementById('referralCode').value.trim(),
             interested_property_id: document.getElementById('property').value ? Number(document.getElementById('property').value) : null,
+            property_plan_id: document.querySelector('input[name="signupPlan"]:checked') ? Number(document.querySelector('input[name="signupPlan"]:checked').value) : null,
+            plan_start_date: new Date().toISOString().slice(0, 10),
             password
           })
         });

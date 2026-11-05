@@ -98,6 +98,7 @@
     params.set("limit", "20");
     if (el("leadSearch").value.trim()) params.set("q", el("leadSearch").value.trim());
     if (el("leadStatusFilter").value) params.set("status", el("leadStatusFilter").value);
+    if (el("leadTemperatureFilter").value) params.set("temperature", el("leadTemperatureFilter").value);
     if (el("leadMarketerFilter").value) params.set("marketer_id", el("leadMarketerFilter").value);
     if (["Managing Director"].includes(me.role) && el("leadBranchFilter").value) params.set("branch_id", el("leadBranchFilter").value);
     if (el("followUpDueFilter").checked) params.set("follow_up_due", "1");
@@ -115,6 +116,11 @@
       el("leadPrev").disabled = page <= 1;
       el("leadNext").disabled = page >= pages;
       renderTable();
+      const temps = data.temperature_counts || {};
+      el("temperatureCounts").innerHTML = ["Hot", "Warm", "Cold", "Unset"].map(temp => {
+        const tone = temp === "Hot" ? "badge-red" : temp === "Warm" ? "badge-amber" : "badge-gray";
+        return `<span class="badge ${tone}">${temp}: ${Number(temps[temp] || 0)}</span>`;
+      }).join("");
     } catch (error) { S.toast(error.message, true); }
   }
 
@@ -134,17 +140,19 @@
       <tr>
         <td><strong>${S.escape(lead.full_name)}</strong><div class="small muted">${S.escape(lead.lead_reference)} · ${S.escape(lead.phone_number)}</div></td>
         <td>${S.leadBadge(lead.status)}</td>
+        <td>${lead.lead_temperature ? `<span class="badge ${lead.lead_temperature === "Hot" ? "badge-red" : lead.lead_temperature === "Warm" ? "badge-amber" : "badge-gray"}">${S.escape(lead.lead_temperature)}</span>` : "-"}</td>
         <td>${S.escape(lead.marketer_name || "-")}</td>
         <td>${S.escape(lead.branch_name || "-")}</td>
         <td>${S.escape(lead.property_title || "-")}</td>
         <td>${lead.inspection_date ? `${S.formatDate(lead.inspection_date)}<div class="small muted">${S.escape(lead.inspection_time || "")}</div>` : "-"}</td>
+        <td>${lead.contact_count || 0}<div class="small muted">${lead.last_contact_at ? S.formatDate(lead.last_contact_at) : ""}</div></td>
         <td>${lead.next_follow_up_date ? S.formatDate(lead.next_follow_up_date) : "-"}</td>
         <td class="nowrap">${lead.estimated_value_kobo ? money(lead.estimated_value_kobo) : "-"}</td>
         <td class="toolbar">
           ${["New Lead", "Contacted", "Interested", "Negotiation", "Inspection Scheduled"].includes(lead.status) && !lead.converted_client_id ? `<button class="btn btn-ghost btn-xs" type="button" data-inspect-lead-id="${lead.id}">Inspect</button>` : ""}
           <button class="btn btn-ghost btn-xs" type="button" data-edit-lead-id="${lead.id}">Edit</button><button class="btn btn-ghost btn-xs" type="button" data-lead-id="${lead.id}">Open</button>
         </td>
-      </tr>`).join("") : '<tr><td colspan="9"><div class="empty-state">No leads match the current filter.</div></td></tr>';
+      </tr>`).join("") : '<tr><td colspan="11"><div class="empty-state">No leads match the current filter.</div></td></tr>';
     el("leadBody").querySelectorAll("[data-inspect-lead-id]").forEach(button => {
       button.addEventListener("click", () => {
         const lead = leads.find(item => Number(item.id) === Number(button.getAttribute("data-inspect-lead-id")));
@@ -241,6 +249,8 @@
     el("leadModalTitle").textContent = "Add lead";
     el("leadForm").reset();
     el("leadStatus").value = "New Lead";
+    el("leadTemperature").value = "";
+    el("leadReferrer").value = "";
     el("leadBranch").value = me.branch_id || "";
     el("leadMarketer").value = "";
     el("leadProperty").value = "";
@@ -256,6 +266,8 @@
     el("leadPhone").value = lead.phone_number || "";
     el("leadEmail").value = lead.email_address || "";
     el("leadSource").value = lead.source || "";
+    el("leadReferrer").value = lead.referrer || "";
+    el("leadTemperature").value = lead.lead_temperature || "";
     el("leadStatus").value = lead.status || "New Lead";
     el("leadBranch").value = lead.branch_id || "";
     el("leadMarketer").value = lead.assigned_marketer_id || "";
@@ -276,6 +288,8 @@
       phone_number: el("leadPhone").value.trim(),
       email_address: el("leadEmail").value.trim(),
       source: el("leadSource").value.trim(),
+      referrer: el("leadReferrer").value.trim(),
+      lead_temperature: el("leadTemperature").value || null,
       status: el("leadStatus").value,
       property_id: el("leadProperty").value ? Number(el("leadProperty").value) : null,
       assigned_marketer_id: el("leadMarketer").value ? Number(el("leadMarketer").value) : null,
@@ -341,6 +355,10 @@
               <tr><td class="muted">Phone</td><td>${S.escape(lead.phone_number)}</td></tr>
               <tr><td class="muted">Email</td><td>${S.escape(lead.email_address || "-")}</td></tr>
               <tr><td class="muted">Source</td><td>${S.escape(lead.source || "-")}</td></tr>
+              <tr><td class="muted">Referrer</td><td>${S.escape(lead.referrer || "-")}</td></tr>
+              <tr><td class="muted">Temperature</td><td>${lead.lead_temperature ? `<span class="badge ${lead.lead_temperature === "Hot" ? "badge-red" : lead.lead_temperature === "Warm" ? "badge-amber" : "badge-gray"}">${S.escape(lead.lead_temperature)}</span>` : "-"}</td></tr>
+              <tr><td class="muted">Contacts</td><td>${data.follow_ups ? data.follow_ups.length : 0} · last ${lead.last_contact_at ? S.formatDateTime(lead.last_contact_at) : "-"}</td></tr>
+              ${lead.lost_reason ? `<tr><td class="muted">Lost reason</td><td>${S.escape(lead.lost_reason)}</td></tr>` : ""}
               <tr><td class="muted">Marketer</td><td>${S.escape(lead.marketer_name || "-")}</td></tr>
               <tr><td class="muted">Team lead</td><td>${S.escape(lead.team_lead_name || "-")}</td></tr>
               <tr><td class="muted">Branch</td><td>${S.escape(lead.branch_name || "-")}</td></tr>
@@ -364,6 +382,18 @@
             </div>
             ${!lead.converted_client_id ? `
               <div class="mt-16">
+                <h3>Lead temperature</h3>
+                <div class="toolbar">
+                  <select class="field-input" id="detailTemperature">
+                    <option value="">Not set</option>
+                    ${["Hot", "Warm", "Cold"].map(t => `<option value="${t}" ${lead.lead_temperature === t ? "selected" : ""}>${t}</option>`).join("")}
+                  </select>
+                  <button class="btn btn-ghost btn-sm" type="button" id="updateTemperatureBtn">Update temperature</button>
+                </div>
+                <div class="small muted mt-16">${(data.temperature_history || []).slice(0, 3).map(row => `${S.escape(row.old_temperature || "Unset")} → ${S.escape(row.new_temperature)} · ${S.formatDateTime(row.created_at)}`).join("<br>") || "No temperature changes yet."}</div>
+              </div>` : ""}
+            ${!lead.converted_client_id ? `
+              <div class="mt-16">
                 <h3>Convert lead</h3>
                 ${canSetPrice ? '<div class="field-group"><label class="field-label" for="convertPrice">Agreed contract price (₦)</label><input class="field-input" type="number" min="0" step="0.01" id="convertPrice" placeholder="Optional"></div>' : '<div class="route-note">Conversion creates a client under your branch. Contract price can only be set by a Branch Manager or Managing Director.</div>'}
                 <button class="btn btn-green btn-sm mt-16" type="button" id="convertLeadBtn">Convert to client</button>
@@ -376,6 +406,8 @@
         <form id="followUpForm" class="form-grid">
           <input type="hidden" id="followUpId">
           <div class="field-group full"><label class="field-label" for="followUpNote">Follow-up note</label><textarea class="field-input" id="followUpNote" rows="2" required></textarea></div>
+          <div class="field-group"><label class="field-label" for="followUpContactType">Contact type</label><select class="field-input" id="followUpContactType"><option value="call">Call</option><option value="whatsapp">WhatsApp</option><option value="visit">Visit</option><option value="sms">SMS</option><option value="other">Other</option></select></div>
+          <div class="field-group"><label class="field-label" for="followUpContactedAt">Contact date</label><input class="field-input" type="date" id="followUpContactedAt"></div>
           <div class="field-group"><label class="field-label" for="followUpChannel">Channel</label><select class="field-input" id="followUpChannel"><option>Phone</option><option>WhatsApp</option><option>Email</option><option>In person</option><option>Other</option></select></div>
           <div class="field-group"><label class="field-label" for="followUpOutcome">Outcome</label><input class="field-input" id="followUpOutcome" placeholder="e.g. Interested, call back"></div>
           <div class="field-group"><label class="field-label" for="followUpDate">Next follow-up date</label><input class="field-input" type="date" id="followUpDate"></div>
@@ -395,6 +427,8 @@
     el("updateStatusBtn").addEventListener("click", updateDetailStatus);
     const inspectBtn = el("detailInspectBtn");
     if (inspectBtn) inspectBtn.addEventListener("click", () => openInspectionModal(lead));
+    const tempBtn = el("updateTemperatureBtn");
+    if (tempBtn) tempBtn.addEventListener("click", updateTemperature);
     const convertBtn = el("convertLeadBtn");
     if (convertBtn) convertBtn.addEventListener("click", convertLead);
     el("followUpForm").addEventListener("submit", submitFollowUp);
@@ -417,8 +451,22 @@
     el("followUpNote").value = "";
     el("followUpOutcome").value = "";
     el("followUpDate").value = "";
+    if (el("followUpContactedAt")) el("followUpContactedAt").value = "";
     el("followUpSubmit").textContent = "Save follow-up";
     el("cancelFollowUpEdit").style.display = "none";
+  }
+
+  async function updateTemperature() {
+    const temperature = el("detailTemperature").value;
+    if (!temperature) { S.toast("Choose Hot, Warm or Cold.", true); return; }
+    try {
+      await S.fetchJson(`/api/leads/${currentDetail.id}/temperature`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ temperature })
+      });
+      S.toast("Lead temperature updated.");
+      await refreshDetail();
+      await loadLeads();
+    } catch (error) { S.toast(error.message, true); }
   }
 
   async function refreshDetail() {
@@ -429,10 +477,17 @@
   }
 
   async function updateDetailStatus() {
+    const status = el("detailStatus").value;
+    const body = { status };
+    if (status === "Lost") {
+      const reason = prompt("Lost reason (required):");
+      if (!reason || !reason.trim()) { S.toast("A lost reason is required.", true); return; }
+      body.lost_reason = reason.trim();
+    }
     try {
       await S.fetchJson(`/api/leads/${currentDetail.id}/status`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: el("detailStatus").value })
+        body: JSON.stringify(body)
       });
       S.toast("Lead status updated.");
       await refreshDetail();
@@ -445,6 +500,8 @@
     event.preventDefault();
     const body = {
       note: el("followUpNote").value.trim(),
+      contact_type: el("followUpContactType").value,
+      contacted_at: el("followUpContactedAt").value ? el("followUpContactedAt").value + "T12:00:00.000Z" : null,
       channel: el("followUpChannel").value,
       outcome: el("followUpOutcome").value.trim(),
       follow_up_date: el("followUpDate").value || null

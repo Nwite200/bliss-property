@@ -48,7 +48,7 @@
           </div>
           <div class="filters mb-16">
             <input type="search" id="staffSearch" placeholder="Search name, email or phone…">
-            <select id="staffRoleFilter"><option value="">All roles</option><option>Super Admin</option><option>Managing Director</option><option>Project Manager</option><option>Branch Manager</option><option>Team Lead</option><option>Marketer</option><option>Finance Officer</option><option>Head Accountant</option></select>
+            <select id="staffRoleFilter"><option value="">All roles</option><option>Super Admin</option><option>Managing Director</option><option>Project Manager</option><option>Branch Manager</option><option>Team Lead</option><option>Marketer</option><option>Finance Officer</option><option>Head Accountant</option><option>Customer Care</option></select>
             <select id="staffBranchFilter"><option value="">All branches</option></select>
             <select id="staffStatusFilter"><option value="">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
             <button class="btn btn-green btn-sm" type="button" id="applyStaffFilters">Filter</button>
@@ -89,6 +89,9 @@
           <div class="field-group full"><label class="field-label" for="staffNotes">Internal notes</label><textarea class="field-input" id="staffNotes" rows="2"></textarea></div>
           <div class="field-group full"><label class="field-label">Team memberships</label><div id="staffTeamsChecks" class="quick-links"></div></div>
           <div class="field-group full" id="staffCommissionAccessGroup"><label class="tag" style="display:flex;align-items:center;gap:8px;padding:10px"><input type="checkbox" id="staffCommissionAccess"> Grant commission access (MD, Head Accountant only by default)</label></div>
+          <div class="field-group full" id="staffPlanAccessGroup"><label class="tag" style="display:flex;align-items:center;gap:8px;padding:10px"><input type="checkbox" id="staffPlanAccess"> Grant property payment-plan management access</label></div>
+          <div class="field-group full" id="staffSmsAccessGroup"><label class="tag" style="display:flex;align-items:center;gap:8px;padding:10px"><input type="checkbox" id="staffSmsAccess"> Grant SMS centre access</label></div>
+          <div class="field-group" id="staffCareScopeGroup"><label class="field-label" for="staffCareScope">Customer care scope</label><select class="field-input" id="staffCareScope"><option value="branch">Branch</option><option value="national">National (no branch)</option></select></div>
         </div>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
           <button class="btn btn-ghost" type="button" data-close-modal="staffModal">Cancel</button>

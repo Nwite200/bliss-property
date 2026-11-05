@@ -155,6 +155,22 @@ async function load() {
     el.innerHTML = data.notes.map(n => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="font-size:11px;color:var(--muted)">${new Date(n.created_at).toLocaleString()}</div><div style="padding-left:12px">${esc(n.note)}</div></div>`).join("");
   }
 
+  const meResult = await fetchJson("/me");
+  if (meResult.ok && meResult.data.sms_access) {
+    const optout = await fetchJson("/clients/" + id + "/sms-optout");
+    if (optout.ok) {
+      document.getElementById("smsOptOutWrap").style.display = "";
+      document.getElementById("smsOptOut").checked = Boolean(optout.data.opted_out);
+      document.getElementById("smsOptOut").addEventListener("change", async event => {
+        const result = await fetchJson("/clients/" + id + "/sms-optout", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ opted_out: event.target.checked, reason: "Updated from client record" })
+        });
+        if (!result.ok) { alert(result.data.error || "Unable to update SMS preference"); event.target.checked = !event.target.checked; }
+      });
+    }
+  }
+
   document.getElementById("logoutBtn").addEventListener("click", async (e) => {
     e.preventDefault();
     await fetch("/api/logout", { method: "POST", credentials: "include" });

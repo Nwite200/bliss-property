@@ -28,7 +28,7 @@ These are separate from the production resources. Staging is not connected to `b
 
 ## 2. Migration status
 
-All thirteen migrations were applied to `bliss-legacy-staging-db` only:
+All fourteen migrations were applied to `bliss-legacy-staging-db` only:
 
 - `0001_auth_org.sql`
 - `0002_properties.sql`
@@ -43,6 +43,7 @@ All thirteen migrations were applied to `bliss-legacy-staging-db` only:
 - `0011_super_admin_notifications_chat.sql`
 - `0012_revenue_hierarchy_attribution.sql`
 - `0013_plans_defaulting_inspections_commissions_providers.sql`
+- `0014_property_plans_customer_care_sms_leads.sql`
 
 `wrangler d1 migrations list bliss-legacy-staging-db --remote` reports no pending migrations.
 
@@ -55,8 +56,8 @@ All thirteen migrations were applied to `bliss-legacy-staging-db` only:
 | Phase 5 | 62 | 0 | 0 |
 | Phase 6 | 21 | 0 | 0 |
 | Phase 7 | 26 | 0 | 0 |
-| Phase 8 | 30 | 0 | 0 |
-| **Total** | **139** | **0** | **0** |
+| Phase 8 | 33 | 0 | 0 |
+| **Total** | **142** | **0** | **0** |
 
 Also passed: `node --check` for the Worker, all external JS and all test suites; inline HTML script checks; `git diff --check`.
 
@@ -188,6 +189,8 @@ Additional hierarchy staging accounts use the main staging demo password:
 ```text
 staging.pm@blisslegacy.test        Project Manager, Ikeja
 staging.accountant@blisslegacy.test Head Accountant, Head Office
+care.branch.staging@blisslegacy.test   Customer Care, branch scope
+care.national.staging@blisslegacy.test Customer Care, national scope
 ```
 
 The Super Admin temporary password is supplied only in the secure handover/final response.
@@ -259,9 +262,25 @@ The Super Admin temporary password is supplied only in the secure handover/final
   Paystack adapters are registered. Secrets are Worker secrets only.
 - See `PAYMENT_PROVIDER_SECRETS.md` for the ALATPay secret checklist.
 
-## 12. Deployment version
+## 12. Property plans, customer care, SMS and lead refinements
 
-Current staging deployment version ID: `85f19c12-feed-4133-a8c3-41483bba887f`
+- Property payment-plan catalogue (`property_payment_plans`) with outright,
+  part payment, daily, weekly, bi-monthly and monthly plans.
+- Onboarding can only choose enabled plans; the chosen terms are locked onto
+  the client, allocation and payment schedule so later property edits do not
+  change existing clients.
+- Customer Care role with branch or national scope, pending-clearance queue,
+  cleared status and call history. No commission access.
+- SMS provider adapters (Termii first, Africa's Talking alternative, mock for
+  tests) behind Worker secrets, queued delivery, retries, idempotency, opt-out,
+  editable templates, delivery log, credit balance and low-balance alerts.
+- Lead temperature (Hot/Warm/Cold), contact history count/last contact, referrer
+  and required lost reason.
+- See `SMS_PROVIDER_SETUP.md` for SMS account and secret setup.
+
+## 13. Deployment version
+
+Current staging deployment version ID: `32e681e9-f606-4933-a608-01a71c7846e7`
 
 ---
 
