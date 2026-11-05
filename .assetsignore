@@ -18,6 +18,7 @@ test_phase5_suite.mjs
 test_phase6_suite.mjs
 test_phase7_suite.mjs
 test_phase8_suite.mjs
+test_db_paths.mjs
 PHASE6_WALKTHROUGH.md
 PHASE7_WALKTHROUGH.md
 PHASE8_FINAL_AUDIT.md
