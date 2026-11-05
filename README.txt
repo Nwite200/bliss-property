@@ -58,7 +58,8 @@ Architecture and safety
 -----------------------
 - Bindings: DB, FILES, CACHE, TASKS, ASSETS.
 - No Supabase, Firebase or alternative primary backend.
-- Cloudflare demo deployment: https://bliss-legacy-limited.easterntechexpo.workers.dev
+- Staging deployment: https://bliss-property.easterntechexpo.workers.dev
+- Production deployment: https://bliss-legacy-limited.easterntechexpo.workers.dev
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
 - There is no separate Super Admin role; the Managing Director is the highest implemented role.

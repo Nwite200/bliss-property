@@ -3,12 +3,13 @@ import { pbkdf2Sync, randomBytes } from 'node:crypto';
 import { readFileSync, copyFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import worker from './src/index.js';
+import { resolveLiveDb } from './test_db_paths.mjs';
 
 // ---------------------------------------------------------------------------
 // Test harness: copy the local D1 database, seed a deterministic dataset, then
 // exercise the Worker directly (no browser, no frontend hiding).
 // ---------------------------------------------------------------------------
-const LIVE_DB = '.wrangler/state/v3/d1/miniflare-D1DatabaseObject/c6c9fe2e839a026d2bc28c3710008b8d91b43bb2bed7c7b18fa3ea4062dfb1a0.sqlite';
+const LIVE_DB = resolveLiveDb();
 const TEST_DB = join(dirname(LIVE_DB), 'phase5-test.sqlite');
 
 if (!existsSync(LIVE_DB)) {

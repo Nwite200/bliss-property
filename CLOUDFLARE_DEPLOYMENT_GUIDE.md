@@ -1,6 +1,8 @@
 # Bliss Legacy Limited — Cloudflare Deployment Guide
 
-**Current deployment:** `https://bliss-legacy-limited.easterntechexpo.workers.dev`
+> **Staging:** the current staging deployment is recorded separately in `STAGING_DEPLOYMENT.md`. It uses the `bliss-property` Worker and isolated staging D1, R2, KV and Queue resources. This guide retains the production deployment sequence; do not use production bindings for staging.
+
+**Production deployment:** `https://bliss-legacy-limited.easterntechexpo.workers.dev`
 
 **Account:** `easterntechexpo@gmail.com` (Cloudflare account `788e3870b53ed6cb61f5c12cc04fdbc0`)
 
@@ -269,3 +271,45 @@ Recommended:
 - `preview_urls` is enabled by default because it is not set in `wrangler.toml`; disable it if preview access is not wanted.
 - Final redeploy excludes tests, audit documents and local setup files through `.assetsignore`. Verified: `/PHASE8_FINAL_AUDIT.md`, `/SECURITY_AUDIT.md` and `/test_phase8_suite.mjs` return 404.
 - The generated live demo accounts are temporary and must be removed or rotated after testing.
+
+---
+
+## 15. Cloudflare Git build failure diagnosis
+
+A Cloudflare Git-connected build failed with:
+
+```text
+KV namespace 'REPLACE_WITH_KV_NAMESPACE_ID' is not valid
+```
+
+and showed:
+
+```text
+env.CACHE (REPLACE_WITH_KV_NAMESPACE_ID)
+env.ENVIRONMENT ("development")
+Worker: bliss-property
+```
+
+### Root cause
+
+The GitHub remote `main` is still at commit `34f6be8`. That commit still contains the placeholder KV namespace and `ENVIRONMENT=development`.
+
+The local Phase 8 commit `3b9f56c` updates:
+
+- D1 database ID to the real production database.
+- KV namespace ID to the real production namespace.
+- Worker name to `bliss-legacy-limited`.
+- `ENVIRONMENT=production` and `DEMO_MODE_ENABLED=0`.
+
+That commit has **not been pushed** because the current instruction prohibits a push.
+
+### Fix
+
+Either:
+
+1. **Authorize pushing the local commit** `3b9f56c` (and any later reviewed commit) so the Cloudflare build reads the corrected `wrangler.toml`; or
+2. Update the Cloudflare project’s build environment/configuration so it uses the correct KV namespace ID and production environment, and align the project/worker name (`bliss-property` vs `bliss-legacy-limited`).
+
+Until one of those is done, the Git-connected Cloudflare build will continue to fail.
+
+Do not put the KV namespace ID into a public frontend file; it belongs in `wrangler.toml` or Cloudflare project configuration.

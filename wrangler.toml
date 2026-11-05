@@ -1,4 +1,4 @@
-name = "bliss-legacy-limited"
+name = "bliss-property"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 workers_dev = true
@@ -10,24 +10,24 @@ binding = "ASSETS"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "bliss-legacy-db"
-database_id = "f0252b4a-20ac-4706-a269-8281c3838db5"
+database_name = "bliss-legacy-staging-db"
+database_id = "294d118f-96c1-4878-ad56-a33d0b866958"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "FILES"
-bucket_name = "bliss-legacy-files"
+bucket_name = "bliss-legacy-staging-files"
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "424f8f6d26624f0687508339b20b9004"
+id = "c8968754a05a4b38b29320e79b8ee3ba"
 
 [[queues.producers]]
 binding = "TASKS"
-queue = "bliss-legacy-tasks"
+queue = "bliss-legacy-staging-tasks"
 
 [[queues.consumers]]
-queue = "bliss-legacy-tasks"
+queue = "bliss-legacy-staging-tasks"
 max_batch_size = 10
 max_batch_timeout = 5
 
@@ -35,7 +35,7 @@ max_batch_timeout = 5
 crons = ["0 6 * * *"]
 
 [vars]
-ENVIRONMENT = "production"
+ENVIRONMENT = "staging"
 DEMO_MODE_ENABLED = "0"
 
 [observability]
