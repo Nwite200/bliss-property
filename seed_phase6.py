@@ -13,12 +13,22 @@ contract prices. It is excluded from public static assets.
 import base64
 import hashlib
 import os
+import secrets
+import sys
 import sqlite3
+
+from seed_guard import require_local
 
 DB_PATH = (
     ".wrangler/state/v3/d1/miniflare-D1DatabaseObject/"
     "c6c9fe2e839a026d2bc28c3710008b8d91b43bb2bed7c7b18fa3ea4062dfb1a0.sqlite"
 )
+
+TEST_PASSWORDS = {}
+
+
+def seed_guard():
+    require_local("seed_phase6.py", DB_PATH)
 
 
 def hash_pw(pw: str) -> str:
@@ -36,14 +46,14 @@ def ensure_user(cur, email, full_name, role_id, branch_id):
     if row:
         cur.execute(
             """UPDATE users SET password_hash=?, full_name=?, role_id=?, branch_id=?,
-               is_active=1, deactivated_at=NULL WHERE id=?""",
-            (hash_pw("password123"), full_name, role_id, branch_id, row[0]),
+               is_active=1, deactivated_at=NULL, is_test=1, test_expires_at=datetime('now','+14 days'), access_valid_until=CASE WHEN role_id=4 THEN date('now','start of month','+1 month','-1 day') ELSE access_valid_until END WHERE id=?""",
+            (hash_pw(TEST_PASSWORDS.setdefault(email, secrets.token_urlsafe(18))), full_name, role_id, branch_id, row[0]),
         )
         return row[0]
     cur.execute(
-        """INSERT INTO users (email, password_hash, full_name, role_id, branch_id, is_active)
-           VALUES (?, ?, ?, ?, ?, 1)""",
-        (email, hash_pw("password123"), full_name, role_id, branch_id),
+        """INSERT INTO users (email, password_hash, full_name, role_id, branch_id, is_active, is_test, test_expires_at, access_valid_until)
+           VALUES (?, ?, ?, ?, ?, 1, 1, datetime('now','+14 days'), CASE WHEN ?=4 THEN date('now','start of month','+1 month','-1 day') ELSE NULL END)""",
+        (email, hash_pw(TEST_PASSWORDS.setdefault(email, secrets.token_urlsafe(18))), full_name, role_id, branch_id, role_id),
     )
     return cur.lastrowid
 
@@ -85,6 +95,7 @@ def ensure_team(cur, name, branch_id, lead_id, member_ids):
 
 
 def seed():
+    seed_guard()
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
     cur = conn.cursor()
@@ -128,9 +139,9 @@ def seed():
     conn.commit()
     print("Phase 6 demo seed complete.")
     print(f"Teams: Ikeja Team Alpha (id={t1}), Ajah Team (id={t2})")
-    print("Demo logins (password123):")
+    print("Test credentials generated for this run (shown once):")
     for email, _, role_id, branch_id, _, _ in staff:
-        print(f"  {email} · role_id={role_id} · branch_id={branch_id}")
+        print(f"  {email} / {TEST_PASSWORDS.get(email, '(unchanged existing account)')} · role_id={role_id} · branch_id={branch_id}")
     conn.close()
 
 

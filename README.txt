@@ -1,17 +1,19 @@
 BLISS LEGACY LIMITED — PROPERTY MANAGEMENT PLATFORM
 
-Phases 1–6 are implemented locally on Cloudflare Workers + D1 + R2 + KV + Queues + Static Assets.
+Phases 1–8 are implemented locally on Cloudflare Workers + D1 + R2 + KV + Queues + Static Assets.
 
 Local setup
 -----------
 1. npm install
 2. npm run db:migrate:local
-3. python3 seed_phase5.py
-4. python3 seed_phase6.py
+3. SEED_ENV=local python3 seed_phase5.py
+4. SEED_ENV=local python3 seed_phase6.py
 5. npm run dev
 6. Open http://localhost:8787/login.html
 
-Demo staff logins use password123:
+Each seed run generates a strong random password per test account and prints it
+to the terminal once. Only the password hash is stored; nothing is written to
+the repository. The staff emails are:
 - md@bliss.com — Managing Director
 - bm.ikeja@bliss.com / bm.ajah@bliss.com — Branch Managers
 - tl.ikeja@bliss.com / tl.ajah@bliss.com — Team Leads
@@ -37,7 +39,9 @@ Tests
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm run test:phase8  (36 tests)
+- npm run test:phase8  (43 tests)
+- npm run test:seed    (5 tests)
+- npm run test:browser (3 browser tests; needs Google Chrome)
 - npm test              (all suites, 145 tests)
 
 Documentation

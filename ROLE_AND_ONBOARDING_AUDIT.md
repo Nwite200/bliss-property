@@ -320,7 +320,7 @@ Client visibility and commission attribution use the **current** relationship-ma
 
 ## 8. Local test accounts
 
-Local accounts already exist and were not duplicated. All use `password123` in the local seeded environment only.
+Local accounts already exist and were not duplicated. Seed scripts now generate a fresh random password per account at run time and print it once; only the hash is stored.
 
 See the final response for the local URLs and credentials. Do not reuse these passwords in production.
 

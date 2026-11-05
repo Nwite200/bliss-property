@@ -13,7 +13,11 @@ never deletes audit history.
 import base64
 import hashlib
 import os
+import secrets
+import sys
 import sqlite3
+
+from seed_guard import require_local
 from datetime import datetime, timedelta
 
 DB_PATH = (
@@ -22,6 +26,12 @@ DB_PATH = (
 )
 
 DEMO_CLIENT_REF = "DEMO-CLIENT-001"
+
+TEST_PASSWORDS = {}
+
+
+def seed_guard():
+    require_local("seed_phase5.py", DB_PATH)
 
 
 def hash_pw(pw: str) -> str:
@@ -37,18 +47,18 @@ def ensure_user(cur, email, full_name, role_id, branch_id=1):
     cur.execute("SELECT id FROM users WHERE email=?", (email,))
     row = cur.fetchone()
     if row:
-        # Keep the demo password predictable on every re-run.
+        # Generate a fresh random password per run; only the hash is stored.
         cur.execute(
-            "UPDATE users SET password_hash=?, full_name=?, role_id=?, branch_id=?, is_active=1 WHERE id=?",
-            (hash_pw("password123"), full_name, role_id, branch_id, row[0]),
+            "UPDATE users SET password_hash=?, full_name=?, role_id=?, branch_id=?, is_active=1, is_test=1, test_expires_at=datetime('now','+14 days'), access_valid_until=CASE WHEN ?=4 THEN date('now','start of month','+1 month','-1 day') ELSE access_valid_until END WHERE id=?",
+            (hash_pw(TEST_PASSWORDS.setdefault(email, secrets.token_urlsafe(18))), full_name, role_id, branch_id, role_id, row[0]),
         )
         return row[0]
     cur.execute(
         """
-        INSERT INTO users (email, password_hash, full_name, role_id, branch_id, is_active)
-        VALUES (?, ?, ?, ?, ?, 1)
+        INSERT INTO users (email, password_hash, full_name, role_id, branch_id, is_active, is_test, test_expires_at, access_valid_until)
+        VALUES (?, ?, ?, ?, ?, 1, 1, datetime('now','+14 days'), CASE WHEN ?=4 THEN date('now','start of month','+1 month','-1 day') ELSE NULL END)
         """,
-        (email, hash_pw("password123"), full_name, role_id, branch_id),
+        (email, hash_pw(TEST_PASSWORDS.setdefault(email, secrets.token_urlsafe(18))), full_name, role_id, branch_id, role_id),
     )
     return cur.lastrowid
 
@@ -150,6 +160,7 @@ def clear_client_financials(cur, client_ids):
 
 
 def seed():
+    seed_guard()
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
     cur = conn.cursor()
@@ -367,7 +378,7 @@ def seed():
     print(f"  Ada client id={ada_client_id} (BLC-MW2ER37J) — verified NGN 5,000,000, pending NGN 2,000,000")
     print(f"  Musa client id={musa_client_id} (BLC-MW2F7LG0) — no payments, full NGN 20,000,000 outstanding")
     print(f"  Demo client id={demo_client_id} ({DEMO_CLIENT_REF}) — demo-only NGN 3,000,000")
-    print("  Finance login: finance@bliss.com / password123")
+
 
 
 if __name__ == "__main__":

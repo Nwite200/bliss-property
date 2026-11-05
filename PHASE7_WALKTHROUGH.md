@@ -10,14 +10,16 @@ No company commission percentages or rates are hard-coded. All rates in this wal
 cd "/Users/a/bliss estate project "
 npm install
 npm run db:migrate:local
-python3 seed_phase5.py
-python3 seed_phase6.py
+SEED_ENV=local python3 seed_phase5.py
+SEED_ENV=local python3 seed_phase6.py
 npm run dev
 ```
 
 Open `http://localhost:8787/login.html`.
 
-All local demo staff accounts use `password123`.
+Each seed run generates a strong random password per account and prints it to
+the terminal once. Store it securely; only the hash is stored. Seeds refuse to
+run unless `SEED_ENV` is `local` or `staging` and the database ID matches.
 
 ### Client sign-up and branding
 

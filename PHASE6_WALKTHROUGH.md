@@ -10,8 +10,8 @@ This document is the local walkthrough for every Phase 6 staff dashboard. It rep
 cd "/Users/a/bliss estate project "
 npm install
 npm run db:migrate:local
-python3 seed_phase5.py
-python3 seed_phase6.py
+SEED_ENV=local python3 seed_phase5.py
+SEED_ENV=local python3 seed_phase6.py
 npm run dev
 ```
 
@@ -21,7 +21,10 @@ The Phase 6 seed is idempotent and only ensures demo staff accounts, profiles, t
 
 ## 2. Demo logins
 
-All local demo passwords are `password123`.
+Each seed run generates a strong random password per account and prints it to
+the terminal once. Record it in your password manager; only the hash is stored.
+Seeds refuse to run unless `SEED_ENV` is `local` or `staging` and the database
+identifier matches.
 
 | Role | Email | Branch | Main screen |
 |---|---|---|---|
