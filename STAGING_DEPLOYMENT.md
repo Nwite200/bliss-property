@@ -4,7 +4,7 @@
 
 **Staging URL:** `https://bliss-property.easterntechexpo.workers.dev`
 
-**Branch:** `staging`
+**Branch:** `staging` (`f3a1ed1`)
 
 **Environment:** `staging`
 
@@ -128,7 +128,7 @@ Until that dashboard step is completed, Git pushes will not automatically trigge
 
 ## 7. Deployment version
 
-Current staging deployment version ID: `5b9d171f-4c0f-4217-9669-0e4e3cda1c03`
+Current staging deployment version ID: `7181ac17-9d12-4a09-be00-3f6208d52d25`
 
 ---
 
