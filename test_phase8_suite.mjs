@@ -1360,6 +1360,12 @@ await test('expired test accounts cannot log in and are deactivated', async () =
   assert(/expired after 14 days/i.test(res.data.error || ''), 'expiry message is unclear');
   assert(db.prepare('SELECT is_active FROM users WHERE id=?').get(expiredId).is_active === 0, 'expired test account stayed active');
   assert(db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action='test_account.expired' AND target_id=?").get(String(expiredId)).c > 0, 'expiry was not audited');
+
+  const scheduledExpiredId = upsertUser('scheduled.expired.p8@bliss.com', 'Scheduled Expired', 'Marketer', ikeja);
+  db.prepare("UPDATE users SET is_test=1, test_expires_at='2020-01-01', is_active=1 WHERE id=?").run(scheduledExpiredId);
+  await worker.scheduled({}, clock, { waitUntil() {} });
+  assert(db.prepare('SELECT is_active FROM users WHERE id=?').get(scheduledExpiredId).is_active === 0, 'scheduled job did not deactivate an expired test account');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action='test_account.expired' AND target_id=?").get(String(scheduledExpiredId)).c > 0, 'scheduled test expiry was not audited');
 });
 
 await test('lapsed marketer sees a clear message, BM sees pending list, reactivation is audited', async () => {

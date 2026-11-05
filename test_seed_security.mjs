@@ -55,6 +55,10 @@ test('seed refuses a missing or ambiguous environment', () => {
 test('seed refuses staging without the exact staging database ID', () => {
   const result = runPython(['seed_phase6.py'], { SEED_ENV: 'staging', ENVIRONMENT: 'staging' });
   assert(result.status !== 0, 'seed must not accept an unverified staging target');
+  const wrongId = runPython(['seed_staging.py', '--apply'], {
+    SEED_ENV: 'staging', ENVIRONMENT: 'staging', STAGING_DB_ID: '00000000-0000-0000-0000-000000000000'
+  });
+  assert(wrongId.status !== 0 && /REFUSED/i.test(wrongId.stderr + wrongId.stdout), 'staging seed must refuse an unknown database ID');
 });
 
 test('wipe refuses a production environment', () => {
