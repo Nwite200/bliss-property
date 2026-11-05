@@ -1,6 +1,6 @@
 /* Bliss Legacy Limited — PWA service worker.
    Static assets only. API and authenticated financial data are never cached. */
-const CACHE_VERSION = "bliss-pwa-v2";
+const CACHE_VERSION = "bliss-pwa-v3";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/",
@@ -10,6 +10,7 @@ const CORE_ASSETS = [
   "/assets/css/motion.css",
   "/assets/js/motion.js",
   "/assets/js/pwa.js",
+  "/assets/js/mobile-nav.js",
   "/assets/js/components.js",
   "/assets/js/data/properties.js",
   "/assets/images/bliss-legacy-logo.png",

@@ -157,7 +157,8 @@
         openInstructions();
       }
     },
-    canInstall: function () { return Boolean(deferredPrompt); }
+    canInstall: function () { return Boolean(deferredPrompt); },
+    showInstructions: openInstructions
   };
 
   if ("serviceWorker" in navigator && window.isSecureContext) {
