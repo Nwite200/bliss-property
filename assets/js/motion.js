@@ -192,6 +192,9 @@
   }
 
   function onDocumentClick(event) {
+    // Real pointer clicks already skip via pointerdown; this also covers
+    // keyboard-activated clicks and programmatic activation.
+    if (activeRun) finishRun(activeRun, true);
     if (isNonViewClick(event.target)) return;
 
     var tab = event.target.closest("[role='tab'], .tab, .tab-btn, .tab-link, [data-tab], [data-view], [data-section]");

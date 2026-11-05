@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Bliss Legacy" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png" />
+  <link rel="stylesheet" href="assets/css/motion.css" />
+  <script src="assets/js/motion.js"></script>
+  <title>Offline | Bliss Legacy Limited</title>
+  <style>
+    :root { --green:#00B522; --charcoal:#414141; --soft:#F5F7F5; --line:#E3EAE5; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      padding: 24px; background: radial-gradient(circle at 50% 35%, #fff, var(--soft));
+      color: var(--charcoal); font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .card {
+      width: min(100%, 460px); background: #fff; border: 1px solid var(--line);
+      border-radius: 18px; padding: 32px 26px; text-align: center;
+      box-shadow: 0 20px 60px rgba(34,43,36,.10);
+    }
+    .logo { width: min(280px, 76vw); height: auto; display: block; margin: 0 auto 22px; }
+    h1 { font-size: 23px; margin: 0 0 10px; letter-spacing: -.02em; }
+    p { font-size: 14px; line-height: 1.7; color: #6B756E; margin: 0 0 20px; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 7px; }
+    button {
+      appearance: none; border: 0; border-radius: 10px; background: var(--green);
+      color: #fff; font: inherit; font-weight: 700; padding: 13px 22px; cursor: pointer;
+    }
+    button:active { transform: translateY(1px); }
+    .hint { margin-top: 14px; font-size: 12px; color: #8A948D; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <img class="logo" src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy Limited" />
+    <h1>You are offline</h1>
+    <p><span class="dot"></span>The Bliss Legacy app is installed, but this page needs a connection to load live property and account information.</p>
+    <button type="button" onclick="window.location.reload()">Try again</button>
+    <div class="hint">Your saved app remains available on your home screen.</div>
+  </main>
+  <script src="assets/js/mobile-nav.js"></script>
+</body>
+</html>

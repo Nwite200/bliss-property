@@ -424,6 +424,34 @@ await test('single logo intro replays on navigation, refresh and Back/Forward', 
   }
 });
 
+await test('PWA manifest, service worker and install flow are wired for iOS and Android', async () => {
+  const manifest = JSON.parse(readFileSync('manifest.json', 'utf8'));
+  assert(manifest.name === 'Bliss Legacy Limited' && manifest.short_name === 'Bliss Legacy', 'PWA manifest branding incorrect');
+  assert(manifest.start_url === '/' && manifest.scope === '/' && manifest.display === 'standalone', 'PWA start/scope/display incorrect');
+  assert(manifest.icons.some(icon => icon.sizes === '192x192'), '192px PWA icon missing');
+  assert(manifest.icons.some(icon => icon.sizes === '512x512'), '512px PWA icon missing');
+  assert(manifest.icons.some(icon => icon.purpose === 'maskable'), 'maskable PWA icon missing');
+  for (const icon of ['assets/icons/icon-192.png', 'assets/icons/icon-512.png', 'assets/icons/icon-maskable-512.png', 'assets/icons/apple-touch-icon.png']) {
+    assert(readFileSync(icon).length > 1000, `${icon} missing or empty`);
+  }
+  const sw = readFileSync('sw.js', 'utf8');
+  assert(sw.includes('/api/') && sw.includes('return;'), 'service worker must not cache API responses');
+  assert(sw.includes('/offline.html'), 'offline fallback missing');
+  assert(sw.includes('skipWaiting') && sw.includes('clients.claim'), 'service worker activation missing');
+  const pwa = readFileSync('assets/js/pwa.js', 'utf8');
+  assert(pwa.includes('navigator.serviceWorker.register("/sw.js"'), 'service worker registration missing');
+  assert(pwa.includes('beforeinstallprompt'), 'Android install prompt handling missing');
+  assert(pwa.includes('Add to Home Screen'), 'iOS install instructions missing');
+  assert(pwa.includes('appinstalled'), 'installed-state handling missing');
+  for (const file of readdirSync('.').filter(name => name.endsWith('.html'))) {
+    const html = readFileSync(file, 'utf8');
+    assert(html.includes('manifest.json'), `${file} is missing the PWA manifest`);
+    assert(html.includes('apple-touch-icon'), `${file} is missing the Apple touch icon`);
+    if (file !== 'offline.html') assert(html.includes('assets/js/pwa.js'), `${file} is missing the PWA install script`);
+  }
+  assert(readFileSync('offline.html', 'utf8').includes('You are offline'), 'offline page content missing');
+});
+
 await test('landing page exposes ten listings including land and demo labels', async () => {
   const props = readFileSync('assets/js/data/properties.js', 'utf8');
   const ids = [...props.matchAll(/id: "prop-(\d+)"/g)].map(m => m[1]);

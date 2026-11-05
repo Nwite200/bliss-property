@@ -37,8 +37,8 @@ Tests
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm run test:phase8  (18 tests)
-- npm test              (all suites, 127 tests)
+- npm run test:phase8  (19 tests)
+- npm test              (all suites, 128 tests)
 
 Documentation
 -------------
