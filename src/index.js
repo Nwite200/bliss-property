@@ -75,6 +75,58 @@ async function verifyPassword(password, stored) {
   return hash === expected;
 }
 
+const IDENTITY_HASH_SALT = "bliss-legacy-identity-v1:";
+
+function normalizeIdentityType(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return {
+    "nin": "NIN",
+    "national identification number": "NIN",
+    "national id": "NIN",
+    "international passport": "International Passport",
+    "passport": "International Passport",
+    "driver's license": "Driver's License",
+    "drivers license": "Driver's License",
+    "driver licence": "Driver's License",
+    "permanent voter's card": "Permanent Voter's Card",
+    "voter's card": "Permanent Voter's Card",
+    "voters card": "Permanent Voter's Card",
+    "pvc": "Permanent Voter's Card"
+  }[raw] || null;
+}
+
+function cleanIdentityNumber(value) {
+  return String(value || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+}
+
+function validateIdentityNumber(type, value) {
+  const raw = cleanIdentityNumber(value);
+  if (!raw) return "Identity number is required";
+  if (type === "NIN" && !/^\d{11}$/.test(raw)) return "NIN must be exactly 11 digits";
+  if (type === "International Passport" && !/^[A-Z0-9]{6,12}$/.test(raw)) return "Passport number is invalid";
+  if (type === "Driver's License" && !/^[A-Z0-9]{6,20}$/.test(raw)) return "Driver's licence number is invalid";
+  if (type === "Permanent Voter's Card" && !/^[A-Z0-9]{10,20}$/.test(raw)) return "Voter's card number is invalid";
+  return null;
+}
+
+function maskIdentityNumber(value) {
+  const raw = cleanIdentityNumber(value);
+  if (!raw) return null;
+  if (raw.length <= 4) return "*".repeat(raw.length);
+  return `${raw.slice(0, 2)}${"*".repeat(Math.max(2, raw.length - 6))}${raw.slice(-4)}`;
+}
+
+async function hashIdentityNumber(value) {
+  const bytes = new TextEncoder().encode(IDENTITY_HASH_SALT + cleanIdentityNumber(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function cleanBvn(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return /^\d{10,11}$/.test(digits) ? digits : null;
+}
+
 function newSessionId() {
   return crypto.randomUUID();
 }
@@ -1315,6 +1367,19 @@ function canViewOwnCommission(actor) {
   return ["Marketer", "Team Lead", "Project Manager", "Branch Manager"].includes(actualRole);
 }
 
+function canViewReferralCommissions(actor) {
+  if (!actor) return false;
+  const actualRole = actor.actual_role_name || actor.role_name;
+  if (["Managing Director", "Super Admin", "Head Accountant", "Finance Officer", "Branch Manager", "Project Manager", "Team Lead", "Marketer"].includes(actualRole)) return true;
+  return Number(actor.commission_access || 0) === 1;
+}
+
+function canManageReferralCommissions(actor) {
+  if (!actor) return false;
+  const actualRole = actor.actual_role_name || actor.role_name;
+  return ["Managing Director", "Super Admin", "Head Accountant", "Finance Officer"].includes(actualRole);
+}
+
 function ownCommissionEntry(entry) {
   const earned = Number(entry.commission_kobo || 0);
   const adjusted = Number(entry.adjusted_kobo || 0);
@@ -1358,6 +1423,402 @@ function commissionNet(entry) {
 
 function commissionOutstanding(entry) {
   return Math.max(0, commissionNet(entry) - Number(entry.paid_kobo || 0));
+}
+
+// ---------------------------------------------------------------------------
+// ELPIS referral commission engine
+// ---------------------------------------------------------------------------
+const REFERRAL_COMMISSION_STATUSES = [
+  "Pending", "Earned", "Partially Paid", "Paid", "Reversed", "Configuration Required"
+];
+const REFERRAL_LONG_TERM_STAGE_KOBO = 6000000; // ₦60,000
+const REFERRAL_LONG_TERM_MAX_KOBO = 3500000;   // ₦35,000
+const REFERRAL_SHORT_TERM_RATE_BPS = 1000;     // 10.00%
+
+function safeJsonParse(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function referralStructureLabel(structure, planType, months) {
+  if (structure === "two_stage") return "Long-term (two stage)";
+  if (structure === "flat") return planType === "outright"
+    ? "Outright (10%)"
+    : `Short-term${months !== null && months !== undefined ? ` (${months} months)` : ""} (10%)`;
+  if (structure === "configuration_required") return "Configuration required";
+  return structure || "Pending";
+}
+
+async function getReferralCommissionRules(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM referral_commission_rules WHERE is_active=1 ORDER BY id"
+  ).all();
+  const map = {};
+  for (const row of results) map[row.rule_key] = row;
+  return map;
+}
+
+async function resolveReferralCommissionPlan(env, client) {
+  const schedule = await env.DB.prepare(`
+    SELECT s.*,
+      (SELECT COUNT(*) FROM payment_schedule_items i WHERE i.schedule_id=s.id) AS item_count,
+      (SELECT MIN(i.due_date) FROM payment_schedule_items i WHERE i.schedule_id=s.id) AS first_due_date,
+      (SELECT MAX(i.due_date) FROM payment_schedule_items i WHERE i.schedule_id=s.id) AS last_due_date
+    FROM payment_schedules s
+    WHERE s.client_id=?
+    ORDER BY CASE WHEN s.status='active' THEN 0 ELSE 1 END, s.id DESC
+    LIMIT 1
+  `).bind(client.id).first();
+
+  let planType = client.payment_plan_type
+    ? normalizePlanType(client.payment_plan_type, "part_payment")
+    : null;
+  let months = client.payment_plan_duration_months === null || client.payment_plan_duration_months === undefined
+    ? null
+    : Number(client.payment_plan_duration_months);
+
+  const locked = safeJsonParse(client.payment_plan_locked_json)
+    || (schedule ? safeJsonParse(schedule.locked_plan_json) : null);
+  if ((months === null || !Number.isFinite(months)) && locked && locked.duration_months !== null && locked.duration_months !== undefined) {
+    months = Number(locked.duration_months);
+  }
+  if (!planType && schedule) planType = normalizePlanType(schedule.plan_type, "part_payment");
+  if (!Number.isFinite(months)) months = null;
+
+  if (months === null && schedule) {
+    const schedulePlanType = normalizePlanType(schedule.plan_type, "part_payment");
+    const installments = Number(schedule.number_of_installments || 0);
+    const frequencyDays = Number(schedule.frequency_days || 0);
+    if (schedulePlanType === "outright") {
+      months = 0;
+    } else if (installments > 0 && frequencyDays > 0) {
+      months = Math.max(1, Math.round((installments * frequencyDays) / 30));
+    } else if (Number(schedule.item_count || 0) > 1 && schedule.first_due_date && schedule.last_due_date) {
+      months = Math.max(1, Math.round((diffDays(schedule.first_due_date, schedule.last_due_date) + (frequencyDays || 30)) / 30));
+    }
+  }
+
+  if (planType === "outright") months = 0;
+  const base = {
+    schedule,
+    scheduleId: schedule ? schedule.id : null,
+    planType,
+    months: months === null || Number.isFinite(months) ? months : null
+  };
+
+  if (!planType) {
+    return {
+      ...base,
+      structure: "configuration_required",
+      ruleKey: null,
+      flagReason: "No payment plan is attached to this client",
+      label: referralStructureLabel("configuration_required", planType, months)
+    };
+  }
+  if (planType === "outright") {
+    return { ...base, structure: "flat", ruleKey: "outright", flagReason: null, label: referralStructureLabel("flat", "outright", 0) };
+  }
+  if (months === null) {
+    return {
+      ...base,
+      structure: "configuration_required",
+      ruleKey: null,
+      flagReason: "Payment plan duration is missing",
+      label: referralStructureLabel("configuration_required", planType, months)
+    };
+  }
+  if (months === 8) {
+    return {
+      ...base,
+      structure: "configuration_required",
+      ruleKey: "exact_8",
+      flagReason: "An 8-month payment plan has no approved referral commission structure",
+      label: referralStructureLabel("configuration_required", planType, months)
+    };
+  }
+  if (months <= 7) {
+    return { ...base, structure: "flat", ruleKey: "short_term", flagReason: null, label: referralStructureLabel("flat", planType, months) };
+  }
+  if (months > 8) {
+    return { ...base, structure: "two_stage", ruleKey: "long_term", flagReason: null, label: referralStructureLabel("two_stage", planType, months) };
+  }
+  return {
+    ...base,
+    structure: "configuration_required",
+    ruleKey: null,
+    flagReason: "Payment plan duration is outside the approved referral structures",
+    label: referralStructureLabel("configuration_required", planType, months)
+  };
+}
+
+function calculateReferralCommissionKobo(structure, rule, totalPaidKobo) {
+  const paid = Math.max(0, Math.floor(Number(totalPaidKobo || 0)));
+  if (structure === "flat") {
+    const rateBps = Number(rule && rule.flat_rate_bps !== undefined ? rule.flat_rate_bps : REFERRAL_SHORT_TERM_RATE_BPS);
+    return {
+      totalKobo: Math.floor((paid * rateBps + 5000) / 10000),
+      qualifyingKobo: paid,
+      stage1PaidKobo: 0,
+      stage2PaidKobo: 0,
+      stage1CommissionKobo: 0,
+      stage2CommissionKobo: 0,
+      stageAmountKobo: 0,
+      rateBps
+    };
+  }
+  if (structure === "two_stage") {
+    const stageAmount = Math.max(1, Number(rule && rule.stage_amount_kobo ? rule.stage_amount_kobo : REFERRAL_LONG_TERM_STAGE_KOBO));
+    const cap1 = Math.max(0, Number(rule && rule.stage1_commission_cap_kobo ? rule.stage1_commission_cap_kobo : 2000000));
+    const cap2 = Math.max(0, Number(rule && rule.stage2_commission_cap_kobo ? rule.stage2_commission_cap_kobo : 1500000));
+    const max = Math.max(0, Number(rule && rule.max_commission_kobo ? rule.max_commission_kobo : REFERRAL_LONG_TERM_MAX_KOBO));
+    const stage1Paid = Math.min(paid, stageAmount);
+    const stage2Paid = Math.min(Math.max(paid - stageAmount, 0), stageAmount);
+    // Stage 1 uses the fixed ₦20,000 cap, not a rounded 33.333% rate.
+    const stage1Commission = Math.min(cap1, Math.floor((stage1Paid * cap1) / stageAmount));
+    const stage2Commission = Math.min(cap2, Math.floor((stage2Paid * cap2) / stageAmount));
+    return {
+      totalKobo: Math.min(max, stage1Commission + stage2Commission),
+      qualifyingKobo: Math.min(paid, stageAmount * 2),
+      stage1PaidKobo: stage1Paid,
+      stage2PaidKobo: stage2Paid,
+      stage1CommissionKobo: stage1Commission,
+      stage2CommissionKobo: stage2Commission,
+      stageAmountKobo: stageAmount,
+      rateBps: 0
+    };
+  }
+  return {
+    totalKobo: 0,
+    qualifyingKobo: paid,
+    stage1PaidKobo: 0,
+    stage2PaidKobo: 0,
+    stage1CommissionKobo: 0,
+    stage2CommissionKobo: 0,
+    stageAmountKobo: 0,
+    rateBps: 0
+  };
+}
+
+async function recalculateReferralCommissionForClient(env, clientId, actorId, trigger = {}) {
+  const client = await env.DB.prepare(`
+    SELECT c.*, b.name AS branch_name
+    FROM clients c LEFT JOIN branches b ON b.id=c.assigned_branch_id
+    WHERE c.id=? AND c.is_deleted=0
+  `).bind(clientId).first();
+  if (!client) return { skipped: true, reason: "client_not_found" };
+
+  const rules = await getReferralCommissionRules(env);
+  const plan = await resolveReferralCommissionPlan(env, client);
+  const rule = plan.ruleKey ? rules[plan.ruleKey] : null;
+  const { results: payments } = await env.DB.prepare(`
+    SELECT id, amount_kobo, verified_at
+    FROM payments
+    WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+    ORDER BY verified_at, id
+  `).bind(client.id).all();
+  const totalPaidKobo = payments.reduce((sum, payment) => sum + Number(payment.amount_kobo || 0), 0);
+  const calc = calculateReferralCommissionKobo(plan.structure, rule, totalPaidKobo);
+  const existing = await env.DB.prepare(
+    "SELECT * FROM referral_commission_accounts WHERE client_id=?"
+  ).bind(client.id).first();
+  const recipient = await resolveCommissionRecipient(env, client, "Marketer");
+  // Preserve an existing attribution if the marketer is temporarily inactive.
+  const marketerId = recipient ? recipient.userId : (existing ? existing.marketer_id : null);
+  const branchId = (recipient && recipient.branchId) || (existing ? existing.branch_id : null) || client.assigned_branch_id || null;
+  const teamId = recipient ? (recipient.teamId || null) : (existing ? existing.team_id : null);
+
+  if (!payments.length && !existing) return { skipped: true, reason: "no_verified_payments", client_id: client.id };
+
+  const previousTotal = existing ? Number(existing.total_commission_kobo || 0) : 0;
+  const adjusted = existing ? Number(existing.adjusted_kobo || 0) : 0;
+  const paid = existing ? Number(existing.paid_kobo || 0) : 0;
+  const net = calc.totalKobo + adjusted;
+  let status = "Pending";
+  if (plan.structure === "configuration_required") status = "Configuration Required";
+  else if (net <= 0) {
+    status = existing && ["Earned", "Partially Paid", "Paid"].includes(existing.status) ? "Reversed" : "Pending";
+  } else if (!marketerId) status = "Pending";
+  else if (paid >= net) status = "Paid";
+  else if (paid > 0) status = "Partially Paid";
+  else status = "Earned";
+
+  const flagReason = plan.flagReason || (!marketerId ? "No eligible marketer is assigned to this client" : null);
+  const lastPaymentId = payments.length ? payments[payments.length - 1].id : (existing ? existing.last_payment_id : null);
+  const values = [
+    marketerId, branchId, teamId, plan.planType, plan.months, plan.structure, plan.ruleKey,
+    totalPaidKobo, calc.qualifyingKobo, calc.stage1PaidKobo, calc.stage2PaidKobo,
+    calc.stage1CommissionKobo, calc.stage2CommissionKobo, calc.totalKobo,
+    adjusted, paid, status, flagReason, lastPaymentId
+  ];
+
+  let accountId;
+  if (!existing) {
+    const inserted = await env.DB.prepare(`
+      INSERT INTO referral_commission_accounts
+        (client_id, marketer_id, branch_id, team_id, plan_type, plan_duration_months, structure, rule_key,
+         total_paid_kobo, qualifying_paid_kobo, stage1_paid_kobo, stage2_paid_kobo,
+         stage1_commission_kobo, stage2_commission_kobo, total_commission_kobo,
+         adjusted_kobo, paid_kobo, status, flag_reason, last_payment_id, last_calculated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).bind(client.id, ...values).run();
+    accountId = inserted.meta.last_row_id;
+  } else {
+    accountId = existing.id;
+    await env.DB.prepare(`
+      UPDATE referral_commission_accounts SET
+        marketer_id=?, branch_id=?, team_id=?, plan_type=?, plan_duration_months=?, structure=?, rule_key=?,
+        total_paid_kobo=?, qualifying_paid_kobo=?, stage1_paid_kobo=?, stage2_paid_kobo=?,
+        stage1_commission_kobo=?, stage2_commission_kobo=?, total_commission_kobo=?,
+        adjusted_kobo=?, paid_kobo=?, status=?, flag_reason=?, last_payment_id=?,
+        last_calculated_at=datetime('now'), updated_at=datetime('now')
+      WHERE id=?
+    `).bind(...values, accountId).run();
+  }
+
+  const delta = calc.totalKobo - previousTotal;
+  const structureChanged = Boolean(existing) && (
+    existing.structure !== plan.structure ||
+    Number(existing.marketer_id || 0) !== Number(marketerId || 0) ||
+    Number(existing.plan_duration_months === null ? -1 : existing.plan_duration_months) !== Number(plan.months === null ? -1 : plan.months)
+  );
+  const needsFlagEvent = plan.structure === "configuration_required" && (!existing || existing.status !== "Configuration Required");
+  const shouldRecord = !existing || delta !== 0 || structureChanged || needsFlagEvent ||
+    Boolean(trigger.forceEvent) || ["reversal", "adjustment"].includes(trigger.eventType);
+
+  if (shouldRecord) {
+    const defaultSourceKey = `referral:client:${client.id}:calc:${Date.now().toString(36)}:${crypto.randomUUID().slice(0, 8)}`;
+    const sourceKey = trigger.sourceKey || defaultSourceKey;
+    let eventType = trigger.eventType || (delta > 0 ? "accrual" : delta < 0 ? "reversal" : "recalculation");
+    if (plan.structure === "configuration_required" && needsFlagEvent) eventType = "flagged";
+    const eventRef = "RCE-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 8).toUpperCase();
+    const eventRes = await env.DB.prepare(`
+      INSERT OR IGNORE INTO referral_commission_events
+        (event_ref, source_key, account_id, client_id, payment_id, marketer_id, event_type,
+         amount_kobo, total_paid_kobo, qualifying_paid_kobo, net_commission_kobo, reason,
+         metadata, actor_user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      eventRef, sourceKey, accountId, client.id, trigger.paymentId || lastPaymentId || null,
+      marketerId, eventType, delta, totalPaidKobo, calc.qualifyingKobo, net,
+      trigger.reason || plan.flagReason || null,
+      JSON.stringify({
+        structure: plan.structure, rule_key: plan.ruleKey, plan_type: plan.planType,
+        plan_duration_months: plan.months, stage1_paid_kobo: calc.stage1PaidKobo,
+        stage2_paid_kobo: calc.stage2PaidKobo, stage1_commission_kobo: calc.stage1CommissionKobo,
+        stage2_commission_kobo: calc.stage2CommissionKobo, total_commission_kobo: calc.totalKobo,
+        adjusted_kobo: adjusted, paid_kobo: paid, status
+      }),
+      actorId || null
+    ).run();
+
+    if (eventRes.meta && Number(eventRes.meta.changes) > 0) {
+      await audit(env, actorId || null, eventType === "flagged" ? "referral_commission.flagged" : "referral_commission.calculated",
+        "referral_commission", String(accountId), {
+          client_id: client.id, client_reference: client.client_reference, event_type: eventType,
+          delta_kobo: delta, total_commission_kobo: calc.totalKobo, qualifying_paid_kobo: calc.qualifyingKobo,
+          structure: plan.structure, rule_key: plan.ruleKey, plan_duration_months: plan.months,
+          marketer_id: marketerId, flag_reason: flagReason
+        }, branchId);
+      if (delta > 0 && marketerId) {
+        await createNotification(env, {
+          userId: marketerId,
+          type: "referral_commission.earned",
+          title: "Referral commission earned",
+          message: `${formatNGN(delta)} referral commission was earned from ${client.full_name} (${client.client_reference}).`,
+          metadata: { account_id: accountId, client_id: client.id, amount_kobo: delta }
+        }).catch(() => {});
+      }
+      if (plan.structure === "configuration_required") {
+        const managers = await env.DB.prepare(`
+          SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+          WHERE u.is_active=1 AND r.name IN ('Managing Director','Super Admin','Finance Officer','Head Accountant')
+          ORDER BY u.id LIMIT 20
+        `).all();
+        for (const manager of managers.results || []) {
+          await createNotification(env, {
+            userId: manager.id,
+            type: "referral_commission.configuration_required",
+            title: "Referral commission needs configuration",
+            message: `${client.full_name} (${client.client_reference}): ${flagReason || "payment plan requires referral commission configuration"}.`,
+            metadata: { account_id: accountId, client_id: client.id }
+          }).catch(() => {});
+        }
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    account_id: accountId,
+    client_id: client.id,
+    structure: plan.structure,
+    rule_key: plan.ruleKey,
+    plan_type: plan.planType,
+    plan_duration_months: plan.months,
+    total_paid_kobo: totalPaidKobo,
+    qualifying_paid_kobo: calc.qualifyingKobo,
+    total_commission_kobo: calc.totalKobo,
+    net_commission_kobo: net,
+    paid_kobo: paid,
+    outstanding_kobo: Math.max(0, net - paid),
+    status,
+    flag_reason: flagReason,
+    delta_kobo: delta
+  };
+}
+
+async function backfillReferralCommissions(env, actorId, options = {}) {
+  const limit = Math.max(1, Math.min(500, Number(options.limit || 100)));
+  const onlyStale = options.onlyStale !== false;
+  const { results: clients } = await env.DB.prepare(`
+    SELECT c.id,
+      (SELECT MAX(p.verified_at) FROM payments p
+        WHERE p.client_id=c.id AND p.status='verified' AND p.is_demo=0 AND p.currency='NGN') AS latest_verified_at
+    FROM clients c
+    LEFT JOIN referral_commission_accounts a ON a.client_id=c.id
+    WHERE c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%'
+      AND EXISTS (SELECT 1 FROM payments p
+        WHERE p.client_id=c.id AND p.status='verified' AND p.is_demo=0 AND p.currency='NGN')
+      ${onlyStale ? "AND (a.id IS NULL OR a.last_calculated_at IS NULL OR datetime(a.last_calculated_at) < datetime((SELECT MAX(p2.verified_at) FROM payments p2 WHERE p2.client_id=c.id AND p2.status='verified' AND p2.is_demo=0 AND p2.currency='NGN')))" : ""}
+    ORDER BY c.id LIMIT ?
+  `).bind(limit).all();
+
+  let processed = 0;
+  let skipped = 0;
+  let flagged = 0;
+  let earnedKobo = 0;
+  const runKey = options.sourceKey || `referral:backfill:${todayOnly()}:${crypto.randomUUID().slice(0, 8)}`;
+  for (const row of clients) {
+    const result = await recalculateReferralCommissionForClient(env, row.id, actorId, {
+      sourceKey: `${runKey}:client:${row.id}`,
+      eventType: "recalculation",
+      reason: options.reason || "Automatic referral commission backfill"
+    });
+    if (result.skipped) { skipped++; continue; }
+    processed++;
+    earnedKobo += Number(result.delta_kobo || 0);
+    if (result.structure === "configuration_required") flagged++;
+  }
+  return { processed, skipped, flagged, earned_kobo: earnedKobo, examined: clients.length };
+}
+
+function referralCommissionScopeSql(scope, alias = "a") {
+  const actualRole = scope.actualRole || scope.role;
+  if (["Managing Director", "Super Admin", "Head Accountant", "Finance Officer"].includes(actualRole)) {
+    return { clause: "1=1", binds: [] };
+  }
+  if (["Branch Manager", "Project Manager"].includes(actualRole)) {
+    return { clause: `${alias}.branch_id = ?`, binds: [scope.branchId] };
+  }
+  if (actualRole === "Team Lead") {
+    const ids = (scope.memberIds && scope.memberIds.length ? scope.memberIds : [scope.actorId]);
+    return { clause: `${alias}.marketer_id IN (${placeholders(ids)})`, binds: ids };
+  }
+  if (actualRole === "Marketer") {
+    return { clause: `${alias}.marketer_id = ?`, binds: [scope.actorId] };
+  }
+  return { clause: "1=0", binds: [] };
 }
 
 function commissionScopeSql(scope, alias = "ce") {
@@ -1734,6 +2195,24 @@ async function autoGenerateCommissionForPayment(env, payment) {
     await markCommissionGenerationFailure(env, payment, "No active MD/Super Admin available for commission actor");
     return { ok: false, error: "No system actor" };
   }
+
+  // The ELPIS referral commission ledger is always recalculated from verified
+  // payments, so a failure in a configurable commission plan cannot block it.
+  let referralResult = null;
+  try {
+    referralResult = await recalculateReferralCommissionForClient(env, payment.client_id, actor.id, {
+      paymentId: payment.id,
+      sourceKey: `referral:client:${payment.client_id}:payment:${payment.id}:verified`,
+      eventType: "accrual",
+      reason: "Verified payment"
+    });
+  } catch (referralError) {
+    await audit(env, actor.id, "referral_commission.failed", "payment", String(payment.id), {
+      client_id: payment.client_id,
+      error: String(referralError.message || "Referral commission calculation failed").slice(0, 1000)
+    }, null);
+  }
+
   try {
     const result = await generateCommissionEntries(env, actor, { client_id: payment.client_id });
     await env.DB.prepare(`
@@ -1744,10 +2223,10 @@ async function autoGenerateCommissionForPayment(env, payment) {
       UPDATE commission_generation_failures SET resolved_at=datetime('now'), updated_at=datetime('now')
       WHERE payment_id=? AND resolved_at IS NULL
     `).bind(payment.id).run();
-    return { ok: true, ...result };
+    return { ok: true, referral: referralResult, ...result };
   } catch (error) {
     await markCommissionGenerationFailure(env, payment, error.message || "Commission generation failed");
-    return { ok: false, error: error.message || "Commission generation failed" };
+    return { ok: false, error: error.message || "Commission generation failed", referral: referralResult };
   }
 }
 
@@ -1854,6 +2333,21 @@ async function applyPaymentCommissionAdjustments(env, payment, adjustmentType, a
       message: `Commission ${entry.commission_ref} was adjusted by ${formatNGN(-Number(entry.commission_kobo || 0))} after a payment ${adjustmentType}.`,
       metadata: { commission_id: entry.id, source_payment_id: payment.id }
     });
+  }
+
+  // Recalculate the ELPIS referral ledger from verified payments. Reversed or
+  // refunded transactions disappear from the cumulative total automatically.
+  try {
+    await recalculateReferralCommissionForClient(env, payment.client_id, actorId, {
+      paymentId: payment.id,
+      sourceKey: `referral:client:${payment.client_id}:payment:${payment.id}:${adjustmentType}`,
+      eventType: adjustmentType === "refund" ? "adjustment" : "reversal",
+      reason: reason || `Client payment ${adjustmentType}`
+    });
+  } catch (error) {
+    await audit(env, actorId, "referral_commission.reversal_failed", "payment", String(payment.id), {
+      error: String(error.message || "Referral commission reversal failed").slice(0, 1000)
+    }, payment.client_branch_id || null);
   }
 }
 
@@ -4312,6 +4806,27 @@ export default {
     }
 
     // =========================================================================
+    // PUBLIC STAFF REFERRAL LOOKUP
+    // =========================================================================
+    const publicReferralMatch = path.match(/^\/api\/referral\/([^/]+)$/);
+    if (publicReferralMatch && request.method === "GET") {
+      const code = decodeURIComponent(publicReferralMatch[1] || "").trim().toUpperCase();
+      if (!code) return json({ error: "Referral code is required" }, 400);
+      const staff = await resolveReferralStaff(env, code);
+      if (!staff) return json({ error: "Referral code not found" }, 404);
+      const branch = staff.branch_id
+        ? await env.DB.prepare("SELECT id, name FROM branches WHERE id=?").bind(staff.branch_id).first()
+        : null;
+      return json({
+        ok: true,
+        referral_code: staff.referral_code,
+        staff_name: staff.full_name,
+        branch_id: branch ? branch.id : null,
+        branch_name: branch ? branch.name : null
+      });
+    }
+
+    // =========================================================================
     // PUBLIC CLIENT SIGN-UP
     // =========================================================================
     if (path === "/api/signup" && request.method === "POST") {
@@ -4320,7 +4835,8 @@ export default {
       const {
         full_name, email, phone_number, password, interested_property_id, property_plan_id, plan_start_date,
         alternate_phone, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
-        next_of_kin_address, referral_code
+        next_of_kin_address, referral_code, residential_address, state, city, branch_id,
+        identity_type, identity_number, bvn
       } = body || {};
       if (!full_name || !email || !phone_number || !password) {
         return json({ error: "Full name, email, phone number and password are required" }, 400);
@@ -4338,6 +4854,40 @@ export default {
       }
       if (next_of_kin_phone && !/^[+0-9()\s-]{7,25}$/.test(String(next_of_kin_phone).trim())) {
         return json({ error: "Next of kin phone number is invalid" }, 400);
+      }
+      if (alternate_phone && normalizeNigerianPhone(alternate_phone) === signupPhone) {
+        return json({ error: "Alternate phone number must be different from the primary phone number" }, 400);
+      }
+      if (!residential_address || !String(residential_address).trim()) {
+        return json({ error: "Residential address is required" }, 400);
+      }
+      if (branch_id === undefined || branch_id === null || branch_id === "") {
+        return json({ error: "Select the branch you are onboarding with" }, 400);
+      }
+
+      const requestedIdentityType = identity_type ? normalizeIdentityType(identity_type) : null;
+      const identityProvided = Boolean(identity_type || identity_number);
+      if (identityProvided) {
+        if (!requestedIdentityType) return json({ error: "Select a valid identity type" }, 400);
+        const identityError = validateIdentityNumber(requestedIdentityType, identity_number);
+        if (identityError) return json({ error: identityError }, 400);
+      }
+      const signupIdentityHash = identityProvided ? await hashIdentityNumber(identity_number) : null;
+      if (signupIdentityHash) {
+        const existingIdentity = await env.DB.prepare(
+          "SELECT id FROM clients WHERE identity_number_hash=? AND identity_type=? AND is_deleted=0 LIMIT 1"
+        ).bind(signupIdentityHash, requestedIdentityType).first();
+        if (existingIdentity) return json({ error: "This identity number is already linked to another client account" }, 409);
+      }
+      const bvnDigits = bvn ? cleanBvn(bvn) : null;
+      if (bvn && !bvnDigits) return json({ error: "BVN must be 10 or 11 digits" }, 400);
+
+      let requestedBranchId = null;
+      if (branch_id !== undefined && branch_id !== null && branch_id !== "") {
+        requestedBranchId = Number(branch_id);
+        if (!Number.isInteger(requestedBranchId) || requestedBranchId <= 0) {
+          return json({ error: "Select a valid branch" }, 400);
+        }
       }
       if (!validPassword(password)) {
         return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
@@ -4366,16 +4916,14 @@ export default {
       `).first();
       if (!system) return json({ error: "Client registration is not available until the portal is initialized" }, 503);
 
-      // Clients cannot self-assign a branch. A valid staff referral determines
-      // the branch/relationship attribution; otherwise Head Office is used.
+      // The client must choose a branch during onboarding. A staff referral is
+      // still recorded for attribution, but it never overrides the chosen branch.
       const referrer = referral_code ? await resolveReferralStaff(env, referral_code) : null;
       if (referral_code && !referrer) return json({ error: "Invalid referral code" }, 400);
       const attribution = await buildReferralAttribution(env, referrer, system.id);
-      const defaultBranch = await env.DB.prepare(`
-        SELECT id FROM branches ORDER BY CASE WHEN name='Head Office' THEN 0 ELSE 1 END, id LIMIT 1
-      `).first();
-      const resolvedBranch = attribution.branchId || (defaultBranch ? defaultBranch.id : null);
-      if (!resolvedBranch) return json({ error: "No branch is available for registration" }, 503);
+      const requestedBranch = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(requestedBranchId).first();
+      if (!requestedBranch) return json({ error: "The selected branch was not found" }, 400);
+      const resolvedBranch = requestedBranch.id;
 
       let propertyId = interested_property_id ? Number(interested_property_id) : null;
       let signupPlan = null;
@@ -4400,21 +4948,32 @@ export default {
       const clientRef = "BLC-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
       const nextOfKinLegacy = [next_of_kin_name, next_of_kin_relationship ? `(${next_of_kin_relationship})` : ""]
         .filter(Boolean).join(" ").trim() || null;
+      const resolvedIdentityType = identityProvided ? requestedIdentityType : null;
+      const identityMasked = identityProvided ? maskIdentityNumber(identity_number) : null;
+      const identityLast4 = identityProvided ? cleanIdentityNumber(identity_number).slice(-4) : null;
+      const identityHash = signupIdentityHash;
+      const bvnLast4 = bvnDigits ? bvnDigits.slice(-4) : null;
+      const kycSubmittedAt = identityProvided ? new Date().toISOString() : null;
       const clientRes = await env.DB.prepare(`
         INSERT INTO clients (client_reference, full_name, phone_number, alternate_phone, email_address,
-          residential_address, next_of_kin, next_of_kin_name, next_of_kin_phone,
+          residential_address, state, city, next_of_kin, next_of_kin_name, next_of_kin_phone,
           next_of_kin_relationship, next_of_kin_address, notes, status,
           sale_type, assigned_branch_id, created_by, original_marketer_id, team_lead_id,
-          agreed_purchase_price, interested_property_id, referral_code_used, referred_by_staff_id, user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Prospect', 'New Sale', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          agreed_purchase_price, interested_property_id, referral_code_used, referred_by_staff_id, user_id,
+          identity_type, identity_number_masked, identity_number_last4, identity_number_hash, bvn_last4,
+          kyc_status, kyc_submitted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Prospect', 'New Sale', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
       `).bind(
         clientRef, String(full_name).trim(), normalizedPhone, alternate_phone || null, normalizedEmail,
-        null, nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null,
+        residential_address || null, state || null, city || null,
+        nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null,
         next_of_kin_relationship || null, next_of_kin_address || null,
         "Self-registered through the public client portal.", resolvedBranch,
         referrer ? referrer.id : system.id, attribution.originalMarketerId, attribution.teamLeadId,
         signupPlan ? fromKobo(Number(signupPlan.total_price_kobo || 0)) : null, propertyId,
-        attribution.referralCodeUsed, attribution.referredByStaffId, userId
+        attribution.referralCodeUsed, attribution.referredByStaffId, userId,
+        resolvedIdentityType, identityMasked, identityLast4, identityHash, bvnLast4,
+        kycSubmittedAt
       ).run();
       const clientId = clientRes.meta.last_row_id;
       if (propertyId) await upsertClientPropertyAllocation(env, clientId, propertyId, signupPlan ? fromKobo(Number(signupPlan.total_price_kobo || 0)) : 0, "Prospect");
@@ -4435,7 +4994,10 @@ export default {
       `).bind(clientId, userId).run();
       await audit(env, userId, "client.self_register", "client", String(clientId), {
         client_reference: clientRef, email: normalizedEmail, branch_id: resolvedBranch,
-        referral_code: attribution.referralCodeUsed, referred_by_staff_id: attribution.referredByStaffId
+        branch_selected_by_client: Boolean(requestedBranch),
+        referral_code: attribution.referralCodeUsed, referred_by_staff_id: attribution.referredByStaffId,
+        identity_type: resolvedIdentityType, identity_last4: identityLast4,
+        bvn_last4: bvnLast4, kyc_status: "pending"
       }, resolvedBranch);
       await createNotification(env, {
         userId,
@@ -4461,13 +5023,54 @@ export default {
         email_address: normalizedEmail,
         assigned_branch_id: resolvedBranch
       }, userId);
+
+      // Every client gets a dedicated (permanent) ALATPay wallet. The provider
+      // requires the client's BVN plus an OTP sent to the BVN phone, so we start
+      // provisioning here when a BVN was supplied and the client can finish the
+      // OTP step from the virtual-account page.
+      let virtualAccount = null;
+      if (bvnDigits) {
+        try {
+          const walletSettings = await getAlatpaySettings(env);
+          if (walletSettings.ready) {
+            virtualAccount = await initiateAlatpayStaticWallet(env, {
+              id: clientId,
+              full_name: String(full_name).trim(),
+              phone_number: normalizedPhone,
+              email_address: normalizedEmail,
+              assigned_branch_id: resolvedBranch
+            }, bvnDigits, userId);
+          } else {
+            virtualAccount = {
+              ok: false,
+              status: "pending_provider",
+              message: "Your dedicated account is queued and will be activated when our banking partner is configured."
+            };
+          }
+        } catch (error) {
+          virtualAccount = {
+            ok: false,
+            status: "pending_provider",
+            message: "Your dedicated account could not be created automatically. Open My Virtual Account to retry."
+          };
+        }
+      } else {
+        virtualAccount = {
+          ok: false,
+          status: "bvn_required",
+          message: "Add your BVN in My Virtual Account to activate your dedicated bank account."
+        };
+      }
+
       const session = await createSession(env, userId);
       const cookie = `${SESSION_COOKIE}=${session.id}; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=${new Date(session.expires).toUTCString()}`;
       return json({
         ok: true,
         client_id: clientId,
         client_reference: clientRef,
+        kyc_status: "pending",
         verification,
+        virtual_account: virtualAccount,
         user: { id: userId, email: normalizedEmail, full_name: String(full_name).trim(), role: "Client" }
       }, 200, { "Set-Cookie": cookie });
     }
@@ -5744,7 +6347,7 @@ export default {
         next_of_kin, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
         next_of_kin_address, notes, preferred_channel, status, assigned_branch_id,
         agreed_purchase_price, interested_property_id, sale_type, referral_code, property_plan_id,
-        plan_start_date, static_wallet_bvn
+        plan_start_date, static_wallet_bvn, identity_type, identity_number
       } = body || {};
       if (!full_name || !phone_number) return json({ error: "Full name and phone number required" }, 400);
       const normalizedPhone = normalizeNigerianPhone(phone_number);
@@ -5754,6 +6357,22 @@ export default {
       }
       if (next_of_kin_phone && !/^[+0-9()\s-]{7,25}$/.test(String(next_of_kin_phone).trim())) {
         return json({ error: "Next of kin phone number is invalid" }, 400);
+      }
+      const identityProvided = Boolean(identity_type || identity_number);
+      const resolvedIdentityType = identityProvided ? normalizeIdentityType(identity_type) : null;
+      if (identityProvided) {
+        if (!resolvedIdentityType) return json({ error: "Select a valid identity type" }, 400);
+        const identityError = validateIdentityNumber(resolvedIdentityType, identity_number);
+        if (identityError) return json({ error: identityError }, 400);
+      }
+      const staticWalletBvnDigits = static_wallet_bvn ? cleanBvn(static_wallet_bvn) : null;
+      if (static_wallet_bvn && !staticWalletBvnDigits) return json({ error: "BVN must be 10 or 11 digits" }, 400);
+      const staffIdentityHash = identityProvided ? await hashIdentityNumber(identity_number) : null;
+      if (staffIdentityHash) {
+        const existingIdentity = await env.DB.prepare(
+          "SELECT id FROM clients WHERE identity_number_hash=? AND identity_type=? AND is_deleted=0 LIMIT 1"
+        ).bind(staffIdentityHash, resolvedIdentityType).first();
+        if (existingIdentity) return json({ error: "This identity number is already linked to another client account" }, 409);
       }
       const validStatuses = ["Prospect", "Interested", "Negotiation", "Reserved", "Active Buyer", "Completed", "Cancelled", "Inactive"];
       if (status && !validStatuses.includes(status)) return json({ error: "Invalid client status" }, 400);
@@ -5808,9 +6427,14 @@ export default {
       const ref = "BLC-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
       const teamLeadId = actor.role_name === "Team Lead" ? actor.id : null;
       const agreedPrice = normalizedAgreedPrice;
+      const identityMasked = identityProvided ? maskIdentityNumber(identity_number) : null;
+      const identityLast4 = identityProvided ? cleanIdentityNumber(identity_number).slice(-4) : null;
+      const identityHash = staffIdentityHash;
+      const bvnLast4 = staticWalletBvnDigits ? staticWalletBvnDigits.slice(-4) : null;
+      const kycSubmittedAt = identityProvided ? new Date().toISOString() : null;
 
-      const res = await env.DB.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, alternate_phone, email_address, residential_address, state, city, next_of_kin, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship, next_of_kin_address, notes, preferred_channel, status, assigned_branch_id, created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id, sale_type, referral_code_used, referred_by_staff_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .bind(ref, full_name, normalizedPhone, alternate_phone || null, email_address || null, residential_address || null, state || null, city || null, nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null, next_of_kin_relationship || null, next_of_kin_address || null, notes || null, preferred_channel || null, status || "Prospect", resolvedBranchId, actor.id, actor.id, teamLeadId, agreedPrice, interested_property_id || null, resolvedSaleType, referrer ? referrer.referral_code : null, referrer ? referrer.id : null).run();
+      const res = await env.DB.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, alternate_phone, email_address, residential_address, state, city, next_of_kin, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship, next_of_kin_address, notes, preferred_channel, status, assigned_branch_id, created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id, sale_type, referral_code_used, referred_by_staff_id, identity_type, identity_number_masked, identity_number_last4, identity_number_hash, bvn_last4, kyc_status, kyc_submitted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(ref, full_name, normalizedPhone, alternate_phone || null, email_address || null, residential_address || null, state || null, city || null, nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null, next_of_kin_relationship || null, next_of_kin_address || null, notes || null, preferred_channel || null, status || "Prospect", resolvedBranchId, actor.id, actor.id, teamLeadId, agreedPrice, interested_property_id || null, resolvedSaleType, referrer ? referrer.referral_code : null, referrer ? referrer.id : null, resolvedIdentityType, identityMasked, identityLast4, identityHash, bvnLast4, "pending", kycSubmittedAt).run();
       const newId = res.meta.last_row_id;
       if (interested_property_id) {
         await upsertClientPropertyAllocation(env, newId, Number(interested_property_id), agreedPrice || 0, status || "Prospect");
@@ -5832,7 +6456,9 @@ export default {
       await audit(env, actor.id, "client.create", "client", String(newId), {
         full_name, phone_number, branch_id: resolvedBranchId,
         referral_code: referrer ? referrer.referral_code : null,
-        referred_by_staff_id: referrer ? referrer.id : null
+        referred_by_staff_id: referrer ? referrer.id : null,
+        identity_type: resolvedIdentityType, identity_last4: identityLast4,
+        bvn_last4: bvnLast4, kyc_status: "pending"
       }, resolvedBranchId);
       await notifyClientCreated(env, {
         id: newId,
@@ -5852,12 +6478,12 @@ export default {
         assigned_branch_id: resolvedBranchId
       }, actor.id);
       let staticWallet = null;
-      if (static_wallet_bvn) {
+      if (staticWalletBvnDigits) {
         try {
           staticWallet = await initiateAlatpayStaticWallet(env, {
             id: newId, full_name, phone_number: normalizedPhone, email_address: email_address || null,
             assigned_branch_id: resolvedBranchId
-          }, static_wallet_bvn, actor.id);
+          }, staticWalletBvnDigits, actor.id);
         } catch (walletError) {
           staticWallet = { ok: false, error: walletError.message || "Unable to initiate static wallet" };
         }
@@ -5866,7 +6492,7 @@ export default {
         await env.TASKS.send({ type: "client.registered", client_id: newId }).catch(() => {});
       }
 
-      return json({ ok: true, id: newId, client_reference: ref, schedule_id: createdScheduleId, verification, static_wallet: staticWallet });
+      return json({ ok: true, id: newId, client_reference: ref, kyc_status: "pending", schedule_id: createdScheduleId, verification, static_wallet: staticWallet });
     }
 
     // ---- Client details (Phase 4) ----
@@ -6141,6 +6767,52 @@ export default {
       }
       await audit(env, actor.id, "client.update", "client", id, { before, after }, client.assigned_branch_id);
       return json({ ok: true });
+    }
+
+    // ---- Client identity / KYC review (staff) ----
+    const clientKycMatch = path.match(/^\/api\/clients\/(\d+)\/kyc$/);
+    if (clientKycMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Branch Manager", "Finance Officer"].includes(actor.role_name)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const client = await env.DB.prepare(`
+        SELECT c.id, c.full_name, c.client_reference, c.assigned_branch_id, c.kyc_status,
+               (SELECT ca.relationship_manager_id FROM client_assignments ca
+                 WHERE ca.client_id=c.id AND ca.is_primary=1 ORDER BY ca.assigned_at DESC LIMIT 1) AS current_relationship_manager_id
+        FROM clients c WHERE c.id=? AND c.is_deleted=0
+      `).bind(clientKycMatch[1]).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+      if (actor.role_name === "Branch Manager" && Number(client.assigned_branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Cross-branch forbidden" }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const status = String(body.status || "").trim().toLowerCase();
+      if (!["verified", "rejected", "pending"].includes(status)) {
+        return json({ error: "KYC status must be verified, rejected or pending" }, 400);
+      }
+      const notes = body.notes === undefined || body.notes === null ? null : String(body.notes).trim().slice(0, 1000);
+      if (status === "rejected" && !notes) {
+        return json({ error: "Add a reason before rejecting identity verification" }, 400);
+      }
+      await env.DB.prepare(`
+        UPDATE clients SET kyc_status=?, kyc_reviewed_by=?, kyc_reviewed_at=datetime('now'),
+          kyc_notes=?, updated_at=datetime('now') WHERE id=?
+      `).bind(status, status === "pending" ? null : actor.id, notes, client.id).run();
+      await audit(env, actor.id, "client.kyc.review", "client", String(client.id), {
+        status, previous_status: client.kyc_status, notes
+      }, client.assigned_branch_id);
+      const label = status === "verified" ? "verified" : (status === "rejected" ? "not approved" : "returned to review");
+      await createNotification(env, {
+        clientId: client.id,
+        type: "client.kyc",
+        title: "Identity verification update",
+        message: `Your identity verification was ${label}.${notes ? ` Note: ${notes}` : ""}`,
+        metadata: { kyc_status: status }
+      }).catch(() => {});
+      return json({ ok: true, kyc_status: status, notes });
     }
 
     // ---- Client status change (Phase 4) ----
@@ -6453,6 +7125,14 @@ export default {
           next_of_kin_phone: client.next_of_kin_phone,
           next_of_kin_relationship: client.next_of_kin_relationship,
           next_of_kin_address: client.next_of_kin_address,
+          identity_type: client.identity_type,
+          identity_number_masked: client.identity_number_masked,
+          identity_last4: client.identity_number_last4,
+          bvn_last4: client.bvn_last4,
+          kyc_status: client.kyc_status || "pending",
+          kyc_submitted_at: client.kyc_submitted_at,
+          kyc_reviewed_at: client.kyc_reviewed_at,
+          kyc_notes: client.kyc_notes,
           status: client.status,
           branch_name: client.branch_name
         }
@@ -6499,6 +7179,32 @@ export default {
         after[field] = value === "" ? null : value;
         sets.push(`${field} = ?`);
         vals.push(value === "" ? null : value);
+      }
+
+      // Identity details are captured as a hash plus a masked display value.
+      // Changing them always returns the account to the KYC review queue.
+      if (body.identity_type !== undefined || body.identity_number !== undefined) {
+        const nextType = normalizeIdentityType(body.identity_type !== undefined ? body.identity_type : client.identity_type);
+        if (!nextType) return json({ error: "Select a valid identity type" }, 400);
+        const identityError = validateIdentityNumber(nextType, body.identity_number);
+        if (identityError) return json({ error: identityError }, 400);
+        const cleanedIdentity = cleanIdentityNumber(body.identity_number);
+        const maskedIdentity = maskIdentityNumber(cleanedIdentity);
+        const identityHash = await hashIdentityNumber(cleanedIdentity);
+        const duplicateIdentity = await env.DB.prepare(
+          "SELECT id FROM clients WHERE identity_number_hash=? AND identity_type=? AND id<>? AND is_deleted=0 LIMIT 1"
+        ).bind(identityHash, nextType, client.id).first();
+        if (duplicateIdentity) return json({ error: "This identity number is already linked to another client account" }, 409);
+        before.identity_type = client.identity_type;
+        before.identity_number_masked = client.identity_number_masked;
+        after.identity_type = nextType;
+        after.identity_number_masked = maskedIdentity;
+        sets.push(
+          "identity_type = ?", "identity_number_masked = ?", "identity_number_last4 = ?",
+          "identity_number_hash = ?", "kyc_status = 'pending'", "kyc_submitted_at = datetime('now')",
+          "kyc_reviewed_by = NULL", "kyc_reviewed_at = NULL", "kyc_notes = NULL"
+        );
+        vals.push(nextType, maskedIdentity, cleanedIdentity.slice(-4), identityHash);
       }
 
       if (!sets.length) return json({ error: "No editable fields provided" }, 400);
@@ -6668,6 +7374,47 @@ export default {
     }
 
     // 8 & 9. ALATPay Virtual Account (Client View)
+    if (path === "/api/client/virtual-account/static-wallet/initiate" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor || actor.role_name !== "Client") return json({ error: "Forbidden" }, 403);
+      const client = await getClientForActor(env, actor);
+      if (!client) return json({ error: "Not found" }, 404);
+      const body = await request.json().catch(() => ({}));
+      const bvnDigits = cleanBvn(body.bvn);
+      if (!bvnDigits) return json({ error: "Enter a valid 11-digit BVN" }, 400);
+      try {
+        const result = await initiateAlatpayStaticWallet(env, client, bvnDigits, actor.id);
+        await env.DB.prepare("UPDATE clients SET bvn_last4=?, updated_at=datetime('now') WHERE id=?")
+          .bind(bvnDigits.slice(-4), client.id).run();
+        return json({ ok: true, ...result });
+      } catch (error) {
+        return json({ error: error.message || "Unable to create your dedicated account" }, error.status || 502);
+      }
+    }
+
+    if (path === "/api/client/virtual-account/static-wallet/validate" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor || actor.role_name !== "Client") return json({ error: "Forbidden" }, 403);
+      const client = await getClientForActor(env, actor);
+      if (!client) return json({ error: "Not found" }, 404);
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await validateAlatpayStaticWallet(env, client, body.otp, actor.id);
+        await createNotification(env, {
+          clientId: client.id,
+          type: "payment.virtual_account",
+          title: "Dedicated account active",
+          message: `Your permanent ALATPay account ${result.account_number || ""} is now active.`.trim(),
+          metadata: { account_number: result.account_number || null }
+        }).catch(() => {});
+        return json({ ok: true, ...result });
+      } catch (error) {
+        return json({ error: error.message || "Unable to validate your dedicated account" }, error.status || 502);
+      }
+    }
+
     if (path === "/api/client/virtual-account" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor || actor.role_name !== "Client") return json({ error: "Forbidden" }, 403);
@@ -6731,24 +7478,28 @@ export default {
       return json({
         is_active: false,
         can_generate: settings.ready,
+        can_activate_static: settings.ready,
         payment_mode: settings.mode,
         static_wallet: staticWallet ? {
           status: staticWallet.status,
           account_number: staticWallet.account_number,
           account_name: staticWallet.account_name,
-          bank_name: staticWallet.bank_name
+          bank_name: staticWallet.bank_name,
+          wallet_reference: staticWallet.wallet_reference
         } : null,
+        static_wallet_status: staticWallet ? staticWallet.status : "not_created",
+        bvn_last4: client.bvn_last4 || null,
         outstanding_kobo: outstandingKobo,
         outstanding_ngn: fromKobo(outstandingKobo),
         provider: settings.providerName,
         provider_status: settings.status,
         status: settings.status,
         notice: settings.ready
-          ? "Generate a dedicated ALATPay bank-transfer account for your outstanding balance."
-          : "ALATPay business ID is not configured yet. Please contact the finance team.",
+          ? "Activate your permanent dedicated ALATPay account to receive any amount at any time."
+          : "Your dedicated account will be activated once ALATPay is fully configured. Please contact the finance team.",
         message: settings.ready
-          ? "Generate a dedicated ALATPay bank-transfer account for your outstanding balance."
-          : "ALATPay business ID is not configured yet. Please contact the finance team.",
+          ? "Activate your permanent dedicated ALATPay account to receive any amount at any time."
+          : "Your dedicated account will be activated once ALATPay is fully configured. Please contact the finance team.",
         client_reference: client.client_reference
       });
     }
@@ -11213,6 +11964,312 @@ export default {
       return json({ ok: true, is_active: active });
     }
 
+    // =========================================================================
+    // ELPIS REFERRAL COMMISSIONS
+    // =========================================================================
+    if (path === "/api/referral-commissions/rules" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canViewReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const { results } = await env.DB.prepare(
+        "SELECT rule_key, label, structure, min_months, max_months, stage_amount_kobo, stage1_commission_cap_kobo, stage2_commission_cap_kobo, max_commission_kobo, flat_rate_bps FROM referral_commission_rules WHERE is_active=1 ORDER BY id"
+      ).all();
+      return json({ rules: results });
+    }
+
+    if (path === "/api/referral-commissions" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canViewReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const scope = await resolvePhase6Scope(env, actor);
+      const scoped = referralCommissionScopeSql(scope, "a");
+      const clauses = [scoped.clause];
+      const binds = [...scoped.binds];
+
+      const status = String(url.searchParams.get("status") || "").trim();
+      const marketerId = url.searchParams.get("marketer_id");
+      const branchId = url.searchParams.get("branch_id");
+      const q = String(url.searchParams.get("q") || "").trim();
+      const from = dateOnly(url.searchParams.get("from"));
+      const to = dateOnly(url.searchParams.get("to"));
+      if (status) { clauses.push("a.status=?"); binds.push(status); }
+      if (marketerId) { clauses.push("a.marketer_id=?"); binds.push(Number(marketerId)); }
+      if (branchId) { clauses.push("a.branch_id=?"); binds.push(Number(branchId)); }
+      if (q) { clauses.push("(c.full_name LIKE ? OR c.client_reference LIKE ?)"); binds.push(`%${q}%`, `%${q}%`); }
+      if (from) { clauses.push("date(a.updated_at) >= date(?)"); binds.push(from); }
+      if (to) { clauses.push("date(a.updated_at) <= date(?)"); binds.push(to); }
+      const whereSql = "WHERE " + clauses.join(" AND ");
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+      const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") || "50", 10)));
+      const offset = (page - 1) * limit;
+
+      const { results: rows } = await env.DB.prepare(`
+        SELECT a.*, c.full_name AS client_name, c.client_reference,
+               u.full_name AS marketer_name, b.name AS branch_name,
+               CASE WHEN a.status='Configuration Required' THEN 0
+                    ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo) END AS net_commission_kobo,
+               CASE WHEN a.status='Configuration Required' THEN 0
+                    ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo - a.paid_kobo) END AS outstanding_kobo
+        FROM referral_commission_accounts a
+        JOIN clients c ON c.id=a.client_id
+        LEFT JOIN users u ON u.id=a.marketer_id
+        LEFT JOIN branches b ON b.id=a.branch_id
+        ${whereSql}
+        ORDER BY a.updated_at DESC, a.id DESC
+        LIMIT ? OFFSET ?
+      `).bind(...binds, limit, offset).all();
+      const count = await env.DB.prepare(`
+        SELECT COUNT(*) AS c FROM referral_commission_accounts a JOIN clients c ON c.id=a.client_id ${whereSql}
+      `).bind(...binds).first();
+      const summaryRow = await env.DB.prepare(`
+        SELECT COUNT(*) AS total_clients,
+          COALESCE(SUM(CASE WHEN a.status='Configuration Required' THEN 0
+            ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo) END),0) AS earned_kobo,
+          COALESCE(SUM(a.paid_kobo),0) AS paid_kobo,
+          COALESCE(SUM(CASE WHEN a.status='Configuration Required' THEN 0
+            ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo - a.paid_kobo) END),0) AS outstanding_kobo,
+          COALESCE(SUM(CASE WHEN a.status='Configuration Required' THEN 1 ELSE 0 END),0) AS configuration_required,
+          COALESCE(SUM(CASE WHEN a.flag_reason IS NOT NULL THEN 1 ELSE 0 END),0) AS flagged,
+          COALESCE(SUM(CASE WHEN a.structure='two_stage' THEN 1 ELSE 0 END),0) AS long_term,
+          COALESCE(SUM(CASE WHEN a.structure='flat' THEN 1 ELSE 0 END),0) AS short_term
+        FROM referral_commission_accounts a JOIN clients c ON c.id=a.client_id
+        ${whereSql}
+      `).bind(...binds).first();
+      const { results: byStructure } = await env.DB.prepare(`
+        SELECT a.structure, COUNT(*) AS client_count,
+          COALESCE(SUM(CASE WHEN a.status='Configuration Required' THEN 0
+            ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo) END),0) AS earned_kobo,
+          COALESCE(SUM(CASE WHEN a.status='Configuration Required' THEN 0
+            ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo - a.paid_kobo) END),0) AS outstanding_kobo
+        FROM referral_commission_accounts a JOIN clients c ON c.id=a.client_id
+        ${whereSql}
+        GROUP BY a.structure ORDER BY a.structure
+      `).bind(...binds).all();
+
+      return json({
+        entries: rows.map(row => ({
+          ...row,
+          structure_label: referralStructureLabel(row.structure, row.plan_type, row.plan_duration_months),
+          net_commission_kobo: Number(row.net_commission_kobo || 0),
+          outstanding_kobo: Number(row.outstanding_kobo || 0)
+        })),
+        summary: {
+          total_clients: Number(summaryRow ? summaryRow.total_clients : 0),
+          earned_kobo: Number(summaryRow ? summaryRow.earned_kobo : 0),
+          paid_kobo: Number(summaryRow ? summaryRow.paid_kobo : 0),
+          outstanding_kobo: Number(summaryRow ? summaryRow.outstanding_kobo : 0),
+          configuration_required: Number(summaryRow ? summaryRow.configuration_required : 0),
+          flagged: Number(summaryRow ? summaryRow.flagged : 0),
+          long_term: Number(summaryRow ? summaryRow.long_term : 0),
+          short_term: Number(summaryRow ? summaryRow.short_term : 0),
+          by_structure: byStructure
+        },
+        pagination: { page, limit, total: Number(count ? count.c : 0) }
+      });
+    }
+
+    const referralCommissionDetailMatch = path.match(/^\/api\/referral-commissions\/(\d+)$/);
+    if (referralCommissionDetailMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canViewReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const scope = await resolvePhase6Scope(env, actor);
+      const scoped = referralCommissionScopeSql(scope, "a");
+      const account = await env.DB.prepare(`
+        SELECT a.*, c.full_name AS client_name, c.client_reference, c.phone_number,
+               c.agreed_purchase_price, u.full_name AS marketer_name, b.name AS branch_name,
+               CASE WHEN a.status='Configuration Required' THEN 0
+                    ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo) END AS net_commission_kobo,
+               CASE WHEN a.status='Configuration Required' THEN 0
+                    ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo - a.paid_kobo) END AS outstanding_kobo
+        FROM referral_commission_accounts a
+        JOIN clients c ON c.id=a.client_id
+        LEFT JOIN users u ON u.id=a.marketer_id
+        LEFT JOIN branches b ON b.id=a.branch_id
+        WHERE a.id=? AND ${scoped.clause}
+      `).bind(referralCommissionDetailMatch[1], ...scoped.binds).first();
+      if (!account) return json({ error: "Referral commission account not found" }, 404);
+      const { results: events } = await env.DB.prepare(`
+        SELECT e.*, u.full_name AS actor_name
+        FROM referral_commission_events e LEFT JOIN users u ON u.id=e.actor_user_id
+        WHERE e.account_id=? ORDER BY e.created_at DESC, e.id DESC LIMIT 200
+      `).bind(account.id).all();
+      const { results: payments } = await env.DB.prepare(`
+        SELECT p.*, u.full_name AS paid_by_name
+        FROM referral_commission_payments p LEFT JOIN users u ON u.id=p.paid_by
+        WHERE p.account_id=? ORDER BY p.paid_at DESC, p.id DESC
+      `).bind(account.id).all();
+      const { results: adjustments } = await env.DB.prepare(`
+        SELECT a.*, u.full_name AS created_by_name
+        FROM referral_commission_adjustments a LEFT JOIN users u ON u.id=a.created_by
+        WHERE a.account_id=? ORDER BY a.created_at DESC, a.id DESC
+      `).bind(account.id).all();
+      return json({
+        account: {
+          ...account,
+          structure_label: referralStructureLabel(account.structure, account.plan_type, account.plan_duration_months),
+          net_commission_kobo: Number(account.net_commission_kobo || 0),
+          outstanding_kobo: Number(account.outstanding_kobo || 0)
+        },
+        events,
+        payments,
+        adjustments,
+        can_manage: canManageReferralCommissions(actor)
+      });
+    }
+
+    if (path === "/api/referral-commissions/backfill" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const runKey = `referral:backfill:${Date.now().toString(36)}:${crypto.randomUUID().slice(0, 8)}`;
+      if (isTruthy(body.dry_run)) {
+        const row = await env.DB.prepare(`
+          SELECT COUNT(DISTINCT c.id) AS c FROM clients c
+          JOIN payments p ON p.client_id=c.id AND p.status='verified' AND p.is_demo=0 AND p.currency='NGN'
+          WHERE c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%'
+        `).first();
+        return json({ dry_run: true, eligible_clients: Number(row ? row.c : 0), note: "Run without dry_run to recalculate referral commissions." });
+      }
+      const result = await backfillReferralCommissions(env, actor.id, {
+        limit: body.limit || 500, onlyStale: false, sourceKey: runKey, reason: "Manual referral commission backfill"
+      });
+      await audit(env, actor.id, "referral_commission.backfill", "referral_commission", null, result, null);
+      return json({ ok: true, ...result });
+    }
+
+    const referralActionMatch = path.match(/^\/api\/referral-commissions\/(\d+)\/(recalculate|payments|adjustments)$/);
+    if (referralActionMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const account = await env.DB.prepare(`
+        SELECT a.*, c.full_name AS client_name, c.client_reference, u.full_name AS marketer_name
+        FROM referral_commission_accounts a
+        JOIN clients c ON c.id=a.client_id
+        LEFT JOIN users u ON u.id=a.marketer_id
+        WHERE a.id=?
+      `).bind(referralActionMatch[1]).first();
+      if (!account) return json({ error: "Referral commission account not found" }, 404);
+      const action = referralActionMatch[2];
+      const body = await request.json().catch(() => ({}));
+
+      if (action === "recalculate") {
+        const result = await recalculateReferralCommissionForClient(env, account.client_id, actor.id, {
+          sourceKey: `referral:client:${account.client_id}:manual:${Date.now().toString(36)}:${crypto.randomUUID().slice(0, 8)}`,
+          eventType: "recalculation",
+          reason: body.reason || "Manual referral commission recalculation"
+        });
+        await audit(env, actor.id, "referral_commission.recalculate", "referral_commission", String(account.id), result, account.branch_id);
+        return json({ ok: true, ...result });
+      }
+
+      const net = Math.max(0, Number(account.total_commission_kobo || 0) + Number(account.adjusted_kobo || 0));
+      const paid = Number(account.paid_kobo || 0);
+      const outstanding = Math.max(0, net - paid);
+
+      if (action === "payments") {
+        const idempotencyKey = body.idempotency_key ? String(body.idempotency_key) : null;
+        if (idempotencyKey) {
+          const existing = await env.DB.prepare("SELECT * FROM referral_commission_payments WHERE idempotency_key=?").bind(idempotencyKey).first();
+          if (existing) return json({ ok: true, already_recorded: true, payment: existing });
+        }
+        const amountKobo = toKobo(body.amount);
+        if (!Number.isInteger(amountKobo) || amountKobo <= 0) return json({ error: "Payment amount must be positive" }, 400);
+        if (account.status === "Configuration Required") return json({ error: "This referral commission account needs configuration before payment" }, 409);
+        if (!account.marketer_id) return json({ error: "Assign an eligible marketer before paying referral commission" }, 409);
+        if (outstanding <= 0) return json({ error: "There is no outstanding referral commission to pay" }, 409);
+        if (amountKobo > outstanding) return json({ error: `Payment exceeds outstanding referral commission of ${formatNGN(outstanding)}` }, 400);
+        const method = String(body.method || "Bank Transfer").trim();
+        if (!method) return json({ error: "Payment method is required" }, 400);
+        const paymentRef = "RCPAY-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 6).toUpperCase();
+        const paymentRes = await env.DB.prepare(`
+          INSERT INTO referral_commission_payments
+            (payment_ref, idempotency_key, account_id, amount_kobo, method, external_reference, notes, paid_by, paid_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).bind(paymentRef, idempotencyKey, account.id, amountKobo, method,
+          body.external_reference || null, body.notes || null, actor.id).run();
+        const newPaid = paid + amountKobo;
+        const newStatus = newPaid >= net ? "Paid" : "Partially Paid";
+        await env.DB.prepare(`
+          UPDATE referral_commission_accounts SET paid_kobo=?, status=?, updated_at=datetime('now') WHERE id=?
+        `).bind(newPaid, newStatus, account.id).run();
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO referral_commission_events
+            (event_ref, source_key, account_id, client_id, marketer_id, event_type, amount_kobo,
+             total_paid_kobo, qualifying_paid_kobo, net_commission_kobo, reason, metadata, actor_user_id)
+          VALUES (?, ?, ?, ?, ?, 'disbursement', ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          "RCE-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 8).toUpperCase(),
+          `referral:account:${account.id}:payment:${paymentRes.meta.last_row_id}`,
+          account.id, account.client_id, account.marketer_id, amountKobo, account.total_paid_kobo,
+          account.qualifying_paid_kobo, net,
+          body.notes || "Referral commission payment", JSON.stringify({ payment_ref: paymentRef, method }), actor.id
+        ).run();
+        await audit(env, actor.id, "referral_commission.payment", "referral_commission", String(account.id), {
+          payment_ref: paymentRef, amount_kobo: amountKobo, status: newStatus
+        }, account.branch_id);
+        if (account.marketer_id) {
+          await createNotification(env, {
+            userId: account.marketer_id,
+            type: "referral_commission.paid",
+            title: "Referral commission paid",
+            message: `${formatNGN(amountKobo)} referral commission was recorded for ${account.client_name} (${account.client_reference}).`,
+            metadata: { account_id: account.id, payment_ref: paymentRef }
+          }).catch(() => {});
+        }
+        return json({
+          ok: true, payment_id: paymentRes.meta.last_row_id, payment_ref: paymentRef,
+          status: newStatus, paid_kobo: newPaid, outstanding_kobo: Math.max(0, net - newPaid)
+        });
+      }
+
+      if (action === "adjustments") {
+        const adjustmentType = String(body.adjustment_type || "correction").trim();
+        if (!["correction", "reversal", "refund", "manual"].includes(adjustmentType)) {
+          return json({ error: "Invalid adjustment type" }, 400);
+        }
+        const amountKobo = toKobo(body.amount);
+        if (!Number.isInteger(amountKobo) || amountKobo === 0) return json({ error: "Adjustment amount must be non-zero" }, 400);
+        const reason = String(body.reason || "").trim();
+        if (!reason) return json({ error: "Adjustment reason is required" }, 400);
+        const currentAdjusted = Number(account.adjusted_kobo || 0);
+        const newAdjusted = currentAdjusted + amountKobo;
+        const newNet = Number(account.total_commission_kobo || 0) + newAdjusted;
+        if (newNet < 0) return json({ error: "Adjustment would make the referral commission negative" }, 400);
+        if (newNet < paid) return json({ error: "Adjustment cannot reduce the commission below the amount already paid" }, 400);
+        const sourceKey = `referral:account:${account.id}:adjustment:${Date.now().toString(36)}:${crypto.randomUUID().slice(0, 8)}`;
+        const adjRes = await env.DB.prepare(`
+          INSERT INTO referral_commission_adjustments
+            (account_id, adjustment_type, amount_kobo, reason, source_payment_id, source_key, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).bind(account.id, adjustmentType, amountKobo, reason, body.source_payment_id || null, sourceKey, actor.id).run();
+        const newStatus = newNet <= 0 ? "Reversed" : (paid >= newNet ? "Paid" : (paid > 0 ? "Partially Paid" : "Earned"));
+        await env.DB.prepare(`
+          UPDATE referral_commission_accounts SET adjusted_kobo=?, status=?, updated_at=datetime('now') WHERE id=?
+        `).bind(newAdjusted, newStatus, account.id).run();
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO referral_commission_events
+            (event_ref, source_key, account_id, client_id, marketer_id, event_type, amount_kobo,
+             total_paid_kobo, qualifying_paid_kobo, net_commission_kobo, reason, metadata, actor_user_id)
+          VALUES (?, ?, ?, ?, ?, 'adjustment', ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          "RCE-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 8).toUpperCase(),
+          `referral:account:${account.id}:adjustment-event:${adjRes.meta.last_row_id}`,
+          account.id, account.client_id, account.marketer_id, amountKobo, account.total_paid_kobo,
+          Number(account.qualifying_paid_kobo || 0), newNet, reason,
+          JSON.stringify({ adjustment_type: adjustmentType }), actor.id
+        ).run();
+        await audit(env, actor.id, "referral_commission.adjustment", "referral_commission", String(account.id), {
+          adjustment_type: adjustmentType, amount_kobo: amountKobo, reason, status: newStatus
+        }, account.branch_id);
+        return json({ ok: true, status: newStatus, adjusted_kobo: newAdjusted, outstanding_kobo: Math.max(0, newNet - paid) });
+      }
+    }
+
     if (path === "/api/commissions" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
@@ -11686,6 +12743,7 @@ export default {
       await dispatchSmsSchedules(env);
       await reconcileAlatpayPayments(env);
       await retryCommissionGeneration(env);
+      await backfillReferralCommissions(env, null, { limit: 100, onlyStale: true, reason: "Scheduled referral commission reconciliation" }).catch(() => {});
       await expireTestAccounts(env);
       await expireMonthlyMarketerAccess(env);
       const settings = await getSmsSettings(env);

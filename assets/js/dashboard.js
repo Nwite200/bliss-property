@@ -371,6 +371,28 @@
       </tr>`).join("");
   }
 
+  function renderReferral() {
+    const card = el("referralCard");
+    const input = el("referralLinkInput");
+    if (!card || !input) return;
+    if (!me.referral_link) { card.style.display = "none"; return; }
+    card.style.display = "";
+    input.value = me.referral_link;
+    el("referralCodeText").textContent = `Referral code: ${me.referral_code || "-"}`;
+    const copyBtn = el("copyReferralBtn");
+    copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(me.referral_link);
+      } catch {
+        input.select();
+        document.execCommand("copy");
+      }
+      S.toast("Referral link copied.");
+    };
+    const share = el("shareReferralBtn");
+    share.href = "https://wa.me/?text=" + encodeURIComponent(`Buy property with Bliss Legacy through my referral link: ${me.referral_link}`);
+  }
+
   function renderProfile() {
     const rows = [
       ["Staff", me.full_name],
@@ -420,6 +442,7 @@
     renderClients();
     renderProperties();
     renderTeamMembers();
+    renderReferral();
     renderProfile();
     renderActivity();
   }

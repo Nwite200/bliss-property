@@ -52,6 +52,10 @@
               <div class="meta-item"><span>Next of kin phone</span><strong id="detailNokPhone"></strong></div>
               <div class="meta-item"><span>Next of kin relationship</span><strong id="detailNokRelationship"></strong></div>
               <div class="meta-item"><span>Next of kin address</span><strong id="detailNokAddress"></strong></div>
+              <div class="meta-item"><span>Identity type</span><strong id="detailIdentityType"></strong></div>
+              <div class="meta-item"><span>Identity number</span><strong id="detailIdentityNumber"></strong></div>
+              <div class="meta-item"><span>BVN</span><strong id="detailBvn"></strong></div>
+              <div class="meta-item"><span>KYC status</span><strong id="detailKycStatus"></strong></div>
               <div class="meta-item"><span>Purchase price</span><strong id="detailPrice"></strong></div>
               <div class="meta-item"><span>Property</span><strong id="detailProperty"></strong></div>
             </div>
@@ -74,6 +78,21 @@
             <button class="btn btn-green" id="addNoteBtn" style="margin-top:6px">Add note</button>
           </div>
         </div>
+      </div>
+
+      <div class="card" style="max-width:800px;margin-top:18px" id="kycCard">
+        <div class="card-head"><h3>Identity verification (KYC)</h3><span id="kycStatusBadge"></span></div>
+        <p class="small muted">Approve or reject the identity details supplied by the client. Only masked identity numbers are stored; BVN and raw identity numbers are never displayed or saved.</p>
+        <div id="kycDetails" class="small" style="margin-bottom:12px"></div>
+        <div class="field-group">
+          <label class="field-label" for="kycNotes">Review notes</label>
+          <textarea id="kycNotes" rows="2" class="field-input" placeholder="Optional for approval, required when rejecting"></textarea>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn btn-green" type="button" id="kycVerifyBtn">Approve identity</button>
+          <button class="btn btn-outline" type="button" id="kycRejectBtn">Reject identity</button>
+        </div>
+        <div class="small muted" id="kycMessage" style="margin-top:8px"></div>
       </div>
 
       <div class="card" style="max-width:800px;margin-top:18px" id="staticWalletCard">

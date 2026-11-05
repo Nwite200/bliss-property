@@ -866,6 +866,7 @@ await test('public client sign-up creates a client portal account and auto-login
   const signup = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'New Portal Client', email: 'new.portal@example.com', phone_number: '08079990001',
+      residential_address: '1 Signup Test Street', state: 'Lagos', city: 'Ikeja',
       password: 'password123', branch_id: 1
     }
   });
@@ -883,32 +884,34 @@ await test('public client sign-up creates a client portal account and auto-login
   const duplicateEmail = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Duplicate Email', email: 'new.portal@example.com', phone_number: '08079990002',
-      password: 'password123', branch_id: 1
+      residential_address: '2 Signup Test Street', password: 'password123', branch_id: 1
     }
   });
   assert(duplicateEmail.status === 409, 'duplicate sign-up email expected 409');
   const duplicatePhone = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Duplicate Phone', email: 'new.portal2@example.com', phone_number: '08079990001',
-      password: 'password123', branch_id: 1
+      residential_address: '3 Signup Test Street', password: 'password123', branch_id: 1
     }
   });
   assert(duplicatePhone.status === 409, 'duplicate sign-up phone expected 409');
   const weak = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Weak Password', email: 'new.portal3@example.com', phone_number: '08079990003',
-      password: 'short', branch_id: 1
+      residential_address: '4 Signup Test Street', password: 'short', branch_id: 1
     }
   });
   assert(weak.status === 400, 'weak sign-up password expected 400');
 });
 
-await test('public sign-up ignores privileged role/branch/marketer/team/price fields and isolates the client', async () => {
+await test('public sign-up ignores privileged role/marketer/team/price and assigned-branch fields and isolates the client', async () => {
   const signup = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Privilege Injection Test', email: 'inject.portal@example.com', phone_number: '08079990100',
+      residential_address: '5 Signup Test Street', state: 'Lagos', city: 'Ikeja',
       password: 'password123', role_name: 'Managing Director', role_id: 1,
-      branch_id: 2, assigned_branch_id: 2, original_marketer_id: mkt1Id, team_lead_id: tl1Id,
+      branch_id: db.prepare("SELECT id FROM branches WHERE name='Head Office'").get().id,
+      assigned_branch_id: 2, original_marketer_id: mkt1Id, team_lead_id: tl1Id,
       agreed_purchase_price: 5000000, status: 'Completed'
     }
   });
@@ -919,7 +922,7 @@ await test('public sign-up ignores privileged role/branch/marketer/team/price fi
   assert(user && user.role_name === 'Client', 'sign-up must always create a Client role');
   assert(user.password_hash.startsWith('pbkdf2$100000$'), 'sign-up password was not PBKDF2-hashed');
   assert(user.password_hash !== 'password123', 'sign-up stored a plaintext password');
-  assert(client.assigned_branch_id === headOffice.id, 'client must not self-assign a branch');
+  assert(client.assigned_branch_id === headOffice.id, 'client must not self-assign assigned_branch_id directly');
   assert(client.original_marketer_id === mdId, 'client must not self-assign a marketer');
   assert(client.team_lead_id === null, 'client must not self-assign a team lead');
   assert(client.agreed_purchase_price === null, 'client must not set a contract price');
@@ -941,7 +944,7 @@ await test('client sign-up session cookie, login, logout and expiry are enforced
   const signup = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Session Test Client', email: 'session.portal@example.com', phone_number: '08079990101',
-      password: 'password123'
+      residential_address: '6 Signup Test Street', password: 'password123', branch_id: 1
     }
   });
   assert(signup.status === 200, 'session test sign-up expected 200');

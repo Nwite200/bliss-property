@@ -32,6 +32,21 @@
         <div class="hero-actions" id="heroActions"></div>
       </section>
 
+      <div class="card" id="referralCard" style="margin-bottom:16px;display:none">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+          <div style="flex:1;min-width:240px">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Your client referral link</div>
+            <p style="font-size:12px;color:var(--muted);margin:5px 0 10px">Share this link with prospective clients. Anyone who signs up through it is attributed to you and your branch.</p>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input class="field-input" id="referralLinkInput" readonly style="flex:1;min-width:240px;font-size:12px">
+              <button class="btn btn-green btn-sm" type="button" id="copyReferralBtn">Copy link</button>
+              <a class="btn btn-outline btn-sm" id="shareReferralBtn" target="_blank" rel="noopener">Share on WhatsApp</a>
+            </div>
+            <div class="small muted" id="referralCodeText" style="margin-top:7px"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="card" id="revenueTodayCard" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
         <div>
           <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Total paid today</div>
@@ -89,7 +104,7 @@
       <div class="kpi-grid kpi-grid-5" id="periodKpis"></div>
 
       <div class="card section-gap" id="commissionCard">
-        <div class="card-head"><h3 id="commissionCardTitle">Commission overview</h3><a class="small muted" href="commissions.html">Commission management →</a></div>
+        <div class="card-head"><h3 id="commissionCardTitle">Commission overview</h3><span><a class="small muted" href="referral-commissions.html">Referral commissions →</a> · <a class="small muted" href="commissions.html">Commission management →</a></span></div>
         <div class="kpi-grid kpi-grid-5" id="commissionKpis"></div>
         <div class="table-responsive mt-16"><table class="table">
           <thead><tr><th>Commission</th><th>Client</th><th>Plan</th><th>Earned</th><th>Paid</th><th>Outstanding</th><th>Status</th></tr></thead>

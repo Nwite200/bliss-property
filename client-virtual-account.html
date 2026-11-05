@@ -197,52 +197,141 @@
               </div>
             </div>
           `;
-        } else if (data.can_generate) {
+        } else if (data.static_wallet && data.static_wallet.status === 'otp_pending') {
           box.innerHTML = `
             <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:24px;margin-top:16px">
-              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">${esc(data.message || 'Generate a dedicated ALATPay account for your outstanding balance.')}</p>
+              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Your permanent dedicated account is almost ready. Enter the OTP sent to the phone number linked to your BVN to activate it.</p>
+              <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+                <div style="flex:1;min-width:180px">
+                  <label class="field-label" for="walletOtp">OTP sent to BVN phone</label>
+                  <input class="field-input" id="walletOtp" inputmode="numeric" maxlength="8" autocomplete="one-time-code" placeholder="Enter OTP">
+                </div>
+                <button class="btn btn-green" id="validateWalletBtn">Activate my account</button>
+              </div>
+              <div id="walletMsg" style="font-size:12px;margin-top:10px"></div>
+              <p style="font-size:11px;color:var(--muted);margin-top:12px">If the OTP has expired, contact the finance team to restart the dedicated-account setup.</p>
+            </div>
+          `;
+          document.getElementById('validateWalletBtn').addEventListener('click', async () => {
+            const msg = document.getElementById('walletMsg');
+            const btn = document.getElementById('validateWalletBtn');
+            const otp = document.getElementById('walletOtp').value.trim();
+            if (!otp) { msg.textContent = 'Enter the OTP.'; return; }
+            btn.disabled = true;
+            btn.textContent = 'Activating…';
+            try {
+              const create = await fetch('/api/client/virtual-account/static-wallet/validate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ otp })
+              });
+              const created = await create.json();
+              if (!create.ok) {
+                msg.textContent = created.error || 'Unable to activate your account.';
+                btn.disabled = false;
+                btn.textContent = 'Activate my account';
+                return;
+              }
+              window.location.reload();
+            } catch {
+              msg.textContent = 'Unable to activate your account. Please try again.';
+              btn.disabled = false;
+              btn.textContent = 'Activate my account';
+            }
+          });
+        } else if (data.can_activate_static || data.can_generate) {
+          box.innerHTML = `
+            <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:24px;margin-top:16px">
+              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Create your permanent dedicated bank account. It can receive any amount and any number of payments.</p>
+              <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+                <div style="flex:1;min-width:180px">
+                  <label class="field-label" for="walletBvn">BVN (11 digits)</label>
+                  <input class="field-input" id="walletBvn" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="Enter your BVN">
+                </div>
+                <button class="btn btn-green" id="activateWalletBtn">Create my dedicated account</button>
+              </div>
+              <div id="walletMsg" style="font-size:12px;margin-top:10px"></div>
+              <p style="font-size:11px;color:var(--muted);margin-top:12px">Your BVN is sent directly to ALATPay to create the account and is never stored by Bliss Legacy.${data.bvn_last4 ? ` BVN on file ends ${esc(data.bvn_last4)}.` : ''}</p>
+            </div>
+            ${Number(data.outstanding_ngn || 0) > 0 ? `
+            <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:24px;margin-top:16px">
+              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Need to pay right now? Generate a one-off payment account for a specific amount while your permanent account is being set up.</p>
               <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
                 <div style="flex:1;min-width:180px">
                   <label class="field-label" for="vaAmount">Amount (₦)</label>
                   <input class="field-input" id="vaAmount" type="number" min="100" step="100" value="${data.outstanding_ngn || ''}" placeholder="Amount">
                 </div>
-                <button class="btn btn-green" id="generateVaBtn">Generate payment account</button>
+                <button class="btn btn-outline" id="generateVaBtn">Generate one-off account</button>
               </div>
               <div id="vaMsg" style="font-size:12px;margin-top:10px"></div>
-              <p style="font-size:11px;color:var(--muted);margin-top:12px">Outstanding balance: <strong>${Bliss.money(data.outstanding_ngn || 0)}</strong>. ALATPay accounts are issued by the bank for the amount you choose.</p>
-            </div>
+              <p style="font-size:11px;color:var(--muted);margin-top:12px">Outstanding balance: <strong>${Bliss.money(data.outstanding_ngn || 0)}</strong>.</p>
+            </div>` : ''}
           `;
-          const generate = async () => {
-            const msg = document.getElementById('vaMsg');
-            const btn = document.getElementById('generateVaBtn');
-            const amount = Number(document.getElementById('vaAmount').value);
-            if (!Number.isFinite(amount) || amount < 100) {
-              msg.textContent = 'Enter at least ₦100.';
+          document.getElementById('activateWalletBtn').addEventListener('click', async () => {
+            const msg = document.getElementById('walletMsg');
+            const btn = document.getElementById('activateWalletBtn');
+            const bvn = document.getElementById('walletBvn').value.trim();
+            if (!/^\d{10,11}$/.test(bvn)) {
+              msg.textContent = 'Enter a valid 10 or 11 digit BVN.';
               return;
             }
             btn.disabled = true;
-            btn.textContent = 'Generating…';
+            btn.textContent = 'Creating…';
             try {
-              const create = await fetch('/api/client/virtual-account', {
+              const create = await fetch('/api/client/virtual-account/static-wallet/initiate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ amount })
+                body: JSON.stringify({ bvn })
               });
               const created = await create.json();
               if (!create.ok) {
-                msg.textContent = created.error || 'Unable to generate a payment account.';
+                msg.textContent = created.error || 'Unable to create your dedicated account. Please try again or contact the finance team.';
                 btn.disabled = false;
-                btn.textContent = 'Generate payment account';
+                btn.textContent = 'Create my dedicated account';
                 return;
               }
-              window.location.reload();
+              msg.textContent = created.message || 'Account created. Enter the OTP sent to your BVN phone.';
+              setTimeout(() => window.location.reload(), 900);
             } catch {
-              msg.textContent = 'Unable to generate a payment account. Please try again.';
+              msg.textContent = 'Unable to create your dedicated account. Please try again.';
               btn.disabled = false;
-              btn.textContent = 'Generate payment account';
+              btn.textContent = 'Create my dedicated account';
             }
-          };
-          document.getElementById('generateVaBtn').addEventListener('click', generate);
+          });
+          const generateBtn = document.getElementById('generateVaBtn');
+          if (generateBtn) {
+            const generate = async () => {
+              const msg = document.getElementById('vaMsg');
+              const btn = generateBtn;
+              const amount = Number(document.getElementById('vaAmount').value);
+              if (!Number.isFinite(amount) || amount < 100) {
+                msg.textContent = 'Enter at least ₦100.';
+                return;
+              }
+              btn.disabled = true;
+              btn.textContent = 'Generating…';
+              try {
+                const create = await fetch('/api/client/virtual-account', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ amount })
+                });
+                const created = await create.json();
+                if (!create.ok) {
+                  msg.textContent = created.error || 'Unable to generate a payment account.';
+                  btn.disabled = false;
+                  btn.textContent = 'Generate one-off account';
+                  return;
+                }
+                window.location.reload();
+              } catch {
+                msg.textContent = 'Unable to generate a payment account. Please try again.';
+                btn.disabled = false;
+                btn.textContent = 'Generate one-off account';
+              }
+            };
+            generateBtn.addEventListener('click', generate);
+          }
         } else {
           box.innerHTML = `
             <div class="pending-callout-box">

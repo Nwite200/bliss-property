@@ -36,6 +36,7 @@ Status codes used: `200`, `400`, `401`, `403`, `404`, `409`, `429`, `500`, `503`
 | GET | `/api/health` | Public | Health check |
 | POST | `/api/setup` | `X-Setup-Secret` | Create first MD if no users exist |
 | POST | `/api/signup` | Public | Client self-registration and auto-login |
+| GET | `/api/referral/:code` | Public | Resolve a staff referral link to the staff member and branch |
 | POST | `/api/public/enquiries` | Public | Create a lead from the public website |
 | POST | `/api/login` | Public | Staff/client login |
 | POST | `/api/logout` | Session optional | Delete session |
@@ -179,6 +180,13 @@ The webhook re-queries ALATPay with the secret key before crediting any payment.
 
 Client onboarding accepts:
 
+- `residential_address`
+- `state`
+- `city`
+- `branch_id` (the client chooses a branch; `assigned_branch_id` is still ignored)
+- `identity_type` (`NIN`, `International Passport`, `Driver's License`, `Permanent Voter's Card`)
+- `identity_number` (stored only as a masked value, last four digits and a hash)
+- `bvn` (used once to provision the client's permanent ALATPay wallet; never stored)
 - `alternate_phone`
 - `next_of_kin_name`
 - `next_of_kin_phone`
@@ -186,7 +194,12 @@ Client onboarding accepts:
 - `next_of_kin_address`
 - `referral_code`
 
-`/api/me` returns `referral_code` and `referral_link` for staff. `?ref=CODE` on `signup.html` pre-fills the referral code.
+`/api/me` returns `referral_code` and `referral_link` for staff. `?ref=CODE` on `signup.html` pre-fills the referral code, shows the referring staff member and preselects their branch (the client can change it). The staff dashboard exposes a copy/share referral card.
+
+Client identity review is performed with `POST /api/clients/:id/kyc` (`verified`, `rejected`, `pending`). Permanent virtual-account activation is available to signed-in clients through:
+
+- `POST /api/client/virtual-account/static-wallet/initiate` (`{ bvn }`)
+- `POST /api/client/virtual-account/static-wallet/validate` (`{ otp }`)
 
 ---
 
@@ -260,11 +273,29 @@ Every schedule change writes `payment_schedule_history` and a notification.
 | POST | `/api/commissions/:id/payments` | MD/FO |
 | POST | `/api/commissions/:id/adjustments` | MD/FO |
 | GET | `/api/commissions/payments/:id/receipt` | Scoped staff |
+| GET | `/api/referral-commissions` | MD/FO/HA/BM/TL/Marketer |
+| GET | `/api/referral-commissions/:id` | Scoped staff |
+| GET | `/api/referral-commissions/rules` | Scoped staff |
+| POST | `/api/referral-commissions/backfill` | MD/FO/HA |
+| POST | `/api/referral-commissions/:id/recalculate` | MD/FO/HA |
+| POST | `/api/referral-commissions/:id/payments` | MD/FO/HA |
+| POST | `/api/referral-commissions/:id/adjustments` | MD/FO/HA |
 | POST | `/api/reports` | MD/FO/BM/TL/Marketer |
 | GET | `/api/reports` | MD/FO/BM/TL/Marketer |
 | GET | `/api/reports/:id/download` | Owner or MD/FO |
 
 Report types: `sales`, `collections`, `outstanding`, `commission`, `branch_performance`, `marketer_performance`, `refunds`, `commission_liability`.
+
+### ELPIS referral commission automation
+
+Referral commission is calculated automatically from verified non-demo NGN payments, using the client's locked payment plan duration:
+
+- **More than 8 months:** two-stage commission on cumulative qualifying payments. The first ₦60,000 earns a maximum of ₦20,000 (fixed cap, no 33.333% rounding drift); the next ₦60,000 earns 25% (₦15,000). Commission stops at ₦120,000 paid and a maximum of ₦35,000 per client.
+- **7 months or less:** 10% of verified qualifying payments.
+- **Outright purchase:** 10% of the verified purchase amount.
+- **Exactly 8 months:** the account is flagged `Configuration Required` until management confirms the policy. No commission is generated.
+
+The calculation is cumulative and stage-based, not calendar-month-based. Re-running a calculation is idempotent: `TotalCommissionEarnedToDate - PreviouslyRecognisedCommission`. Payment reversals, refunds and cancellations automatically reduce the ledger. Rules are seeded and read-only; only authorised management/finance roles can disburse or adjust commission. Every calculation, flag, reversal, adjustment and disbursement is written to an immutable event ledger.
 
 Marketers may generate only `commission` and `commission_liability`. Team Leads cannot generate `branch_performance`.
 
@@ -484,7 +515,7 @@ See `ALATPAY_INTEGRATION.md`.
 - No team-performance or customer-performance report type.
 - No branch CRUD endpoint.
 - No invitation/approval endpoint for staff.
-- No permanent ALATPay static NUBAN/BVN onboarding endpoint; dynamic virtual accounts are implemented.
+- Client-initiated permanent ALATPay wallet provisioning exists, but it still depends on ALATPay credentials and the client completing the BVN OTP step.
 - No automatic commission generation hook on payment credit; generation remains an explicit authorised operation.
 
 See `KNOWN_LIMITATIONS.md`.

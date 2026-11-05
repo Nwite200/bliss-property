@@ -33,6 +33,10 @@ async function load() {
   document.getElementById("detailNokPhone").textContent = c.next_of_kin_phone || "-";
   document.getElementById("detailNokRelationship").textContent = c.next_of_kin_relationship || "-";
   document.getElementById("detailNokAddress").textContent = c.next_of_kin_address || "-";
+  document.getElementById("detailIdentityType").textContent = c.identity_type || "-";
+  document.getElementById("detailIdentityNumber").textContent = c.identity_number_masked || "-";
+  document.getElementById("detailBvn").textContent = c.bvn_last4 ? `•••••••${c.bvn_last4}` : "-";
+  document.getElementById("detailKycStatus").textContent = c.kyc_status || "pending";
   document.getElementById("detailPrice").textContent = money(c.agreed_purchase_price);
   const properties = Array.isArray(data.properties) ? data.properties : [];
   const financials = data.financials || {};
@@ -208,6 +212,36 @@ async function load() {
     await loadStaticWallet();
   };
   loadStaticWallet();
+
+  // Identity / KYC review
+  const kycBadge = document.getElementById("kycStatusBadge");
+  const kycDetails = document.getElementById("kycDetails");
+  const kycMessage = document.getElementById("kycMessage");
+  const kycState = c.kyc_status || "pending";
+  kycBadge.innerHTML = kycState === "verified"
+    ? '<span class="badge badge-green">Verified</span>'
+    : (kycState === "rejected" ? '<span class="badge badge-red">Rejected</span>' : '<span class="badge badge-amber">Pending review</span>');
+  kycDetails.innerHTML = `
+    <div><span style="color:var(--muted)">Type:</span> <strong>${esc(c.identity_type || "Not provided")}</strong></div>
+    <div><span style="color:var(--muted)">Number:</span> <strong>${esc(c.identity_number_masked || "—")}</strong></div>
+    <div><span style="color:var(--muted)">BVN:</span> <strong>${c.bvn_last4 ? "•••••••" + esc(c.bvn_last4) : "Not supplied"}</strong></div>
+    <div><span style="color:var(--muted)">Submitted:</span> ${c.kyc_submitted_at ? new Date(c.kyc_submitted_at).toLocaleString() : "—"}</div>
+    <div><span style="color:var(--muted)">Reviewed:</span> ${c.kyc_reviewed_at ? new Date(c.kyc_reviewed_at).toLocaleString() : "—"}</div>`;
+  document.getElementById("kycNotes").value = c.kyc_notes || "";
+  async function reviewKyc(status) {
+    kycMessage.textContent = "";
+    const notes = document.getElementById("kycNotes").value.trim();
+    if (status === "rejected" && !notes) { kycMessage.textContent = "Add a reason before rejecting."; return; }
+    const result = await fetchJson("/clients/" + id + "/kyc", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, notes })
+    });
+    if (!result.ok) { kycMessage.textContent = result.data.error || "Unable to save the review."; return; }
+    kycMessage.textContent = status === "verified" ? "Identity approved." : (status === "rejected" ? "Identity rejected." : "Returned to review.");
+    setTimeout(() => location.reload(), 700);
+  }
+  document.getElementById("kycVerifyBtn").onclick = () => reviewKyc("verified");
+  document.getElementById("kycRejectBtn").onclick = () => reviewKyc("rejected");
 
   async function loadClientVerification() {
     const card = document.getElementById("clientVerificationCard");

@@ -143,6 +143,7 @@
       { href: "activity-centre.html", label: "🕘 Activity Centre", page: "activity", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Finance" },
       { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
+      { href: "referral-commissions.html", label: "🧾 Referral Commissions", page: "referral-commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
       { href: "reports.html", label: "📄 Financial Reports", page: "reports", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
       { href: "finance-dashboard.html", label: "💳 Finance & Ledger", page: "finance", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
       { href: "provider-config.html", label: "🏦 Payment Provider", page: "provider", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },

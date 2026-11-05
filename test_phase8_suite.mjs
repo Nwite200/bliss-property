@@ -328,7 +328,7 @@ await test('signup rate limiting blocks excessive registration attempts before h
   }
   const res = await request('/api/signup', {
     method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.88' },
-    body: { full_name: 'Rate Limited Signup', email: 'ratelimit.p8@example.com', phone_number: '08088000222', password: 'password123' }
+    body: { full_name: 'Rate Limited Signup', email: 'ratelimit.p8@example.com', phone_number: '08088000222', residential_address: '7 Signup Test Street', branch_id: ikeja, password: 'password123' }
   });
   assert(res.status === 429, `rate limited signup expected 429, got ${res.status}`);
 });
@@ -338,6 +338,7 @@ await test('client onboarding stores alternate phone, next of kin and valid staf
     method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.55' },
     body: {
       full_name: 'Referred Client', email: 'referred.p8@example.com', phone_number: '08088000331',
+      residential_address: '8 Signup Test Street', state: 'Lagos', city: 'Ikeja', branch_id: ikeja,
       alternate_phone: '08088000332', next_of_kin_name: 'Next Kin', next_of_kin_phone: '08088000333',
       next_of_kin_relationship: 'Sibling', next_of_kin_address: '3 Next of Kin Street',
       referral_code: 'BL-P8-MD', password: 'password123'
@@ -350,7 +351,7 @@ await test('client onboarding stores alternate phone, next of kin and valid staf
   assert(client.next_of_kin_name === 'Next Kin' && client.next_of_kin_phone === '08088000333', 'next-of-kin details not stored');
   assert(client.next_of_kin_relationship === 'Sibling' && client.next_of_kin_address === '3 Next of Kin Street', 'next-of-kin relationship/address missing');
   assert(client.referral_code_used === 'BL-P8-MD' && client.referred_by_staff_id === mdId, 'staff referral attribution missing');
-  assert(client.assigned_branch_id === headOffice, 'MD referral should fall back to Head Office branch');
+  assert(client.assigned_branch_id === ikeja, 'signup should use the branch selected by the client');
   const self = await request('/api/me', { headers: { Cookie: (signup.headers.get('set-cookie') || '').split(';')[0] } });
   assert(self.status === 200 && self.data.role === 'Client', 'referred client session invalid');
   const mdMe = await request('/api/me', { headers: { Cookie: mdCookie } });
@@ -363,6 +364,7 @@ await test('invalid referral codes are rejected and ALATPay never invents virtua
     method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.56' },
     body: {
       full_name: 'Invalid Referral', email: 'invalid-ref.p8@example.com', phone_number: '08088000334',
+      residential_address: '9 Signup Test Street', branch_id: ikeja,
       referral_code: 'DOES-NOT-EXIST', password: 'password123'
     }
   });
@@ -379,6 +381,42 @@ await test('invalid referral codes are rejected and ALATPay never invents virtua
   });
   assert(create.status === 503, `ALATPay without business ID expected 503, got ${create.status}`);
   assert(!db.prepare("SELECT id FROM virtual_accounts WHERE account_status='active'").get(), 'no active virtual account should be created');
+});
+
+await test('signup captures address, branch, masked identity and dedicated-account readiness', async () => {
+  const ajahBranch = db.prepare("SELECT id FROM branches WHERE name='Ajah'").get();
+  const signup = await request('/api/signup', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.58' },
+    body: {
+      full_name: 'Identity Phase 15 Client', email: 'identity.phase15@example.com', phone_number: '08088000336',
+      residential_address: '12 Identity Way', state: 'Lagos', city: 'Ajah', branch_id: ajahBranch.id,
+      identity_type: 'NIN', identity_number: '12345678901', bvn: '22222222222', password: 'password123'
+    }
+  });
+  assert(signup.status === 200, `identity signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
+  const client = db.prepare('SELECT * FROM clients WHERE client_reference=?').get(signup.data.client_reference);
+  assert(client.residential_address === '12 Identity Way' && client.state === 'Lagos' && client.city === 'Ajah', 'signup address not stored');
+  assert(client.assigned_branch_id === ajahBranch.id, 'signup did not honour the client-selected branch');
+  assert(client.identity_type === 'NIN', 'identity type not stored');
+  assert(client.identity_number_masked === '12*****8901', `unexpected identity mask: ${client.identity_number_masked}`);
+  assert(client.identity_number_last4 === '8901', 'identity last4 not stored');
+  assert(client.identity_number_hash && client.identity_number_hash.length === 64, 'identity hash missing');
+  assert(client.kyc_status === 'pending', 'new identity should await KYC review');
+  assert(client.bvn_last4 === '2222', 'BVN last4 not stored');
+  const serialized = JSON.stringify(client);
+  assert(!serialized.includes('12345678901'), 'raw identity number must never be stored');
+  assert(!serialized.includes('22222222222'), 'raw BVN must never be stored');
+  assert(signup.data.virtual_account && ['bvn_required', 'pending_provider', 'otp_pending', 'active'].includes(signup.data.virtual_account.status), 'dedicated virtual-account readiness missing');
+
+  const lookup = await request('/api/referral/BL-P8-MKT');
+  assert(lookup.status === 200 && lookup.data.referral_code === 'BL-P8-MKT' && lookup.data.branch_name, 'public referral lookup failed');
+
+  const review = await request(`/api/clients/${signup.data.client_id}/kyc`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { status: 'verified', notes: 'Identity checked by MD' }
+  });
+  assert(review.status === 200 && review.data.kyc_status === 'verified', 'KYC review endpoint failed');
+  const reviewed = db.prepare('SELECT kyc_status, kyc_reviewed_by, kyc_notes FROM clients WHERE id=?').get(signup.data.client_id);
+  assert(reviewed.kyc_status === 'verified' && reviewed.kyc_reviewed_by === mdId && reviewed.kyc_notes === 'Identity checked by MD', 'KYC review was not persisted');
 });
 
 console.log('\n--- 3. Property media and document security ---');
@@ -1149,7 +1187,8 @@ await test('public signup sends an OTP and the client can verify their own accou
   const signup = await request('/api/signup', {
     method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.77' }, body: {
       full_name: 'Phase 14 Public OTP Client', email: 'otp.public.phase14@example.com',
-      phone_number: '08087770002', password: 'password123'
+      phone_number: '08087770002', residential_address: '10 Signup Test Street', branch_id: ikeja,
+      password: 'password123'
     }
   });
   assert(signup.status === 200, `signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
@@ -1487,6 +1526,115 @@ await test('phone cleanup reports invalid/missing numbers and saves one scoped c
   assert(wrongField.status === 403, 'marketer must not edit non-phone client fields');
 });
 
+console.log('\n--- 13. ELPIS referral commission automation ---');
+await test('referral commission applies two-stage and flat rules, caps at 35,000 and flags 8-month plans', async () => {
+  const insertClient = (ref, name, phone, marketerId, planType, months) => Number(db.prepare(`
+    INSERT INTO clients (client_reference, full_name, phone_number, email_address, status, sale_type,
+      assigned_branch_id, created_by, original_marketer_id, agreed_purchase_price,
+      payment_plan_type, payment_plan_duration_months)
+    VALUES (?, ?, ?, ?, 'Active Buyer', 'New Sale', ?, ?, ?, 20000000, ?, ?)
+  `).run(ref, name, phone, `${ref.toLowerCase()}@example.com`, ikeja, marketerId, marketerId, planType, months).lastInsertRowid);
+
+  const insertVerifiedPayment = (clientId, ref, kobo, dayOffset) => Number(db.prepare(`
+    INSERT INTO payments (client_id, transaction_ref, amount, amount_kobo, currency, method, status, verified_at, is_demo)
+    VALUES (?, ?, ?, ?, 'NGN', 'Bank Transfer', 'verified', datetime('now', ?), 0)
+  `).run(clientId, ref, kobo / 100, kobo, `-${dayOffset} days`).lastInsertRowid);
+
+  const longClient = insertClient('BLC-P15-LONG', 'Referral Long Term', '08089001001', mkt1Id, 'monthly', 12);
+  insertVerifiedPayment(longClient, 'P15-LONG-1', 3000000, 5);
+  insertVerifiedPayment(longClient, 'P15-LONG-2', 3000000, 4);
+  insertVerifiedPayment(longClient, 'P15-LONG-3', 4000000, 3);
+  insertVerifiedPayment(longClient, 'P15-LONG-4', 2000000, 2);
+  const longExtraPayment = insertVerifiedPayment(longClient, 'P15-LONG-5', 6000000, 1);
+
+  const shortClient = insertClient('BLC-P15-SHORT', 'Referral Short Term', '08089001002', mkt2Id, 'monthly', 6);
+  insertVerifiedPayment(shortClient, 'P15-SHORT-1', 10000000, 2);
+
+  const outrightClient = insertClient('BLC-P15-OUTRIGHT', 'Referral Outright', '08089001003', mkt1Id, 'outright', 0);
+  insertVerifiedPayment(outrightClient, 'P15-OUTRIGHT-1', 50000000, 2);
+
+  const eightMonthClient = insertClient('BLC-P15-EIGHT', 'Referral Eight Month', '08089001004', mkt1Id, 'monthly', 8);
+  insertVerifiedPayment(eightMonthClient, 'P15-EIGHT-1', 6000000, 2);
+
+  const backfill = await request('/api/referral-commissions/backfill', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(backfill.status === 200, `referral backfill expected 200, got ${backfill.status}: ${JSON.stringify(backfill.data)}`);
+
+  const longAccount = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(longClient);
+  assert(longAccount && longAccount.structure === 'two_stage', 'long-term referral account not classified as two-stage');
+  assert(longAccount.stage1_commission_kobo === 2000000, `stage 1 should be 20,000 NGN = 2,000,000 kobo, got ${longAccount.stage1_commission_kobo}`);
+  assert(longAccount.stage2_commission_kobo === 1500000, `stage 2 should be 15,000 NGN = 1,500,000 kobo, got ${longAccount.stage2_commission_kobo}`);
+  assert(longAccount.total_commission_kobo === 3500000, `long-term cap should be 35,000 NGN = 3,500,000 kobo, got ${longAccount.total_commission_kobo}`);
+  assert(longAccount.qualifying_paid_kobo === 12000000, 'long-term qualifying payments must stop at 120,000 NGN');
+  assert(longAccount.total_paid_kobo === 18000000, 'long-term gross client payment should still be recorded');
+  assert(longAccount.status === 'Earned', `long-term referral status expected Earned, got ${longAccount.status}`);
+
+  const shortAccount = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(shortClient);
+  assert(shortAccount.structure === 'flat' && shortAccount.total_commission_kobo === 1000000, 'short-term referral commission should be 10% = 10,000 NGN');
+  assert(shortAccount.plan_duration_months === 6, 'short-term plan duration not stored');
+
+  const outrightAccount = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(outrightClient);
+  assert(outrightAccount.structure === 'flat' && outrightAccount.total_commission_kobo === 5000000, 'outright referral commission should be 10% = 50,000 NGN');
+
+  const eightAccount = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(eightMonthClient);
+  assert(eightAccount.structure === 'configuration_required' && eightAccount.total_commission_kobo === 0, '8-month plan must be flagged without commission');
+  assert(eightAccount.status === 'Configuration Required' && /8-month/i.test(eightAccount.flag_reason || ''), '8-month flag reason missing');
+
+  const rules = await request('/api/referral-commissions/rules', { headers: { Cookie: mdCookie } });
+  assert(rules.status === 200 && rules.data.rules.length === 4, 'referral commission rules endpoint missing seeded rules');
+  const detail = await request(`/api/referral-commissions/${longAccount.id}`, { headers: { Cookie: mdCookie } });
+  assert(detail.status === 200 && detail.data.account.client_id === longClient && detail.data.events.length >= 1, 'referral commission detail endpoint failed');
+  const recalc = await request(`/api/referral-commissions/${longAccount.id}/recalculate`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(recalc.status === 200 && recalc.data.total_commission_kobo === 3500000, 'manual referral recalculation failed');
+
+  const eventsBefore = db.prepare('SELECT COUNT(*) AS c FROM referral_commission_events WHERE client_id=?').get(longClient).c;
+  const repeat = await request('/api/referral-commissions/backfill', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(repeat.status === 200, 'repeat referral backfill expected 200');
+  const longAccountAgain = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(longClient);
+  assert(longAccountAgain.total_commission_kobo === 3500000, 'repeat backfill changed the long-term commission');
+  const eventsAfter = db.prepare('SELECT COUNT(*) AS c FROM referral_commission_events WHERE client_id=?').get(longClient).c;
+  assert(eventsAfter === eventsBefore, 'repeat backfill created duplicate commission events');
+
+  const pay = await request(`/api/referral-commissions/${longAccount.id}/payments`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { amount: 10000, method: 'Bank Transfer' }
+  });
+  assert(pay.status === 200 && pay.data.status === 'Partially Paid', `partial referral payment expected Partially Paid, got ${pay.status}: ${JSON.stringify(pay.data)}`);
+  const paidAccount = db.prepare('SELECT * FROM referral_commission_accounts WHERE id=?').get(longAccount.id);
+  assert(paidAccount.paid_kobo === 1000000 && paidAccount.status === 'Partially Paid', 'partial referral payment totals incorrect');
+
+  const overpay = await request(`/api/referral-commissions/${longAccount.id}/payments`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { amount: 100000, method: 'Bank Transfer' }
+  });
+  assert(overpay.status === 400, 'referral commission overpayment should be rejected');
+
+  const adjust = await request(`/api/referral-commissions/${longAccount.id}/adjustments`, {
+    method: 'POST', headers: { Cookie: mdCookie },
+    body: { amount: -5000, adjustment_type: 'correction', reason: 'Phase 15 correction test' }
+  });
+  assert(adjust.status === 200 && adjust.data.adjusted_kobo === -500000, `referral adjustment expected -500,000 kobo, got ${JSON.stringify(adjust.data)}`);
+
+  db.prepare("UPDATE payments SET status='reversed' WHERE id=?").run(longExtraPayment);
+  const afterReversal = await request('/api/referral-commissions/backfill', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(afterReversal.status === 200, 'reversal recalculation failed');
+  const reversedAccount = db.prepare('SELECT * FROM referral_commission_accounts WHERE id=?').get(longAccount.id);
+  assert(reversedAccount.total_paid_kobo === 12000000, 'reversed payment still counted in referral total');
+  assert(reversedAccount.total_commission_kobo === 3500000, 'reversing the payment above the cap must not reduce the capped commission');
+
+  const marketerView = await request('/api/referral-commissions', { headers: { Cookie: mkt1Cookie } });
+  assert(marketerView.status === 200 && marketerView.data.entries.every(row => row.marketer_id === mkt1Id), 'marketer referral view leaked another marketer');
+  const careView = await request('/api/referral-commissions', { headers: { Cookie: careNationalCookie } });
+  assert(careView.status === 403, 'customer care must not see referral commissions');
+  const configView = await request('/api/referral-commissions?status=Configuration%20Required', { headers: { Cookie: mdCookie } });
+  assert(configView.status === 200 && configView.data.entries.some(row => row.client_id === eightMonthClient), 'configuration-required referral account missing from dashboard');
+});
+
 console.log('\n--- 13. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
@@ -1494,7 +1642,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 18, `expected 18 migrations, found ${files.length}`);
+  assert(files.length === 20, `expected 20 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 migrations apply bliss-legacy-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply bliss-legacy-db --remote",
+    "db:migrate:local": "wrangler d1 migrations apply bliss-legacy-staging-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply bliss-legacy-staging-db --remote",
     "test:phase5": "node --experimental-sqlite test_phase5_suite.mjs",
     "test:phase6": "node --experimental-sqlite test_phase6_suite.mjs",
     "test:phase7": "node --experimental-sqlite test_phase7_suite.mjs",

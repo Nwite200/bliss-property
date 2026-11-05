@@ -95,6 +95,8 @@ async function onSubmit(e) {
     next_of_kin_phone: document.getElementById("next_of_kin_phone").value,
     next_of_kin_relationship: document.getElementById("next_of_kin_relationship").value,
     next_of_kin_address: document.getElementById("next_of_kin_address").value,
+    identity_type: document.getElementById("identity_type").value,
+    identity_number: document.getElementById("identity_number").value.trim(),
     referral_code: document.getElementById("referral_code").value,
     notes: document.getElementById("notes").value,
     preferred_channel: document.getElementById("preferred_channel").value,

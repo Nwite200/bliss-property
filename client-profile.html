@@ -163,6 +163,27 @@
             </div>
           </div>
 
+          <div class="form-row">
+            <div class="form-group">
+              <label for="profIdentityType">Identity type</label>
+              <select id="profIdentityType">
+                <option value="">Not provided</option>
+                <option value="NIN">NIN (National Identification Number)</option>
+                <option value="International Passport">International Passport</option>
+                <option value="Driver's License">Driver's Licence</option>
+                <option value="Permanent Voter's Card">Permanent Voter's Card</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="profIdentityNumber">Identity number</label>
+              <input type="text" id="profIdentityNumber" autocomplete="off" placeholder="Enter to add or replace">
+            </div>
+          </div>
+          <div class="form-group">
+            <span class="immutable-badge" id="profKycStatus">Identity review: pending</span>
+            <p class="small muted" style="margin-top:6px">Only a masked identity number is stored. Submitting a new number returns your account to the review queue.</p>
+          </div>
+
           <div class="form-group">
             <label for="profNok">Next of Kin (Name, Relationship & Phone)</label>
             <input type="text" id="profNok" placeholder="e.g. Chinedu Nwosu (Brother) - 08030000000">
@@ -226,6 +247,10 @@
         document.getElementById('profState').value = p.state || '';
         document.getElementById('profCity').value = p.city || '';
         document.getElementById('profNok').value = p.next_of_kin || '';
+        document.getElementById('profIdentityType').value = p.identity_type || '';
+        const kyc = p.kyc_status || 'pending';
+        const kycLabel = kyc === 'verified' ? 'verified' : (kyc === 'rejected' ? 'rejected — please update your details' : 'pending review');
+        document.getElementById('profKycStatus').textContent = `Identity review: ${kycLabel}${p.identity_number_masked ? ` · ${p.identity_number_masked}` : ''}`;
       } catch (err) {
         window.location.href = '/client-login.html';
       }
@@ -247,6 +272,11 @@
           city: document.getElementById('profCity').value,
           next_of_kin: document.getElementById('profNok').value
         };
+        const identityNumber = document.getElementById('profIdentityNumber').value.trim();
+        if (identityNumber) {
+          body.identity_type = document.getElementById('profIdentityType').value;
+          body.identity_number = identityNumber;
+        }
 
         const res = await fetch('/api/client/profile', {
           method: 'PUT',
@@ -257,6 +287,8 @@
         if (res.ok) {
           msg.style.color = '#00B522';
           msg.textContent = '✓ Profile updated successfully.';
+          document.getElementById('profIdentityNumber').value = '';
+          if (body.identity_number) document.getElementById('profKycStatus').textContent = 'Identity review: pending review';
         } else {
           const err = await res.json();
           msg.style.color = '#C0392B';

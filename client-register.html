@@ -46,6 +46,17 @@
           <div><label class="field-label">Next of kin phone</label><input id="next_of_kin_phone" type="tel"></div>
           <div><label class="field-label">Next of kin relationship</label><input id="next_of_kin_relationship" type="text" placeholder="e.g. Spouse, sibling"></div>
           <div><label class="field-label">Next of kin address</label><input id="next_of_kin_address" type="text"></div>
+          <div>
+            <label class="field-label">Identity type</label>
+            <select id="identity_type">
+              <option value="">Not provided</option>
+              <option value="NIN">NIN (National Identification Number)</option>
+              <option value="International Passport">International Passport</option>
+              <option value="Driver's License">Driver's Licence</option>
+              <option value="Permanent Voter's Card">Permanent Voter's Card</option>
+            </select>
+          </div>
+          <div><label class="field-label">Identity number</label><input id="identity_number" type="text" autocomplete="off" placeholder="Stored masked; never shown in full"></div>
           <div style="grid-column:1/-1"><label class="field-label">Referral code (optional)</label><input id="referral_code" type="text" placeholder="Staff referral code"></div>
           <div style="grid-column:1/-1"><label class="field-label">Preferred channel</label><select id="preferred_channel"><option>WhatsApp</option><option>Email</option><option>Phone</option><option>WhatsApp + Email</option></select></div>
           <div style="grid-column:1/-1"><label class="field-label">Sale type</label><select id="sale_type"><option>New Sale</option><option>Resale</option><option>Referral</option><option>Other</option></select></div>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Referral Commissions | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Manrope:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/motion.css">
+  <script src="assets/js/intro-config.js"></script>
+  <script src="assets/js/motion.js"></script>
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Bliss Legacy">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/icons/icon-192.png">
+  <meta name="theme-color" content="#00B522" />
+</head>
+<body data-page="referral-commissions">
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <section class="role-hero">
+        <h1>Referral Commissions</h1>
+        <p>Automatic ELPIS referral commission tracking, from verified client payments to disbursement.</p>
+        <div class="role-hero-meta">
+          <span class="badge badge-green">Payment-driven</span>
+          <span class="badge badge-blue">Immutable rules</span>
+          <span class="badge badge-gray">Audit trail</span>
+        </div>
+        <div class="hero-actions">
+          <button class="btn btn-green" type="button" id="backfillBtn">Recalculate all eligible clients</button>
+          <a class="btn btn-outline" href="commissions.html">Open commission plans →</a>
+        </div>
+      </section>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head"><h3>ELPIS referral commission rules</h3><span class="small muted">Fixed policy — not editable by users</span></div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead><tr><th>Structure</th><th>Plan duration</th><th>Commission</th><th>Maximum</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Long-term</strong></td><td>More than 8 months</td><td>33.333% on the first ₦60,000 · 25% on the next ₦60,000</td><td><strong>₦35,000 per client</strong></td></tr>
+              <tr><td><strong>Short-term</strong></td><td>7 months or less</td><td>10% of verified qualifying payments</td><td>10% of amount paid</td></tr>
+              <tr><td><strong>Outright</strong></td><td>Outright purchase</td><td>10% of the verified purchase amount</td><td>10% of amount paid</td></tr>
+              <tr><td><strong>8 months exactly</strong></td><td>8 months</td><td>Flagged for management configuration</td><td>Not yet specified</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="kpi-grid kpi-grid-5" id="referralKpis"></div>
+
+      <div class="filter-panel">
+        <div class="field-group">
+          <label class="field-label" for="refSearch">Search</label>
+          <input class="field-input" id="refSearch" type="search" placeholder="Client name or reference">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="refStatus">Status</label>
+          <select class="field-input" id="refStatus">
+            <option value="">All statuses</option>
+            <option>Pending</option>
+            <option>Earned</option>
+            <option>Partially Paid</option>
+            <option>Paid</option>
+            <option>Reversed</option>
+            <option>Configuration Required</option>
+          </select>
+        </div>
+        <div class="field-group" id="refMarketerGroup">
+          <label class="field-label" for="refMarketer">Marketer</label>
+          <select class="field-input" id="refMarketer"><option value="">All marketers</option></select>
+        </div>
+        <div class="field-group" id="refBranchGroup">
+          <label class="field-label" for="refBranch">Branch</label>
+          <select class="field-input" id="refBranch"><option value="">All branches</option></select>
+        </div>
+        <button class="btn btn-green btn-sm" type="button" id="refApply">Apply filters</button>
+        <button class="btn btn-ghost btn-sm" type="button" id="refReset">Reset</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Client referral commission accounts</h3><span class="small muted" id="refCount">Loading…</span></div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Client</th><th>Marketer</th><th>Payment plan</th><th>Total paid</th>
+                <th>Earned</th><th>Paid</th><th>Outstanding</th><th>Status</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="refBody"><tr><td colspan="9"><div class="empty-state">Loading referral commissions…</div></td></tr></tbody>
+          </table>
+        </div>
+        <div class="toolbar mt-16" style="justify-content:flex-end">
+          <button class="btn btn-ghost btn-sm" type="button" id="refPrev">← Previous</button>
+          <span class="small muted" id="refPageLabel">Page 1</span>
+          <button class="btn btn-ghost btn-sm" type="button" id="refNext">Next →</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Management view</h3><span class="small muted">Liabilities by commission structure</span></div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead><tr><th>Structure</th><th>Clients</th><th>Earned</th><th>Outstanding</th></tr></thead>
+            <tbody id="refStructureBody"><tr><td colspan="4"><div class="empty-state">No data yet.</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="refDetailModal">
+    <div class="modal-box modal-wide" style="max-width:900px">
+      <div class="modal-header">
+        <h3 id="refDetailTitle">Referral commission detail</h3>
+        <button class="icon-btn" type="button" data-close-modal="refDetailModal">✕</button>
+      </div>
+      <div id="refDetailBody"><div class="empty-state">Loading…</div></div>
+    </div>
+  </div>
+
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/referral-commissions.js"></script>
+  <script src="assets/js/mobile-nav.js"></script>
+  <script src="assets/js/pwa.js"></script>
+</body>
+</html>

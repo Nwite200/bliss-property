@@ -23,9 +23,15 @@
     .signup-msg { margin-top: 12px; font-size: 12px; line-height: 1.5; min-height: 18px; }
     .signup-msg.error { color: #B91C1C; }
     .signup-msg.success { color: var(--green-dark); }
+    .signup-plan-detail { display: none; margin-top: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--soft); }
+    .signup-plan-detail.show { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+    .signup-plan-detail .plan-item { min-width: 0; }
+    .signup-plan-detail .plan-item span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); font-weight: 700; }
+    .signup-plan-detail .plan-item strong { display: block; font-size: 13px; color: var(--ink); margin-top: 2px; }
+    .signup-plan-empty { margin-top: 8px; font-size: 12px; color: #B45309; background: #FFFBEB; border: 1px solid #FDE68A; border-radius: var(--radius-sm); padding: 10px 12px; }
     .signup-links { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 16px; font-size: 12px; }
     .signup-links a { color: var(--green-dark); font-weight: 700; }
-    @media (max-width: 520px) { .signup-grid { grid-template-columns: 1fr; } .signup-card { padding: 24px 20px; } }
+    @media (max-width: 520px) { .signup-grid { grid-template-columns: 1fr; } .signup-card { padding: 24px 20px; } .signup-plan-detail.show { grid-template-columns: 1fr; } }
   </style>
   <link rel="stylesheet" href="assets/css/motion.css">
   <script src="assets/js/intro-config.js"></script>
@@ -67,12 +73,55 @@
           <input id="alternatePhone" type="tel" autocomplete="tel" placeholder="Optional second number">
         </div>
         <div class="full">
+          <label for="residentialAddress">Residential address *</label>
+          <input id="residentialAddress" type="text" autocomplete="street-address" placeholder="Street, house number and area" required>
+        </div>
+        <div>
+          <label for="state">State *</label>
+          <input id="state" type="text" autocomplete="address-level1" placeholder="e.g. Lagos State" required>
+        </div>
+        <div>
+          <label for="city">City *</label>
+          <input id="city" type="text" autocomplete="address-level2" placeholder="e.g. Ikeja" required>
+        </div>
+        <div class="full">
+          <label for="branch">Preferred branch *</label>
+          <select id="branch" required>
+            <option value="">Select the branch you are onboarding with</option>
+          </select>
+          <div id="referralNote" class="small muted" style="margin-top:5px"></div>
+        </div>
+        <div class="full">
+          <div class="route-note" style="font-size:11px">
+            <strong>Identity verification.</strong> We verify every client before activating payments. Only masked identity details are stored.
+          </div>
+        </div>
+        <div>
+          <label for="identityType">Identity type *</label>
+          <select id="identityType" required>
+            <option value="NIN">NIN (National Identification Number)</option>
+            <option value="International Passport">International Passport</option>
+            <option value="Driver's License">Driver's Licence</option>
+            <option value="Permanent Voter's Card">Permanent Voter's Card</option>
+          </select>
+        </div>
+        <div>
+          <label for="identityNumber">Identity number *</label>
+          <input id="identityNumber" type="text" autocomplete="off" placeholder="Enter the number exactly as issued" required>
+        </div>
+        <div class="full">
+          <label for="bvn">BVN for your dedicated virtual account *</label>
+          <input id="bvn" type="password" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="11-digit BVN" required>
+          <div class="route-note" style="font-size:11px;margin-top:5px">Your BVN is used once to create your permanent ALATPay account and is never stored by Bliss Legacy Limited.</div>
+        </div>
+        <div class="full">
           <label for="property">Interested property</label>
           <select id="property"><option value="">No property selected</option></select>
         </div>
         <div class="full" id="signupPlanWrap" style="display:none">
-          <label>Payment plan *</label>
-          <div id="signupPlanOptions" class="quick-links"></div>
+          <label for="signupPlanSelect">Payment plan *</label>
+          <select id="signupPlanSelect" required></select>
+          <div id="signupPlanDetail" class="signup-plan-detail"></div>
         </div>
         <div>
           <label for="nokName">Next of kin name</label>
@@ -95,7 +144,7 @@
           <input id="referralCode" type="text" placeholder="Enter a staff referral code if you have one" autocomplete="off">
         </div>
         <div class="full">
-          <div class="route-note" style="font-size:11px">New accounts are reviewed by our client team. Branch, marketer and team assignment is completed by authorised Bliss Legacy staff.</div>
+          <div class="route-note" style="font-size:11px">Your chosen branch is recorded immediately. Our client team reviews your identity details and confirms marketer/team assignment after onboarding.</div>
         </div>
         <div>
           <label for="password">Password *</label>
@@ -126,9 +175,26 @@
   <script>
     (async () => {
       const propertySelect = document.getElementById('property');
+      const branchSelect = document.getElementById('branch');
       const referralInput = document.getElementById('referralCode');
+      const referralNote = document.getElementById('referralNote');
       const referral = new URLSearchParams(window.location.search).get('ref');
       if (referral && referralInput) referralInput.value = referral.trim().toUpperCase();
+      try {
+        const branches = await fetch('/api/branches').then(r => r.json());
+        branchSelect.innerHTML = '<option value="">Select the branch you are onboarding with</option>' + (branches.branches || []).map(b => `<option value="${b.id}">${b.name}</option>`).join('');
+      } catch { /* optional */ }
+      if (referralInput.value) {
+        try {
+          const info = await fetch('/api/referral/' + encodeURIComponent(referralInput.value)).then(r => r.json());
+          if (info.ok) {
+            referralNote.textContent = `Referred by ${info.staff_name}${info.branch_name ? ' · ' + info.branch_name + ' branch' : ''}. You can still choose another branch.`;
+            if (info.branch_id && branchSelect) branchSelect.value = info.branch_id;
+          } else {
+            referralNote.textContent = 'That staff referral code was not found. You can continue without it.';
+          }
+        } catch { /* optional */ }
+      }
       try {
         const properties = await fetch('/api/properties?limit=50').then(r => r.json());
         propertySelect.innerHTML = '<option value="">No property selected</option>' + (properties.properties || []).map(p => `<option value="${p.id}">${p.reference} — ${p.title}</option>`).join('');
@@ -136,28 +202,74 @@
       function planLabel(type) {
         return ({ outright: 'Outright', part_payment: 'Part payment', daily: 'Daily', weekly: 'Weekly', bi_monthly: 'Bi-monthly', monthly: 'Monthly' })[type] || type;
       }
+      function naira(kobo) {
+        return '₦' + (Number(kobo || 0) / 100).toLocaleString('en-NG');
+      }
+      const planSelect = document.getElementById('signupPlanSelect');
+      const planDetail = document.getElementById('signupPlanDetail');
+      let currentPlans = [];
+
+      function renderPlanDetail(plan) {
+        if (!plan) {
+          planDetail.className = 'signup-plan-detail';
+          planDetail.innerHTML = '';
+          return;
+        }
+        const duration = plan.duration_months
+          ? `${Number(plan.duration_months)} month${Number(plan.duration_months) === 1 ? '' : 's'}`
+          : (plan.number_of_installments ? `${Number(plan.number_of_installments)} instalment${Number(plan.number_of_installments) === 1 ? '' : 's'}` : '—');
+        planDetail.className = 'signup-plan-detail show';
+        planDetail.innerHTML = `
+          <div class="plan-item"><span>Agreed price</span><strong>${naira(plan.total_price_kobo)}</strong></div>
+          <div class="plan-item"><span>Deposit</span><strong>${Number(plan.deposit_kobo || 0) > 0 ? naira(plan.deposit_kobo) : 'No deposit'}</strong></div>
+          <div class="plan-item"><span>Instalment</span><strong>${Number(plan.installment_kobo || 0) > 0 ? naira(plan.installment_kobo) : 'Full payment'}</strong></div>
+          <div class="plan-item"><span>Duration</span><strong>${duration}</strong></div>
+        `;
+      }
+
+      planSelect.addEventListener('change', () => {
+        renderPlanDetail(currentPlans.find(plan => String(plan.id) === planSelect.value) || null);
+      });
+
       propertySelect.addEventListener('change', async () => {
         const wrap = document.getElementById('signupPlanWrap');
-        const options = document.getElementById('signupPlanOptions');
         const propertyId = propertySelect.value;
-        if (!propertyId) { wrap.style.display = 'none'; options.innerHTML = ''; return; }
+        currentPlans = [];
+        planSelect.innerHTML = '';
+        planSelect.required = false;
+        planSelect.style.display = '';
+        planDetail.className = 'signup-plan-detail';
+        planDetail.innerHTML = '';
+        wrap.style.display = 'none';
+        if (!propertyId) return;
+        wrap.style.display = '';
+        planSelect.innerHTML = '<option value="">Loading payment plans…</option>';
+        planSelect.disabled = true;
         try {
           const data = await fetch(`/api/properties/${propertyId}/payment-plans`).then(r => r.json());
           const plans = data.plans || [];
+          currentPlans = plans;
+          planSelect.disabled = false;
           if (!plans.length) {
-            wrap.style.display = 'none';
-            options.innerHTML = '';
+            planSelect.style.display = 'none';
+            planDetail.className = 'signup-plan-empty';
+            planDetail.textContent = 'No payment plan is configured for this property yet. You can continue and our client team will contact you.';
             return;
           }
-          wrap.style.display = '';
-          options.innerHTML = plans.map((plan, index) => `
-            <label class="tag" style="cursor:pointer;display:flex;align-items:center;gap:8px;padding:10px;flex-wrap:wrap">
-              <input type="radio" name="signupPlan" value="${plan.id}" ${index === 0 ? 'checked' : ''}>
-              <strong>${planLabel(plan.plan_type)}</strong>
-              <span>₦${(Number(plan.total_price_kobo || 0) / 100).toLocaleString('en-NG')}</span>
-              <span style="font-size:11px;color:var(--muted)">Deposit ₦${(Number(plan.deposit_kobo || 0) / 100).toLocaleString('en-NG')} · Instalment ₦${(Number(plan.installment_kobo || 0) / 100).toLocaleString('en-NG')}</span>
-            </label>`).join('');
-        } catch { wrap.style.display = 'none'; }
+          planSelect.required = true;
+          planSelect.innerHTML = '<option value="">Select a payment plan</option>' + plans.map(plan => `
+            <option value="${plan.id}">${planLabel(plan.plan_type)} — ${naira(plan.total_price_kobo)}</option>
+          `).join('');
+          if (plans.length === 1) {
+            planSelect.value = String(plans[0].id);
+            renderPlanDetail(plans[0]);
+          }
+        } catch {
+          planSelect.disabled = false;
+          planSelect.style.display = 'none';
+          planDetail.className = 'signup-plan-empty';
+          planDetail.textContent = 'Payment plans could not be loaded. Please try again or continue without selecting a plan.';
+        }
       });
     })();
 
@@ -185,13 +297,20 @@
             email: document.getElementById('email').value.trim(),
             phone_number: document.getElementById('phone').value.trim(),
             alternate_phone: document.getElementById('alternatePhone').value.trim(),
+            residential_address: document.getElementById('residentialAddress').value.trim(),
+            state: document.getElementById('state').value.trim(),
+            city: document.getElementById('city').value.trim(),
+            branch_id: document.getElementById('branch').value ? Number(document.getElementById('branch').value) : null,
+            identity_type: document.getElementById('identityType').value,
+            identity_number: document.getElementById('identityNumber').value.trim(),
+            bvn: document.getElementById('bvn').value.trim(),
             next_of_kin_name: document.getElementById('nokName').value.trim(),
             next_of_kin_phone: document.getElementById('nokPhone').value.trim(),
             next_of_kin_relationship: document.getElementById('nokRelationship').value.trim(),
             next_of_kin_address: document.getElementById('nokAddress').value.trim(),
             referral_code: document.getElementById('referralCode').value.trim(),
             interested_property_id: document.getElementById('property').value ? Number(document.getElementById('property').value) : null,
-            property_plan_id: document.querySelector('input[name="signupPlan"]:checked') ? Number(document.querySelector('input[name="signupPlan"]:checked').value) : null,
+            property_plan_id: document.getElementById('signupPlanSelect').value ? Number(document.getElementById('signupPlanSelect').value) : null,
             plan_start_date: new Date().toISOString().slice(0, 10),
             password
           })
