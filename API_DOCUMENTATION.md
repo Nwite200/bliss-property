@@ -295,7 +295,34 @@ Super Admin inherits MD business scope for backward compatibility. `/api/me` ret
 - `GET /api/chat/rooms/:id/socket` — WebSocket upgrade; backed by the `CHAT_ROOM` Durable Object
 - Messages are persisted in D1 `chat_messages`.
 
-## 12. Common validation rules
+## 12. Hierarchical revenue
+
+- `GET /api/revenue/overview?from&to&branch_id&team_lead_id&staff_id`
+- `GET /api/revenue/breakdown` — alias of overview
+- `GET /api/revenue/payments?from&to&branch_id&team_lead_id&staff_id&page&limit`
+
+Scope is always derived server-side from `actual_role`, `branch_id` and `manager_id` hierarchy:
+
+- Staff/Marketer: own registered clients only
+- Team Lead: team revenue
+- Branch Manager / Project Manager: own branch
+- MD / Super Admin / Head Accountant / Finance Officer: national
+
+Payments carry immutable revenue snapshots (`revenue_staff_id`, `revenue_team_lead_id`, `revenue_pm_id`, `revenue_branch_id`) written when credited.
+
+Revenue responses include:
+
+```json
+{
+  "total_kobo": 1100000000,
+  "children": [],
+  "children_total_kobo": 1100000000,
+  "reconciles": true,
+  "breadcrumb": []
+}
+```
+
+## 13. Common validation rules
 
 - Password minimum: 8 characters.
 - Phone: `+0-9() -`, 7–25 characters.

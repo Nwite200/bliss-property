@@ -109,6 +109,9 @@ const mkt3Id = upsertUser('mkt3.p8@bliss.com', 'Phase 8 Ajah Marketer', 'Markete
 const finId = upsertUser('fin.p8@bliss.com', 'Phase 8 Finance', 'Finance Officer', headOffice);
 const clientUserId = upsertUser('client.p8@example.com', 'Phase 8 Client', 'Client', ikeja);
 const saId = upsertUser('sa.p8@bliss.com', 'Phase 8 Super Admin', 'Super Admin', headOffice);
+const pmId = upsertUser('pm.ikeja.p8@bliss.com', 'Phase 8 Project Manager', 'Project Manager', ikeja);
+const haId = upsertUser('ha.p8@bliss.com', 'Phase 8 Head Accountant', 'Head Accountant', headOffice);
+const mktNoTeamId = upsertUser('mkt.noteam.p8@bliss.com', 'Phase 8 Ikeja Direct Marketer', 'Marketer', ikeja);
 db.prepare("UPDATE users SET referral_code='BL-P8-MD' WHERE id=?").run(mdId);
 db.prepare("UPDATE users SET referral_code='BL-P8-MKT' WHERE id=?").run(mkt1Id);
 
@@ -129,7 +132,38 @@ db.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, emai
   assigned_branch_id, created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id)
   VALUES ('BLC-P8-OTHER','Other Phase 8 Client','08088000002','other.p8@example.com','Active Buyer','New Sale',?,?,?,?,10000000,?)`)
   .run(ikeja, mkt2Id, mkt2Id, tlId, propPublished);
-db.prepare("INSERT INTO team_members (team_id, user_id) SELECT id, ? FROM teams WHERE 0").run(tlId);
+const teamIkejaId = Number(db.prepare("INSERT INTO teams (name, branch_id, team_lead_user_id, is_active) VALUES (?,?,?,1)")
+  .run('Phase 8 Ikeja Team', ikeja, tlId).lastInsertRowid);
+for (const userId of [tlId, mkt1Id, mkt2Id]) {
+  db.prepare("INSERT INTO team_members (team_id, user_id) VALUES (?,?)").run(teamIkejaId, userId);
+}
+db.prepare("UPDATE users SET manager_id=? WHERE id IN (?,?,?)").run(mdId, bm1Id, bm2Id, pmId);
+db.prepare("UPDATE users SET manager_id=? WHERE id=?").run(bm1Id, tlId);
+db.prepare("UPDATE users SET manager_id=? WHERE id IN (?,?,?)").run(tlId, mkt1Id, mkt2Id, mktNoTeamId);
+db.prepare("UPDATE users SET manager_id=? WHERE id=?").run(bm1Id, mktNoTeamId);
+db.prepare("UPDATE users SET manager_id=? WHERE id=?").run(bm2Id, mkt3Id);
+db.prepare("UPDATE users SET manager_id=? WHERE id=?").run(mdId, haId);
+
+const ajahClientId = Number(db.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, email_address, status, sale_type,
+  assigned_branch_id, created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id)
+  VALUES ('BLC-P8-AJAH','Ajah Revenue Client','08088000401','ajah.p8@example.com','Active Buyer','New Sale',?,?,?,NULL,8000000,?)`)
+  .run(ajah, mkt3Id, mkt3Id, propPublished).lastInsertRowid);
+
+function insertRevenuePayment(clientId, ref, amountKobo, attribution) {
+  db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo,
+     verified_at, revenue_staff_id, revenue_team_lead_id, revenue_pm_id, revenue_branch_id, revenue_attributed_at)
+    VALUES (?, ?, ?, ?, 'NGN', 'Bank Transfer', 'verified', ?, 0, datetime('now'), ?, ?, ?, ?, datetime('now'))`)
+    .run(clientId, propPublished, ref, amountKobo / 100, amountKobo,
+      attribution.staffId, attribution.teamLeadId || null, attribution.pmId || null, attribution.branchId);
+}
+insertRevenuePayment(adaId, 'TX-P8-REV-ADA', 100000000, { staffId: mkt1Id, teamLeadId: tlId, pmId: bm1Id, branchId: ikeja });
+insertRevenuePayment(adaId, 'TX-P8-REV-OTHER', 200000000, { staffId: mkt2Id, teamLeadId: tlId, pmId: bm1Id, branchId: ikeja });
+insertRevenuePayment(ajahClientId, 'TX-P8-REV-AJAH', 300000000, { staffId: mkt3Id, teamLeadId: null, pmId: bm2Id, branchId: ajah });
+db.prepare(`INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo,
+  verified_at, revenue_staff_id, revenue_team_lead_id, revenue_pm_id, revenue_branch_id, revenue_attributed_at)
+  VALUES (?, ?, 'TX-P8-REV-DIRECT', 5000000, 'NGN', 'Bank Transfer', 'verified', 500000000, 0, datetime('now'), ?, NULL, ?, ?, datetime('now'))`)
+  .run(adaId, propPublished, mktNoTeamId, bm1Id, ikeja);
 
 const r2 = new Map();
 const queued = [];
@@ -201,6 +235,9 @@ const mkt2Cookie = await login('mkt2.p8@bliss.com');
 const mkt3Cookie = await login('mkt3.p8@bliss.com');
 const finCookie = await login('fin.p8@bliss.com');
 const saCookie = await login('sa.p8@bliss.com');
+const pmCookie = await login('pm.ikeja.p8@bliss.com');
+const haCookie = await login('ha.p8@bliss.com');
+const mktNoTeamCookie = await login('mkt.noteam.p8@bliss.com');
 const clientCookie = await login('client.p8@example.com');
 
 console.log('--- 1. Authentication, sessions and CSRF ---');
@@ -586,14 +623,79 @@ await test('staff notifications have read/unread state and chat rooms are persis
   assert(outsider.status === 403, 'Non-member must not read a direct chat');
 });
 
-console.log('\n--- 6. Migration reproducibility and database integrity ---');
+console.log('\n--- 6. Hierarchical revenue visibility ---');
+await test('revenue scope is enforced by role, branch and team without cross-scope reads', async () => {
+  const md = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: mdCookie } });
+  const ha = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: haCookie } });
+  const bm1 = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: bm1Cookie } });
+  const bm2 = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: bm2Cookie } });
+  const pm = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: pmCookie } });
+  const tl = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: tlCookie } });
+  const mkt1 = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: mkt1Cookie } });
+  assert(md.status === 200 && ha.status === 200, 'MD/Head Accountant revenue APIs must return 200');
+  assert(md.data.total_kobo === 1100000000 && ha.data.total_kobo === 1100000000, 'MD and Head Accountant must see national revenue');
+  assert(bm1.data.total_kobo === 800000000, `BM Ikeja revenue expected 800m kobo, got ${bm1.data.total_kobo}`);
+  assert(pm.data.total_kobo === 800000000, 'Project Manager must share branch revenue scope');
+  assert(bm2.data.total_kobo === 300000000, 'BM Ajah revenue scope incorrect');
+  assert(tl.data.total_kobo === 300000000, 'Team Lead must see team revenue only');
+  assert(mkt1.data.total_kobo === 100000000, 'Marketer must see personally registered revenue only');
+  assert(tl.data.level === 'team_lead', 'Team Lead should start at team level');
+  assert(mkt1.data.level === 'staff', 'Staff should start at staff level');
+  assert(md.data.reconciles === true && md.data.children_total_kobo === md.data.total_kobo, 'MD branch children must sum to national total');
+  assert(bm1.data.reconciles === true && bm1.data.children_total_kobo === bm1.data.total_kobo, 'Branch children must sum to branch total');
+  const branchA = md.data.children.find(c => c.name === 'Ikeja');
+  const branchB = md.data.children.find(c => c.name === 'Ajah');
+  assert(branchA && branchB && branchA.total_kobo === 800000000 && branchB.total_kobo === 300000000, 'National branch breakdown incorrect');
+  assert(bm2.data.children.some(c => c.type === 'staff' && c.name === 'Phase 8 Ajah Marketer'), 'No-team-lead branch must drill directly to staff');
+  assert(!bm2.data.children.some(c => c.type === 'team_lead'), 'No empty team-lead level should appear');
+  const cross = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31&branch_id=' + ajah, { headers: { Cookie: bm1Cookie } });
+  assert(cross.status === 403, 'BM must not request another branch');
+  const crossStaff = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31&staff_id=' + mkt2Id, { headers: { Cookie: mkt1Cookie } });
+  assert(crossStaff.status === 403, 'Staff must not request another staff scope');
+  const payments = await request('/api/revenue/payments?from=2026-01-01&to=2099-12-31', { headers: { Cookie: bm1Cookie } });
+  assert(payments.status === 200 && payments.data.payments.length === 3, 'Branch revenue payments list incorrect');
+  assert(payments.data.payments.every(p => p.revenue_branch_id === ikeja), 'Branch payments leaked another branch');
+});
+
+await test('payment attribution survives reassignment and duplicate webhooks do not double-count', async () => {
+  db.prepare("UPDATE client_assignments SET relationship_manager_id=? WHERE client_id=?").run(mkt2Id, adaId);
+  db.prepare("UPDATE clients SET created_by=?, original_marketer_id=?, team_lead_id=NULL WHERE id=?").run(mkt2Id, mkt2Id, adaId);
+  const oldStaff = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: mkt1Cookie } });
+  const newStaff = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: mkt2Cookie } });
+  assert(oldStaff.data.total_kobo === 100000000, 'Reassignment must not move historical payment attribution');
+  assert(newStaff.data.total_kobo === 200000000, 'Reassignment must not rewrite old payment totals');
+
+  db.prepare("UPDATE provider_configs SET status='Active', webhook_secret='p8-webhook-secret' WHERE provider_key='wema_alat'").run();
+  const pending = db.prepare(`INSERT INTO payments
+    (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo, created_at)
+    VALUES (?, ?, 'TX-P8-WEBHOOK-DUP', 500000, 'NGN', 'Bank Transfer', 'pending', 50000000, 0, datetime('now'))`)
+    .run(ajahClientId, propPublished);
+  const payload = {
+    event: 'payment.success',
+    timestamp: new Date().toISOString(),
+    data: { transaction_reference: 'TX-P8-WEBHOOK-DUP', amount: 500000, currency: 'NGN', status: 'success' }
+  };
+  const first = await request('/api/webhooks/wema-alat', {
+    method: 'POST', headers: { 'X-Webhook-Secret': 'p8-webhook-secret' }, body: payload
+  });
+  assert(first.status === 200 && first.data.status === 'verified', 'First webhook should verify payment');
+  const second = await request('/api/webhooks/wema-alat', {
+    method: 'POST', headers: { 'X-Webhook-Secret': 'p8-webhook-secret' }, body: payload
+  });
+  assert(second.status === 200 && second.data.already_processed === true, 'Duplicate webhook must be idempotent');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM receipts WHERE payment_id=?").get(Number(pending.lastInsertRowid)).c === 1, 'Duplicate webhook created an extra receipt');
+  const stamped = db.prepare("SELECT revenue_staff_id, revenue_team_lead_id, revenue_pm_id, revenue_branch_id FROM payments WHERE transaction_ref='TX-P8-WEBHOOK-DUP'").get();
+  assert(stamped.revenue_staff_id === mkt3Id && stamped.revenue_team_lead_id === null && stamped.revenue_pm_id === bm2Id && stamped.revenue_branch_id === ajah, 'Webhook attribution snapshot incorrect');
+});
+
+console.log('\n--- 7. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
   for (const suffix of ['', '-wal', '-shm']) rmSync(cleanPath + suffix, { force: true });
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 11, `expected 11 migrations, found ${files.length}`);
+  assert(files.length === 12, `expected 12 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

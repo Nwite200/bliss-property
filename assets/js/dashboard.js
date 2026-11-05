@@ -47,10 +47,26 @@
     return params.toString();
   }
 
+  async function loadRevenueToday() {
+    try {
+      const params = new URLSearchParams();
+      params.set("from", S.today());
+      params.set("to", S.today());
+      if (el("branchFilter") && el("branchFilter").value) params.set("branch_id", el("branchFilter").value);
+      const data = await S.fetchJson("/api/revenue/overview?" + params.toString());
+      el("revenueTodayTotal").textContent = S.money(data.total_kobo || 0);
+      el("revenueTodayMeta").textContent = `${data.payment_count || 0} verified payment(s) · ${data.reconciles === false ? "check roll-up" : "reconciled"}`;
+    } catch (error) {
+      el("revenueTodayTotal").textContent = "₦0";
+      el("revenueTodayMeta").textContent = "No verified payments today";
+    }
+  }
+
   async function load() {
     try {
       dashboard = await S.fetchJson("/api/dashboard?" + queryString());
       render();
+      await loadRevenueToday();
     } catch (error) {
       S.toast(error.message || "Unable to load dashboard", true);
     }
@@ -327,6 +343,7 @@
       ["Staff", me.full_name],
       ["Email", me.email],
       ["Role", me.role],
+      ["Actual role", me.actual_role || me.role],
       ["Branch", me.branch_name || "-"],
       ["Team", me.team_names || "-"],
       ["Referral code", me.referral_code || "-"],

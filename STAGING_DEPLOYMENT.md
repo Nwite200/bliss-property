@@ -28,7 +28,7 @@ These are separate from the production resources. Staging is not connected to `b
 
 ## 2. Migration status
 
-All eleven migrations were applied to `bliss-legacy-staging-db` only:
+All twelve migrations were applied to `bliss-legacy-staging-db` only:
 
 - `0001_auth_org.sql`
 - `0002_properties.sql`
@@ -41,6 +41,7 @@ All eleven migrations were applied to `bliss-legacy-staging-db` only:
 - `0009_client_properties.sql`
 - `0010_referrals_onboarding_alatpay.sql`
 - `0011_super_admin_notifications_chat.sql`
+- `0012_revenue_hierarchy_attribution.sql`
 
 `wrangler d1 migrations list bliss-legacy-staging-db --remote` reports no pending migrations.
 
@@ -53,8 +54,8 @@ All eleven migrations were applied to `bliss-legacy-staging-db` only:
 | Phase 5 | 62 | 0 | 0 |
 | Phase 6 | 21 | 0 | 0 |
 | Phase 7 | 26 | 0 | 0 |
-| Phase 8 | 23 | 0 | 0 |
-| **Total** | **132** | **0** | **0** |
+| Phase 8 | 25 | 0 | 0 |
+| **Total** | **134** | **0** | **0** |
 
 Also passed: `node --check` for the Worker, all external JS and all test suites; inline HTML script checks; `git diff --check`.
 
@@ -181,7 +182,14 @@ Staging Super Admin account:
 staging.superadmin@blisslegacy.test
 ```
 
-The temporary password is supplied only in the secure handover/final response.
+Additional hierarchy staging accounts use the main staging demo password:
+
+```text
+staging.pm@blisslegacy.test        Project Manager, Ikeja
+staging.accountant@blisslegacy.test Head Accountant, Head Office
+```
+
+The Super Admin temporary password is supplied only in the secure handover/final response.
 
 ### Staff notifications
 
@@ -202,9 +210,33 @@ The temporary password is supplied only in the secure handover/final response.
 - Branch rooms are created by migration `0011`; direct rooms are created by staff.
 - Verified locally: WebSocket connected, room history loaded, message sent and persisted.
 
-## 10. Deployment version
+## 10. Hierarchical revenue
 
-Current staging deployment version ID: `38f06740-cca2-4324-88a8-0339235743e7`
+- `users.manager_id` stores the reporting parent.
+- `Project Manager` and `Head Accountant` roles are seeded.
+- `payments` store an immutable revenue attribution snapshot:
+  - `revenue_staff_id`
+  - `revenue_team_lead_id`
+  - `revenue_pm_id`
+  - `revenue_branch_id`
+  - attribution metadata and timestamp
+- Revenue APIs:
+  - `GET /api/revenue/overview`
+  - `GET /api/revenue/breakdown`
+  - `GET /api/revenue/payments`
+- Scope is server-derived:
+  - Staff: personally registered clients only
+  - Team Lead: team revenue
+  - PM / Branch Manager: branch revenue
+  - MD / Super Admin / Head Accountant / Finance: national revenue
+- New revenue drill-down page: `/revenue.html`
+- Dashboard now shows a live **Total paid today** card in each role's scope.
+- Existing dashboard branch selector passes the selected branch into the revenue card and live dashboard queries.
+- Roll-up responses include `reconciles` and `children_total_kobo` so parent/child totals can be checked.
+
+## 11. Deployment version
+
+Current staging deployment version ID: `58f61443-9fa3-46aa-8789-ddb57d7d018b`
 
 ---
 

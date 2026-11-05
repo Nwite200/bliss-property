@@ -6,16 +6,16 @@ This is an honest list of what the current implementation does **not** provide. 
 
 ## 1. Organisation and permissions
 
-1. **No Super Admin role.** The highest implemented role is Managing Director. There is no separate system-administration role or dashboard.
-2. **No configurable permission matrix.** `permissions` and `role_permissions` tables exist but no route reads them. Authorization is hardcoded by role name.
-3. **No staff invitation or approval workflow.** Staff accounts are created with a password and are active immediately.
-4. **No employee self-application.** Marketers and other staff cannot apply for an account.
-5. **No email verification** for staff or clients.
-6. **No forced first-login password reset.** `users.must_reset_password` is not enforced.
-7. **No staff deletion or anonymisation.** Deactivation retains all records.
-8. **No branch CRUD UI.** Branches are migration-seeded.
-9. **No MD-created MD.** Only the bootstrap setup endpoint creates an MD.
-10. **No staff notification inbox or staff chat.** Client notifications exist; staff notifications/chat do not.
+1. **Super Admin role exists**, with permission-guarded admin routes and a system administration page. It inherits MD business scope for legacy routes; granular permissions apply to `/api/admin/*`.
+2. **No staff invitation or approval workflow.** Staff accounts are created with a password and are active immediately.
+3. **No employee self-application.** Marketers and other staff cannot apply for an account.
+4. **No email verification** for staff or clients.
+5. **No forced first-login password reset.** `users.must_reset_password` is not enforced.
+6. **No staff deletion or anonymisation.** Deactivation retains all records.
+7. **No branch CRUD UI.** Branches are migration-seeded.
+8. **No MD-created MD.** Only the bootstrap setup endpoint creates an MD.
+9. **No configurable permission UI for business routes.** The permission matrix currently covers the `/api/admin/*` admin routes; existing business routes retain role-based enforcement.
+10. **Staff notifications and chat exist in-app.** Email/WhatsApp delivery is still pending; chat moderation, attachments and retention policy are not implemented.
 
 ---
 
@@ -45,10 +45,9 @@ This is an honest list of what the current implementation does **not** provide. 
 1. Email delivery adapters are not implemented.
 2. WhatsApp delivery adapters are not implemented.
 3. Queue consumers record `pending_provider`/`skipped`; they do not send messages.
-4. No staff meeting notifications.
-5. No staff-to-staff chat.
-6. No MD/Super Admin-to-staff chat.
-7. No chat moderation, attachments, read receipts or retention policy.
+4. Staff meeting notifications are not a dedicated workflow; the generic staff notification inbox can carry them once an event producer exists.
+5. Staff-to-staff and MD/Super Admin-to-staff chat are implemented through `/api/chat` and the `ChatRoom` Durable Object.
+6. No chat moderation, attachments, read receipts or retention policy.
 
 ---
 

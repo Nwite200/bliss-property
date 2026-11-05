@@ -105,6 +105,8 @@ async function getSessionUser(env, request) {
   // its actual role for the admin permissions API and UI.
   row.actual_role_name = row.role_name;
   if (row.role_name === "Super Admin") row.role_name = "Managing Director";
+  else if (row.role_name === "Project Manager") row.role_name = "Branch Manager";
+  else if (row.role_name === "Head Accountant") row.role_name = "Finance Officer";
   return row;
 }
 
@@ -201,6 +203,42 @@ async function resolveReferralStaff(env, rawCode) {
     WHERE UPPER(u.referral_code)=? AND u.is_active=1 AND r.name<>'Client'
     LIMIT 1
   `).bind(code).first();
+}
+
+async function inferManagerId(env, roleName, branchId, teamId) {
+  if (roleName === "Super Admin") return null;
+  if (roleName === "Head Accountant") {
+    const md = await env.DB.prepare(`
+      SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+      WHERE r.name='Managing Director' AND u.is_active=1 ORDER BY u.id LIMIT 1
+    `).first();
+    return md ? md.id : null;
+  }
+  if (["Project Manager", "Branch Manager"].includes(roleName)) {
+    const md = await env.DB.prepare(`
+      SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+      WHERE r.name='Managing Director' AND u.is_active=1 ORDER BY u.id LIMIT 1
+    `).first();
+    return md ? md.id : null;
+  }
+  if (roleName === "Team Lead") {
+    const bm = await env.DB.prepare(`
+      SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+      WHERE r.name IN ('Project Manager','Branch Manager') AND u.branch_id=? AND u.is_active=1
+      ORDER BY u.id LIMIT 1
+    `).bind(branchId).first();
+    return bm ? bm.id : null;
+  }
+  if (teamId) {
+    const team = await env.DB.prepare("SELECT team_lead_user_id FROM teams WHERE id=? AND is_active=1").bind(teamId).first();
+    if (team && team.team_lead_user_id) return team.team_lead_user_id;
+  }
+  const bm = await env.DB.prepare(`
+    SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+    WHERE r.name IN ('Project Manager','Branch Manager') AND u.branch_id=? AND u.is_active=1
+    ORDER BY u.id LIMIT 1
+  `).bind(branchId).first();
+  return bm ? bm.id : null;
 }
 
 async function buildReferralAttribution(env, referrer, fallbackUserId) {
@@ -361,6 +399,102 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
     expires_at: expiresAt,
     amount_kobo: Number(amountKobo)
   };
+}
+
+function revenueScopeSql(actor, alias = "p") {
+  const actualRole = actor.actual_role_name || actor.role_name;
+  if (["Super Admin", "Managing Director", "Head Accountant", "Finance Officer"].includes(actualRole)) {
+    return { clause: "1=1", binds: [] };
+  }
+  if (["Project Manager", "Branch Manager"].includes(actualRole)) {
+    return { clause: `${alias}.revenue_branch_id = ?`, binds: [actor.branch_id] };
+  }
+  if (actualRole === "Team Lead") {
+    return {
+      clause: `(${alias}.revenue_team_lead_id = ? OR ${alias}.revenue_staff_id IN (SELECT id FROM users WHERE manager_id = ?))`,
+      binds: [actor.id, actor.id]
+    };
+  }
+  return { clause: `${alias}.revenue_staff_id = ?`, binds: [actor.id] };
+}
+
+async function buildPaymentAttribution(env, clientId) {
+  const client = await env.DB.prepare(`
+    SELECT id, client_reference, assigned_branch_id, team_lead_id, created_by, original_marketer_id, referred_by_staff_id
+    FROM clients WHERE id=?
+  `).bind(clientId).first();
+  if (!client) return null;
+  const staffId = client.created_by || client.original_marketer_id || client.referred_by_staff_id || null;
+  let staff = null;
+  if (staffId) {
+    staff = await env.DB.prepare(`
+      SELECT u.id, u.full_name, u.branch_id, u.manager_id, r.name AS role_name
+      FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?
+    `).bind(staffId).first();
+  }
+  let teamLeadId = null;
+  let pmId = null;
+  let branchId = client.assigned_branch_id || (staff ? staff.branch_id : null);
+  if (staff) {
+    if (staff.role_name === "Team Lead") teamLeadId = staff.id;
+    if (["Project Manager", "Branch Manager"].includes(staff.role_name)) pmId = staff.id;
+    let current = staff;
+    let depth = 0;
+    while (current && current.manager_id && depth < 8) {
+      const manager = await env.DB.prepare(`
+        SELECT u.id, u.full_name, u.branch_id, u.manager_id, r.name AS role_name
+        FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?
+      `).bind(current.manager_id).first();
+      if (!manager) break;
+      if (!teamLeadId && manager.role_name === "Team Lead") teamLeadId = manager.id;
+      if (!pmId && ["Project Manager", "Branch Manager"].includes(manager.role_name)) pmId = manager.id;
+      current = manager;
+      depth += 1;
+    }
+    if (!branchId) branchId = staff.branch_id;
+  }
+  if (!teamLeadId && client.team_lead_id) {
+    const tl = await env.DB.prepare(`
+      SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=? AND r.name='Team Lead'
+    `).bind(client.team_lead_id).first();
+    if (tl) teamLeadId = tl.id;
+  }
+  if (!pmId && branchId) {
+    const bm = await env.DB.prepare(`
+      SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+      WHERE r.name IN ('Project Manager','Branch Manager') AND u.branch_id=? AND u.is_active=1
+      ORDER BY u.id LIMIT 1
+    `).bind(branchId).first();
+    if (bm) pmId = bm.id;
+  }
+  const teamLead = teamLeadId ? await env.DB.prepare("SELECT full_name FROM users WHERE id=?").bind(teamLeadId).first() : null;
+  const pm = pmId ? await env.DB.prepare("SELECT full_name FROM users WHERE id=?").bind(pmId).first() : null;
+  const branch = branchId ? await env.DB.prepare("SELECT name FROM branches WHERE id=?").bind(branchId).first() : null;
+  return {
+    staffId: staff ? staff.id : null,
+    staffName: staff ? staff.full_name : null,
+    staffRole: staff ? staff.role_name : null,
+    teamLeadId,
+    teamLeadName: teamLead ? teamLead.full_name : null,
+    pmId,
+    pmName: pm ? pm.full_name : null,
+    branchId,
+    branchName: branch ? branch.name : null
+  };
+}
+
+async function stampPaymentAttribution(env, paymentId, clientId) {
+  const snapshot = await buildPaymentAttribution(env, clientId);
+  if (!snapshot) return null;
+  await env.DB.prepare(`
+    UPDATE payments SET revenue_staff_id=?, revenue_team_lead_id=?, revenue_pm_id=?,
+      revenue_branch_id=?, revenue_attribution_json=?, revenue_attributed_at=datetime('now')
+    WHERE id=?
+  `).bind(
+    snapshot.staffId, snapshot.teamLeadId, snapshot.pmId, snapshot.branchId,
+    JSON.stringify(snapshot), paymentId
+  ).run();
+  return snapshot;
 }
 
 async function outstandingForClient(env, client) {
@@ -4757,6 +4891,249 @@ export default {
     }
 
     // =========================================================================
+    // =========================================================================
+    // HIERARCHICAL REVENUE DRILL-DOWN
+    // =========================================================================
+    function revenueDateRange() {
+      const today = todayOnly();
+      let from = dateOnly(url.searchParams.get("from")) || today;
+      let to = dateOnly(url.searchParams.get("to")) || today;
+      if (from > to) { const swap = from; from = to; to = swap; }
+      return { from, to };
+    }
+
+    async function revenueContext(actor) {
+      const actualRole = actor.actual_role_name || actor.role_name;
+      const companyWide = ["Super Admin", "Managing Director", "Head Accountant", "Finance Officer"].includes(actualRole);
+      const range = revenueDateRange();
+      let branchId = url.searchParams.get("branch_id") ? Number(url.searchParams.get("branch_id")) : null;
+      let teamLeadId = url.searchParams.get("team_lead_id") ? Number(url.searchParams.get("team_lead_id")) : null;
+      let staffId = url.searchParams.get("staff_id") ? Number(url.searchParams.get("staff_id")) : null;
+
+      if (["Project Manager", "Branch Manager"].includes(actualRole)) {
+        if (branchId && branchId !== Number(actor.branch_id)) return { error: json({ error: "Branch is outside your scope" }, 403) };
+        branchId = Number(actor.branch_id);
+      } else if (actualRole === "Team Lead") {
+        if (teamLeadId && teamLeadId !== Number(actor.id)) return { error: json({ error: "Team is outside your scope" }, 403) };
+        if (branchId && branchId !== Number(actor.branch_id)) return { error: json({ error: "Branch is outside your scope" }, 403) };
+        teamLeadId = Number(actor.id);
+        branchId = Number(actor.branch_id);
+      } else if (!companyWide) {
+        if (staffId && staffId !== Number(actor.id)) return { error: json({ error: "Staff scope is outside your permission" }, 403) };
+        staffId = Number(actor.id);
+        branchId = actor.branch_id;
+        teamLeadId = null;
+      }
+
+      if (staffId && ["Project Manager", "Branch Manager"].includes(actualRole)) {
+        const staff = await env.DB.prepare("SELECT id, branch_id, manager_id FROM users WHERE id=?").bind(staffId).first();
+        if (!staff || Number(staff.branch_id) !== Number(actor.branch_id)) {
+          return { error: json({ error: "Staff is outside your branch" }, 403) };
+        }
+      }
+      if (staffId && actualRole === "Team Lead") {
+        const staff = await env.DB.prepare("SELECT id, manager_id FROM users WHERE id=?").bind(staffId).first();
+        if (!staff) return { error: json({ error: "Staff not found" }, 404) };
+        const teamMember = await env.DB.prepare(`
+          SELECT 1 AS ok FROM users u
+          WHERE u.id=? AND (u.manager_id=? OR u.id IN (
+            SELECT tm.user_id FROM team_members tm JOIN teams t ON t.id=tm.team_id
+            WHERE t.team_lead_user_id=? AND t.is_active=1
+          ))
+        `).bind(staffId, actor.id, actor.id).first();
+        if (!teamMember) return { error: json({ error: "Staff is outside your team" }, 403) };
+      }
+
+      const scope = revenueScopeSql(actor, "p");
+      const clauses = [
+        scope.clause,
+        "p.status='verified'",
+        "p.is_demo=0",
+        "p.currency='NGN'",
+        "date(p.verified_at) BETWEEN date(?) AND date(?)"
+      ];
+      const binds = [...scope.binds, range.from, range.to];
+      if (companyWide && branchId) {
+        clauses.push("COALESCE(p.revenue_branch_id, c.assigned_branch_id)=?");
+        binds.push(branchId);
+      }
+      if (teamLeadId) { clauses.push("p.revenue_team_lead_id=?"); binds.push(teamLeadId); }
+      if (staffId) { clauses.push("p.revenue_staff_id=?"); binds.push(staffId); }
+
+      let level = companyWide ? "company" : (["Project Manager", "Branch Manager"].includes(actualRole) ? "branch" : (actualRole === "Team Lead" ? "team_lead" : "staff"));
+      if (branchId && level === "company") level = "branch";
+      if (teamLeadId) level = "team_lead";
+      if (staffId) level = "staff";
+
+      const breadcrumb = [];
+      if (companyWide) breadcrumb.push({ type: "company", label: "National", params: {} });
+      if (branchId) {
+        const branch = await env.DB.prepare("SELECT name FROM branches WHERE id=?").bind(branchId).first();
+        breadcrumb.push({ type: "branch", label: branch ? branch.name : "Branch", params: { branch_id: branchId } });
+      }
+      if (teamLeadId) {
+        const tl = await env.DB.prepare("SELECT full_name FROM users WHERE id=?").bind(teamLeadId).first();
+        breadcrumb.push({ type: "team_lead", label: tl ? tl.full_name : "Team Lead", params: { branch_id: branchId, team_lead_id: teamLeadId } });
+      }
+      if (staffId) {
+        const staff = await env.DB.prepare("SELECT full_name FROM users WHERE id=?").bind(staffId).first();
+        breadcrumb.push({ type: "staff", label: staff ? staff.full_name : "Staff", params: { branch_id: branchId, team_lead_id: teamLeadId, staff_id: staffId } });
+      }
+      if (!breadcrumb.length) breadcrumb.push({ type: "company", label: "National", params: {} });
+
+      return {
+        actor, actualRole, companyWide, from: range.from, to: range.to,
+        branchId, teamLeadId, staffId, level,
+        whereSql: clauses.join(" AND "), binds, breadcrumb
+      };
+    }
+
+    async function revenueChildRows(ctx, totalKobo) {
+      const rows = [];
+      if (ctx.level === "company") {
+        const result = await env.DB.prepare(`
+          SELECT COALESCE(p.revenue_branch_id, c.assigned_branch_id) AS id,
+                 COALESCE(b.name, 'Unassigned') AS name,
+                 COALESCE(SUM(p.amount_kobo),0) AS total_kobo,
+                 COUNT(*) AS payment_count
+          FROM payments p JOIN clients c ON c.id=p.client_id
+          LEFT JOIN branches b ON b.id=COALESCE(p.revenue_branch_id, c.assigned_branch_id)
+          WHERE ${ctx.whereSql}
+          GROUP BY COALESCE(p.revenue_branch_id, c.assigned_branch_id)
+          ORDER BY total_kobo DESC
+        `).bind(...ctx.binds).all();
+        for (const row of result.results) {
+          rows.push({
+            type: "branch", id: row.id, name: row.name,
+            total_kobo: Number(row.total_kobo || 0), total_ngn: fromKobo(Number(row.total_kobo || 0)),
+            payment_count: Number(row.payment_count || 0),
+            params: { branch_id: row.id }
+          });
+        }
+      } else if (ctx.level === "branch") {
+        const tl = await env.DB.prepare(`
+          SELECT p.revenue_team_lead_id AS id, u.full_name AS name,
+                 COALESCE(SUM(p.amount_kobo),0) AS total_kobo, COUNT(*) AS payment_count
+          FROM payments p JOIN clients c ON c.id=p.client_id
+          LEFT JOIN users u ON u.id=p.revenue_team_lead_id
+          WHERE ${ctx.whereSql} AND p.revenue_team_lead_id IS NOT NULL
+          GROUP BY p.revenue_team_lead_id ORDER BY total_kobo DESC
+        `).bind(...ctx.binds).all();
+        for (const row of tl.results) {
+          rows.push({
+            type: "team_lead", id: row.id, name: row.name || "Team Lead",
+            total_kobo: Number(row.total_kobo || 0), total_ngn: fromKobo(Number(row.total_kobo || 0)),
+            payment_count: Number(row.payment_count || 0),
+            params: { branch_id: ctx.branchId, team_lead_id: row.id }
+          });
+        }
+        const direct = await env.DB.prepare(`
+          SELECT p.revenue_staff_id AS id, u.full_name AS name,
+                 COALESCE(SUM(p.amount_kobo),0) AS total_kobo, COUNT(*) AS payment_count
+          FROM payments p JOIN clients c ON c.id=p.client_id
+          LEFT JOIN users u ON u.id=p.revenue_staff_id
+          WHERE ${ctx.whereSql} AND p.revenue_team_lead_id IS NULL AND p.revenue_staff_id IS NOT NULL
+          GROUP BY p.revenue_staff_id ORDER BY total_kobo DESC
+        `).bind(...ctx.binds).all();
+        for (const row of direct.results) {
+          rows.push({
+            type: "staff", id: row.id, name: row.name || "Staff",
+            total_kobo: Number(row.total_kobo || 0), total_ngn: fromKobo(Number(row.total_kobo || 0)),
+            payment_count: Number(row.payment_count || 0),
+            params: { branch_id: ctx.branchId, staff_id: row.id }
+          });
+        }
+      } else if (ctx.level === "team_lead") {
+        const staff = await env.DB.prepare(`
+          SELECT p.revenue_staff_id AS id, u.full_name AS name,
+                 COALESCE(SUM(p.amount_kobo),0) AS total_kobo, COUNT(*) AS payment_count
+          FROM payments p JOIN clients c ON c.id=p.client_id
+          LEFT JOIN users u ON u.id=p.revenue_staff_id
+          WHERE ${ctx.whereSql} AND p.revenue_staff_id IS NOT NULL
+          GROUP BY p.revenue_staff_id ORDER BY total_kobo DESC
+        `).bind(...ctx.binds).all();
+        for (const row of staff.results) {
+          rows.push({
+            type: "staff", id: row.id, name: row.name || "Staff",
+            total_kobo: Number(row.total_kobo || 0), total_ngn: fromKobo(Number(row.total_kobo || 0)),
+            payment_count: Number(row.payment_count || 0),
+            params: { branch_id: ctx.branchId, team_lead_id: ctx.teamLeadId, staff_id: row.id }
+          });
+        }
+      }
+      const childrenTotal = rows.reduce((sum, row) => sum + row.total_kobo, 0);
+      const difference = Number(totalKobo) - childrenTotal;
+      if (difference > 0) {
+        rows.push({
+          type: "unassigned", id: null, name: "Unassigned",
+          total_kobo: difference, total_ngn: fromKobo(difference), payment_count: 0,
+          params: { branch_id: ctx.branchId, team_lead_id: ctx.teamLeadId, staff_id: ctx.staffId }
+        });
+      }
+      return rows;
+    }
+
+    if ((path === "/api/revenue/overview" || path === "/api/revenue/breakdown") && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const ctx = await revenueContext(actor);
+      if (ctx.error) return ctx.error;
+      const totalRow = await env.DB.prepare(`
+        SELECT COALESCE(SUM(p.amount_kobo),0) AS total_kobo, COUNT(*) AS payment_count
+        FROM payments p JOIN clients c ON c.id=p.client_id
+        WHERE ${ctx.whereSql}
+      `).bind(...ctx.binds).first();
+      const totalKobo = Number(totalRow ? totalRow.total_kobo : 0);
+      const children = ctx.level === "staff" ? [] : await revenueChildRows(ctx, totalKobo);
+      const childrenTotal = children.reduce((sum, row) => sum + row.total_kobo, 0);
+      return json({
+        from: ctx.from,
+        to: ctx.to,
+        level: ctx.level,
+        actual_role: ctx.actualRole,
+        breadcrumb: ctx.breadcrumb,
+        total_kobo: totalKobo,
+        total_ngn: fromKobo(totalKobo),
+        payment_count: Number(totalRow ? totalRow.payment_count : 0),
+        children,
+        children_total_kobo: childrenTotal,
+        children_total_ngn: fromKobo(childrenTotal),
+        reconciles: ctx.level === "staff" ? true : childrenTotal === totalKobo
+      });
+    }
+
+    if (path === "/api/revenue/payments" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const ctx = await revenueContext(actor);
+      if (ctx.error) return ctx.error;
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+      const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") || "100", 10)));
+      const offset = (page - 1) * limit;
+      const { results } = await env.DB.prepare(`
+        SELECT p.id, p.transaction_ref, p.amount_kobo, p.method, p.verified_at,
+               c.client_reference, c.full_name AS client_name,
+               s.full_name AS staff_name, tl.full_name AS team_lead_name,
+               b.name AS branch_name, p.revenue_staff_id, p.revenue_team_lead_id, p.revenue_branch_id
+        FROM payments p JOIN clients c ON c.id=p.client_id
+        LEFT JOIN users s ON s.id=p.revenue_staff_id
+        LEFT JOIN users tl ON tl.id=p.revenue_team_lead_id
+        LEFT JOIN branches b ON b.id=p.revenue_branch_id
+        WHERE ${ctx.whereSql}
+        ORDER BY p.verified_at DESC, p.id DESC LIMIT ? OFFSET ?
+      `).bind(...ctx.binds, limit, offset).all();
+      const count = await env.DB.prepare(`
+        SELECT COUNT(*) AS c FROM payments p JOIN clients c ON c.id=p.client_id WHERE ${ctx.whereSql}
+      `).bind(...ctx.binds).first();
+      return json({
+        from: ctx.from, to: ctx.to, level: ctx.level, breadcrumb: ctx.breadcrumb,
+        payments: results.map(row => ({ ...row, amount_ngn: fromKobo(row.amount_kobo) })),
+        pagination: { page, limit, total: count ? Number(count.c) : 0 }
+      });
+    }
+
     // 12. FINANCE DASHBOARD & FINANCIAL MANAGEMENT (Staff)
     // =========================================================================
 
@@ -5065,6 +5442,7 @@ export default {
       if (upd.meta && Number(upd.meta.changes) === 0) {
         return json({ ok: true, already_verified: true, payment_id: payment.id });
       }
+      await stampPaymentAttribution(env, payment.id, payment.client_id);
 
       // Compute remaining balance after payment in kobo (demo and live ledgers are isolated)
       const agreedKobo = toKobo(payment.agreed_purchase_price || 0);
@@ -5405,6 +5783,7 @@ export default {
       if (updated.meta && Number(updated.meta.changes) === 0) {
         return json({ ok: true, already_processed: true });
       }
+      await stampPaymentAttribution(env, payment.id, payment.client_id);
       const totalRow = await env.DB.prepare(
         "SELECT COALESCE(SUM(amount_kobo),0) AS total_kobo FROM payments WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'"
       ).bind(client.id).first();
@@ -5557,6 +5936,7 @@ export default {
         await recordEvent("duplicate", payment.id);
         return json({ ok: true, already_processed: true });
       }
+      await stampPaymentAttribution(env, payment.id, payment.client_id);
 
       const totalRow = await env.DB.prepare(
         "SELECT COALESCE(SUM(amount_kobo), 0) AS total_kobo FROM payments WHERE client_id=? AND status='verified' AND is_demo=? AND currency=?"
@@ -6081,9 +6461,9 @@ export default {
       if (!validPassword(password)) return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
       const actorActualRole = actor.actual_role_name || actor.role_name;
       const allowed = actorActualRole === "Super Admin"
-        ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Super Admin"]
+        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Super Admin"]
         : actor.role_name === "Managing Director"
-          ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer"]
+          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant"]
           : ["Team Lead", "Marketer", "Finance Officer"];
       if (!allowed.includes(role_name)) return json({ error: "Forbidden role" }, 403);
       let resolvedBranch = branch_id || null;
@@ -6108,6 +6488,8 @@ export default {
         VALUES (?, ?, ?, ?, ?, ?)
       `).bind(email.toLowerCase().trim(), hash, full_name.trim(), role.id, resolvedBranch, referralCode).run();
       const newId = res.meta.last_row_id;
+      const managerId = await inferManagerId(env, role_name, resolvedBranch, team_id || null);
+      await env.DB.prepare("UPDATE users SET manager_id=? WHERE id=?").bind(managerId, newId).run();
       await env.DB.prepare(`
         INSERT INTO staff_profiles (user_id, phone_number, job_title, date_joined, notes, updated_by, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -6193,9 +6575,9 @@ export default {
       }
       const body = await request.json();
       const allowedRoles = (actor.actual_role_name || actor.role_name) === "Super Admin"
-        ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Super Admin"]
+        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Super Admin"]
         : actor.role_name === "Managing Director"
-          ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer"]
+          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant"]
           : ["Team Lead", "Marketer", "Finance Officer"];
       const nextRoleName = body.role_name || target.role_name;
       const editingOwnMdProfile = actor.role_name === "Managing Director" && target.role_name === "Managing Director";

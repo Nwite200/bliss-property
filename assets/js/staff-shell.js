@@ -127,6 +127,7 @@
       { section: "Management" },
       { href: "dashboard.html", label: "📊 Overview", page: "dashboard", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "performance.html", label: "📈 Performance", page: "performance", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "revenue.html", label: "💰 Revenue Drill-down", page: "revenue", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "properties.html", label: "🏡 Properties", page: "properties", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "clients.html", label: "👥 Clients", page: "clients", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Sales & Teams" },
