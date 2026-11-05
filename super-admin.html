@@ -70,6 +70,37 @@
         </div>
       </div>
 
+      <div class="card" style="margin-bottom:20px" id="termsCard">
+        <div class="card-head">
+          <h3>Terms &amp; Conditions</h3>
+          <span class="small muted" id="termsActiveMeta">Loading…</span>
+        </div>
+        <p class="small muted" style="margin:6px 0 14px">Publishing creates a new version. Existing client acceptances stay linked to the version they accepted.</p>
+        <div class="form-group">
+          <label class="field-label" for="termsTitle">Title</label>
+          <input class="field-input" id="termsTitle" type="text" placeholder="Terms and Conditions">
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="field-label" for="termsBody">Terms text</label>
+          <textarea class="field-input" id="termsBody" rows="9" placeholder="Enter the Terms and Conditions text shown on the signup page"></textarea>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="field-label" for="termsFile">Upload / replace PDF document (optional)</label>
+          <input class="field-input" id="termsFile" type="file" accept="application/pdf">
+          <div class="small muted" style="margin-top:5px">PDF only, maximum 10MB. The uploaded document is linked on the signup page for download.</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+          <button class="btn btn-green" type="button" id="saveTermsBtn">Publish new terms version</button>
+          <span id="termsMsg" class="small muted"></span>
+        </div>
+        <div class="table-responsive mt-16">
+          <table class="table">
+            <thead><tr><th>Version</th><th>Title</th><th>Document</th><th>Acceptances</th><th>Published</th><th>Status</th><th></th></tr></thead>
+            <tbody id="termsHistoryBody"><tr><td colspan="7"><div class="empty-state">Loading terms history…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-head"><h3>Audit log</h3><a href="activity-centre.html" class="small muted">Activity centre →</a></div>
         <div class="table-responsive" style="margin-top:12px">

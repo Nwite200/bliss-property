@@ -37,6 +37,8 @@ Status codes used: `200`, `400`, `401`, `403`, `404`, `409`, `429`, `500`, `503`
 | POST | `/api/setup` | `X-Setup-Secret` | Create first MD if no users exist |
 | POST | `/api/signup` | Public | Client self-registration and auto-login |
 | GET | `/api/referral/:code` | Public | Resolve a staff referral link to the staff member and branch |
+| GET | `/api/terms` | Public | Active Terms & Conditions version |
+| GET | `/api/terms/document/:id` | Public | Download a Terms & Conditions PDF by version |
 | POST | `/api/public/enquiries` | Public | Create a lead from the public website |
 | POST | `/api/login` | Public | Staff/client login |
 | POST | `/api/logout` | Session optional | Delete session |
@@ -193,6 +195,9 @@ Client onboarding accepts:
 - `next_of_kin_relationship`
 - `next_of_kin_address`
 - `referral_code`
+- `terms_accepted` (must be `true`; signup is rejected otherwise)
+
+Terms are versioned. Signup records the accepting client, user, active terms version, IP address and user agent in `terms_acceptances`. Management can publish a new text version or upload a replacement PDF from the System Administration page.
 
 `/api/me` returns `referral_code` and `referral_link` for staff. `?ref=CODE` on `signup.html` pre-fills the referral code, shows the referring staff member and preselects their branch (the client can change it). The staff dashboard exposes a copy/share referral card.
 
@@ -309,6 +314,9 @@ Marketers may generate only `commission` and `commission_liability`. Team Leads 
 - `GET /api/admin/roles` — permission `admin.roles`
 - `PUT /api/admin/roles/:id/permissions` — permission `admin.permissions`; actual Super Admin only
 - `GET /api/admin/audit` — permission `admin.audit`
+- `GET /api/admin/terms` — permission `settings.manage`; active terms and version history
+- `POST /api/admin/terms` — permission `settings.manage`; publish a text version and/or upload a replacement PDF
+- `POST /api/admin/terms/:id/activate` — permission `settings.manage`; roll back to a previous version
 
 Super Admin inherits MD business scope for backward compatibility. `/api/me` returns both `role` (effective MD) and `actual_role` (`Super Admin`).
 

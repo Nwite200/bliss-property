@@ -29,6 +29,11 @@
     .signup-plan-detail .plan-item span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); font-weight: 700; }
     .signup-plan-detail .plan-item strong { display: block; font-size: 13px; color: var(--ink); margin-top: 2px; }
     .signup-plan-empty { margin-top: 8px; font-size: 12px; color: #B45309; background: #FFFBEB; border: 1px solid #FDE68A; border-radius: var(--radius-sm); padding: 10px 12px; }
+    .terms-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .terms-head label { margin-bottom: 0 !important; }
+    .terms-download { font-size: 11px; font-weight: 700; color: var(--green-dark); white-space: nowrap; }
+    .terms-box { max-height: 210px; overflow-y: auto; background: #FAFBFA; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; font-size: 12px; line-height: 1.65; color: var(--charcoal); white-space: pre-line; }
+    .terms-box.empty { color: #B45309; background: #FFFBEB; border-color: #FDE68A; }
     .signup-links { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 16px; font-size: 12px; }
     .signup-links a { color: var(--green-dark); font-weight: 700; }
     @media (max-width: 520px) { .signup-grid { grid-template-columns: 1fr; } .signup-card { padding: 24px 20px; } .signup-plan-detail.show { grid-template-columns: 1fr; } }
@@ -155,6 +160,20 @@
           <input id="confirmPassword" type="password" minlength="8" autocomplete="new-password" required>
         </div>
         <div class="full">
+          <div class="terms-head">
+            <label>Terms and Conditions *</label>
+            <a class="terms-download" id="termsDownload" href="#" target="_blank" rel="noopener" style="display:none">Download PDF ↗</a>
+          </div>
+          <div class="terms-box" id="termsBox">Loading Terms and Conditions…</div>
+          <div class="small muted" id="termsMeta" style="margin-top:5px"></div>
+        </div>
+        <div class="full">
+          <label style="display:flex;align-items:flex-start;gap:8px;font-weight:600;color:var(--charcoal);line-height:1.5">
+            <input id="termsAccepted" type="checkbox" required style="width:auto;height:auto;margin-top:2px">
+            <span>I have read, understood and accept the Terms and Conditions.</span>
+          </label>
+        </div>
+        <div class="full">
           <label style="display:flex;align-items:flex-start;gap:8px;font-weight:500;color:var(--muted);line-height:1.5">
             <input id="consent" type="checkbox" required style="width:auto;height:auto;margin-top:2px">
             <span>I confirm the information provided is accurate and consent to Bliss Legacy Limited contacting me about my enquiry.</span>
@@ -178,8 +197,32 @@
       const branchSelect = document.getElementById('branch');
       const referralInput = document.getElementById('referralCode');
       const referralNote = document.getElementById('referralNote');
+      const termsBox = document.getElementById('termsBox');
+      const termsMeta = document.getElementById('termsMeta');
+      const termsDownload = document.getElementById('termsDownload');
       const referral = new URLSearchParams(window.location.search).get('ref');
       if (referral && referralInput) referralInput.value = referral.trim().toUpperCase();
+      try {
+        const termsData = await fetch('/api/terms').then(r => r.json());
+        const terms = termsData.terms;
+        if (terms) {
+          termsBox.textContent = terms.body_text || 'Please review the attached Terms and Conditions document before accepting.';
+          const published = terms.published_at
+            ? new Date(String(terms.published_at).includes('T') ? terms.published_at : String(terms.published_at).replace(' ', 'T') + 'Z')
+            : null;
+          termsMeta.textContent = `Version ${terms.version_no}${published && !isNaN(published.getTime()) ? ' · Published ' + published.toLocaleDateString('en-NG', { day: '2-digit', month: 'short', year: 'numeric' }) : ''}`;
+          if (terms.document_url) {
+            termsDownload.href = terms.document_url;
+            termsDownload.style.display = 'inline';
+          }
+        } else {
+          termsBox.textContent = 'Terms and Conditions are not available yet. Please contact Bliss Legacy Limited.';
+          termsBox.classList.add('empty');
+        }
+      } catch {
+        termsBox.textContent = 'Unable to load the Terms and Conditions. Please refresh the page before creating an account.';
+        termsBox.classList.add('empty');
+      }
       try {
         const branches = await fetch('/api/branches').then(r => r.json());
         branchSelect.innerHTML = '<option value="">Select the branch you are onboarding with</option>' + (branches.branches || []).map(b => `<option value="${b.id}">${b.name}</option>`).join('');
@@ -312,6 +355,7 @@
             interested_property_id: document.getElementById('property').value ? Number(document.getElementById('property').value) : null,
             property_plan_id: document.getElementById('signupPlanSelect').value ? Number(document.getElementById('signupPlanSelect').value) : null,
             plan_start_date: new Date().toISOString().slice(0, 10),
+            terms_accepted: document.getElementById('termsAccepted').checked,
             password
           })
         });

@@ -44,6 +44,41 @@
     } catch (error) { S.toast(error.message || "Unable to load backfill preview", true); }
   }
 
+  async function loadTerms() {
+    const data = await S.fetchJson("/api/admin/terms");
+    const active = data.active;
+    const versions = data.versions || [];
+    if (active) {
+      el("termsTitle").value = active.title || "";
+      el("termsBody").value = active.body_text || "";
+      el("termsActiveMeta").textContent = `Active version ${active.version_no}${active.created_at ? " · " + S.formatDateTime(active.created_at) : ""}`;
+    } else {
+      el("termsActiveMeta").textContent = "No active terms version";
+    }
+    el("termsHistoryBody").innerHTML = versions.length ? versions.map(version => `
+      <tr>
+        <td><strong>v${version.version_no}</strong></td>
+        <td>${S.escape(version.title || "-")}</td>
+        <td>${version.document_filename ? `<a class="small" href="/api/terms/document/${version.id}" target="_blank" rel="noopener">${S.escape(version.document_filename)}</a>` : '<span class="small muted">Text only</span>'}</td>
+        <td>${Number(version.acceptance_count || 0)}</td>
+        <td class="nowrap">${S.formatDateTime(version.created_at)}</td>
+        <td>${version.is_active ? S.badge("Active", "green") : S.badge("Superseded", "gray")}</td>
+        <td>${version.is_active ? "" : `<button class="btn btn-ghost btn-xs" type="button" data-activate-terms="${version.id}">Activate</button>`}</td>
+      </tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">No terms versions yet.</div></td></tr>';
+    el("termsHistoryBody").querySelectorAll("[data-activate-terms]").forEach(button => {
+      button.addEventListener("click", async () => {
+        if (!confirm("Make this terms version active on the signup page?")) return;
+        try {
+          await S.fetchJson(`/api/admin/terms/${button.getAttribute("data-activate-terms")}/activate`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+          });
+          S.toast("Terms version activated.");
+          await loadTerms();
+        } catch (error) { S.toast(error.message, true); }
+      });
+    });
+  }
+
   async function load() {
     me = await S.initShell("super-admin");
     if (!me) return;
@@ -77,11 +112,50 @@
           <td>${S.escape(row.branch_name || "Company-wide")}</td>
         </tr>`).join("") || '<tr><td colspan="5">No audit records.</td></tr>';
       await loadCommissionFailures();
+      await loadTerms();
     } catch (error) {
       S.toast(error.message || "Unable to load system administration", true);
     }
 
     el("loadCommissionBackfill").addEventListener("click", loadCommissionBackfill);
+
+    el("saveTermsBtn").addEventListener("click", async () => {
+      const msg = el("termsMsg");
+      const title = el("termsTitle").value.trim();
+      const bodyText = el("termsBody").value.trim();
+      const file = el("termsFile").files[0];
+      msg.textContent = "";
+      if (!title) { msg.textContent = "Enter a title for the terms."; return; }
+      if (!bodyText && !file) { msg.textContent = "Enter the terms text or upload a PDF."; return; }
+      el("saveTermsBtn").disabled = true;
+      msg.textContent = "Publishing…";
+      try {
+        let result;
+        if (file) {
+          const form = new FormData();
+          form.append("title", title);
+          form.append("body_text", bodyText);
+          form.append("file", file);
+          const res = await fetch("/api/admin/terms", { method: "POST", credentials: "include", body: form });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || "Unable to publish the terms version");
+          result = data;
+        } else {
+          result = await S.fetchJson("/api/admin/terms", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title, body_text: bodyText })
+          });
+        }
+        msg.textContent = `Version ${result.version_no} published.`;
+        S.toast(`Terms version ${result.version_no} published.`);
+        el("termsFile").value = "";
+        await loadTerms();
+      } catch (error) {
+        msg.textContent = error.message || "Unable to publish the terms version.";
+      } finally {
+        el("saveTermsBtn").disabled = false;
+      }
+    });
 
     el("roleSelect").addEventListener("change", () => {
       renderPermissions(roles.find(role => String(role.id) === el("roleSelect").value));

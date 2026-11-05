@@ -4806,6 +4806,45 @@ export default {
     }
 
     // =========================================================================
+    // PUBLIC TERMS & CONDITIONS
+    // =========================================================================
+    if (path === "/api/terms" && request.method === "GET") {
+      const terms = await env.DB.prepare(`
+        SELECT id, version_no, title, body_text, document_r2_key, document_filename, created_at
+        FROM terms_versions WHERE is_active=1 ORDER BY version_no DESC LIMIT 1
+      `).first();
+      if (!terms) return json({ terms: null });
+      return json({
+        terms: {
+          id: terms.id,
+          version_no: terms.version_no,
+          title: terms.title,
+          body_text: terms.body_text,
+          document_url: terms.document_r2_key ? `/api/terms/document/${terms.id}` : null,
+          document_filename: terms.document_filename || null,
+          published_at: terms.created_at
+        }
+      }, 200, { "Cache-Control": "public, max-age=60" });
+    }
+
+    const publicTermsDocumentMatch = path.match(/^\/api\/terms\/document\/(\d+)$/);
+    if (publicTermsDocumentMatch && request.method === "GET") {
+      const terms = await env.DB.prepare(
+        "SELECT id, document_r2_key, document_filename, document_content_type FROM terms_versions WHERE id=?"
+      ).bind(publicTermsDocumentMatch[1]).first();
+      if (!terms || !terms.document_r2_key) return new Response("Not found", { status: 404 });
+      const object = await env.FILES.get(terms.document_r2_key);
+      if (!object) return new Response("Not found", { status: 404 });
+      const headers = new Headers();
+      if (typeof object.writeHttpMetadata === "function") object.writeHttpMetadata(headers);
+      headers.set("Content-Type", terms.document_content_type || "application/pdf");
+      headers.set("Content-Disposition", `inline; filename="${sanitizeFilename(terms.document_filename, "terms-and-conditions")}"`);
+      headers.set("Cache-Control", "public, max-age=300");
+      headers.set("X-Content-Type-Options", "nosniff");
+      return new Response(object.body, { headers });
+    }
+
+    // =========================================================================
     // PUBLIC STAFF REFERRAL LOOKUP
     // =========================================================================
     const publicReferralMatch = path.match(/^\/api\/referral\/([^/]+)$/);
@@ -4836,7 +4875,7 @@ export default {
         full_name, email, phone_number, password, interested_property_id, property_plan_id, plan_start_date,
         alternate_phone, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
         next_of_kin_address, referral_code, residential_address, state, city, branch_id,
-        identity_type, identity_number, bvn
+        identity_type, identity_number, bvn, terms_accepted
       } = body || {};
       if (!full_name || !email || !phone_number || !password) {
         return json({ error: "Full name, email, phone number and password are required" }, 400);
@@ -4903,6 +4942,13 @@ export default {
       }
       await audit(env, null, "signup.attempt", "signup", `ip:${signupIp}`, { email: normalizedEmail });
       await audit(env, null, "signup.attempt", "signup", `email:${normalizedEmail}`, { ip: signupIp });
+      const activeTerms = await env.DB.prepare(`
+        SELECT id, version_no, title FROM terms_versions WHERE is_active=1 ORDER BY version_no DESC LIMIT 1
+      `).first();
+      if (!activeTerms) return json({ error: "Terms and conditions are not configured yet" }, 503);
+      if (!isTruthy(terms_accepted)) {
+        return json({ error: "You must read and accept the Terms and Conditions before creating an account" }, 400);
+      }
       const existingUser = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=?").bind(normalizedEmail).first();
       if (existingUser) return json({ error: "An account with this email already exists" }, 409);
       const existingClient = await env.DB.prepare(
@@ -4976,6 +5022,13 @@ export default {
         kycSubmittedAt
       ).run();
       const clientId = clientRes.meta.last_row_id;
+      await env.DB.prepare(`
+        INSERT INTO terms_acceptances (terms_version_id, user_id, client_id, ip_address, user_agent)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(
+        activeTerms.id, userId, clientId, clientIp(request),
+        String(request.headers.get("User-Agent") || "").slice(0, 500)
+      ).run();
       if (propertyId) await upsertClientPropertyAllocation(env, clientId, propertyId, signupPlan ? fromKobo(Number(signupPlan.total_price_kobo || 0)) : 0, "Prospect");
       if (signupPlan) {
         await lockClientPurchasePlan(env, clientId, propertyId, signupPlan, "Prospect");
@@ -4997,7 +5050,8 @@ export default {
         branch_selected_by_client: Boolean(requestedBranch),
         referral_code: attribution.referralCodeUsed, referred_by_staff_id: attribution.referredByStaffId,
         identity_type: resolvedIdentityType, identity_last4: identityLast4,
-        bvn_last4: bvnLast4, kyc_status: "pending"
+        bvn_last4: bvnLast4, kyc_status: "pending",
+        terms_version_id: activeTerms.id, terms_version_no: activeTerms.version_no
       }, resolvedBranch);
       await createNotification(env, {
         userId,
@@ -5071,6 +5125,7 @@ export default {
         kyc_status: "pending",
         verification,
         virtual_account: virtualAccount,
+        terms: { accepted: true, version_id: activeTerms.id, version_no: activeTerms.version_no, title: activeTerms.title },
         user: { id: userId, email: normalizedEmail, full_name: String(full_name).trim(), role: "Client" }
       }, 200, { "Set-Cookie": cookie });
     }
@@ -5268,6 +5323,99 @@ export default {
         return { error: json({ error: `Missing permission: ${permission}` }, 403) };
       }
       return { actor };
+    }
+
+    if (path === "/api/admin/terms" && request.method === "GET") {
+      const auth = await adminActor("settings.manage");
+      if (auth.error) return auth.error;
+      const active = await env.DB.prepare(`
+        SELECT t.*, u.full_name AS created_by_name
+        FROM terms_versions t LEFT JOIN users u ON u.id=t.created_by
+        WHERE t.is_active=1 ORDER BY t.version_no DESC LIMIT 1
+      `).first();
+      const { results: versions } = await env.DB.prepare(`
+        SELECT t.id, t.version_no, t.title, t.body_text, t.document_filename, t.document_content_type,
+               t.is_active, t.created_at, u.full_name AS created_by_name,
+               (SELECT COUNT(*) FROM terms_acceptances a WHERE a.terms_version_id=t.id) AS acceptance_count
+        FROM terms_versions t LEFT JOIN users u ON u.id=t.created_by
+        ORDER BY t.version_no DESC
+      `).all();
+      return json({ active: active || null, versions });
+    }
+
+    if (path === "/api/admin/terms" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const auth = await adminActor("settings.manage");
+      if (auth.error) return auth.error;
+      const actor = auth.actor;
+      const contentType = String(request.headers.get("Content-Type") || "");
+      let title = "";
+      let bodyText = "";
+      let file = null;
+      if (contentType.includes("multipart/form-data")) {
+        const form = await request.formData();
+        title = String(form.get("title") || "").trim();
+        bodyText = String(form.get("body_text") || "").trim();
+        file = form.get("file");
+      } else {
+        const body = await request.json().catch(() => ({}));
+        title = String(body.title || "").trim();
+        bodyText = String(body.body_text || "").trim();
+      }
+      const active = await env.DB.prepare("SELECT * FROM terms_versions WHERE is_active=1 ORDER BY version_no DESC LIMIT 1").first();
+      if (!title) title = active ? active.title : "Terms and Conditions";
+      if (!bodyText && active) bodyText = active.body_text;
+      if (!bodyText && (!file || typeof file === "string")) {
+        return json({ error: "Provide the Terms and Conditions text or upload a document" }, 400);
+      }
+      if (!bodyText) return json({ error: "Terms text is required when publishing the first version" }, 400);
+      if (bodyText.length > 60000) return json({ error: "Terms text is too long (60,000 characters max)" }, 400);
+
+      let documentKey = active ? active.document_r2_key || null : null;
+      let documentFilename = active ? active.document_filename || null : null;
+      let documentContentType = active ? active.document_content_type || null : null;
+      if (file && typeof file !== "string") {
+        if (file.type !== "application/pdf") return json({ error: "Terms documents must be uploaded as PDF" }, 400);
+        if (file.size > 10 * 1024 * 1024) return json({ error: "Terms document is too large (10MB max)" }, 400);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (detectFileType(bytes) !== "application/pdf") {
+          return json({ error: "File contents do not match a PDF document" }, 400);
+        }
+        documentFilename = sanitizeFilename(file.name, "terms-and-conditions.pdf");
+        documentKey = `terms/${crypto.randomUUID()}-${documentFilename}`;
+        documentContentType = "application/pdf";
+        await env.FILES.put(documentKey, bytes, { httpMetadata: { contentType: "application/pdf" } });
+      }
+
+      const maxRow = await env.DB.prepare("SELECT COALESCE(MAX(version_no),0) AS max_no FROM terms_versions").first();
+      const nextVersion = Number(maxRow ? maxRow.max_no : 0) + 1;
+      await env.DB.prepare("UPDATE terms_versions SET is_active=0 WHERE is_active=1").run();
+      const res = await env.DB.prepare(`
+        INSERT INTO terms_versions
+          (version_no, title, body_text, document_r2_key, document_filename, document_content_type,
+           is_active, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      `).bind(nextVersion, title, bodyText || null, documentKey, documentFilename, documentContentType, actor.id).run();
+      await audit(env, actor.id, "terms.publish", "terms_version", String(res.meta.last_row_id), {
+        version_no: nextVersion, title, has_document: Boolean(documentKey)
+      }, null);
+      return json({
+        ok: true, id: res.meta.last_row_id, version_no: nextVersion, title,
+        document_url: documentKey ? `/api/terms/document/${res.meta.last_row_id}` : null
+      });
+    }
+
+    const adminTermsActivateMatch = path.match(/^\/api\/admin\/terms\/(\d+)\/activate$/);
+    if (adminTermsActivateMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const auth = await adminActor("settings.manage");
+      if (auth.error) return auth.error;
+      const version = await env.DB.prepare("SELECT * FROM terms_versions WHERE id=?").bind(adminTermsActivateMatch[1]).first();
+      if (!version) return json({ error: "Terms version not found" }, 404);
+      await env.DB.prepare("UPDATE terms_versions SET is_active=0 WHERE is_active=1").run();
+      await env.DB.prepare("UPDATE terms_versions SET is_active=1 WHERE id=?").bind(version.id).run();
+      await audit(env, auth.actor.id, "terms.activate", "terms_version", String(version.id), { version_no: version.version_no }, null);
+      return json({ ok: true, active_version_id: version.id, version_no: version.version_no });
     }
 
     if (path === "/api/admin/overview" && request.method === "GET") {

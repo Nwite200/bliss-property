@@ -61,6 +61,8 @@ const ikeja = branchId('Ikeja');
 const ajah = branchId('Ajah');
 
 db.exec(`
+  DELETE FROM terms_acceptances;
+  DELETE FROM terms_versions;
   DELETE FROM commission_adjustments;
   DELETE FROM commission_payments;
   DELETE FROM commission_approvals;
@@ -107,6 +109,8 @@ db.exec(`
   DELETE FROM webhook_events;
   DELETE FROM audit_logs;
 `);
+
+db.prepare("INSERT INTO terms_versions (version_no, title, body_text, is_active) VALUES (1, 'Terms and Conditions', 'Phase 8 test terms and conditions', 1)").run();
 
 const mdId = upsertUser('md.p8@bliss.com', 'Phase 8 MD', 'Managing Director', null);
 const bm1Id = upsertUser('bm.ikeja.p8@bliss.com', 'Phase 8 Ikeja BM', 'Branch Manager', ikeja);
@@ -328,7 +332,7 @@ await test('signup rate limiting blocks excessive registration attempts before h
   }
   const res = await request('/api/signup', {
     method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.88' },
-    body: { full_name: 'Rate Limited Signup', email: 'ratelimit.p8@example.com', phone_number: '08088000222', residential_address: '7 Signup Test Street', branch_id: ikeja, password: 'password123' }
+    body: { full_name: 'Rate Limited Signup', email: 'ratelimit.p8@example.com', phone_number: '08088000222', residential_address: '7 Signup Test Street', branch_id: ikeja, password: 'password123', terms_accepted: true }
   });
   assert(res.status === 429, `rate limited signup expected 429, got ${res.status}`);
 });
@@ -341,7 +345,7 @@ await test('client onboarding stores alternate phone, next of kin and valid staf
       residential_address: '8 Signup Test Street', state: 'Lagos', city: 'Ikeja', branch_id: ikeja,
       alternate_phone: '08088000332', next_of_kin_name: 'Next Kin', next_of_kin_phone: '08088000333',
       next_of_kin_relationship: 'Sibling', next_of_kin_address: '3 Next of Kin Street',
-      referral_code: 'BL-P8-MD', password: 'password123'
+      referral_code: 'BL-P8-MD', password: 'password123', terms_accepted: true
     }
   });
   assert(signup.status === 200, `referred signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
@@ -365,7 +369,7 @@ await test('invalid referral codes are rejected and ALATPay never invents virtua
     body: {
       full_name: 'Invalid Referral', email: 'invalid-ref.p8@example.com', phone_number: '08088000334',
       residential_address: '9 Signup Test Street', branch_id: ikeja,
-      referral_code: 'DOES-NOT-EXIST', password: 'password123'
+      referral_code: 'DOES-NOT-EXIST', password: 'password123', terms_accepted: true
     }
   });
   assert(invalid.status === 400, `invalid referral expected 400, got ${invalid.status}`);
@@ -390,7 +394,7 @@ await test('signup captures address, branch, masked identity and dedicated-accou
     body: {
       full_name: 'Identity Phase 15 Client', email: 'identity.phase15@example.com', phone_number: '08088000336',
       residential_address: '12 Identity Way', state: 'Lagos', city: 'Ajah', branch_id: ajahBranch.id,
-      identity_type: 'NIN', identity_number: '12345678901', bvn: '22222222222', password: 'password123'
+      identity_type: 'NIN', identity_number: '12345678901', bvn: '22222222222', password: 'password123', terms_accepted: true
     }
   });
   assert(signup.status === 200, `identity signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
@@ -417,6 +421,63 @@ await test('signup captures address, branch, masked identity and dedicated-accou
   assert(review.status === 200 && review.data.kyc_status === 'verified', 'KYC review endpoint failed');
   const reviewed = db.prepare('SELECT kyc_status, kyc_reviewed_by, kyc_notes FROM clients WHERE id=?').get(signup.data.client_id);
   assert(reviewed.kyc_status === 'verified' && reviewed.kyc_reviewed_by === mdId && reviewed.kyc_notes === 'Identity checked by MD', 'KYC review was not persisted');
+});
+
+await test('terms and conditions are published, versioned, accepted and downloadable', async () => {
+  const initial = await request('/api/terms');
+  assert(initial.status === 200 && initial.data.terms && /Phase 8 test terms/.test(initial.data.terms.body_text), 'public terms endpoint missing active terms');
+  const initialVersion = initial.data.terms.version_no;
+
+  const noAccept = await request('/api/signup', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.59' },
+    body: {
+      full_name: 'No Terms Client', email: 'no-terms.phase18@example.com', phone_number: '08088000337',
+      residential_address: '11 Signup Test Street', branch_id: ikeja, password: 'password123', terms_accepted: false
+    }
+  });
+  assert(noAccept.status === 400 && /Terms and Conditions/i.test(noAccept.data.error || ''), 'signup must require explicit terms acceptance');
+
+  const publish = await request('/api/admin/terms', {
+    method: 'POST', headers: { Cookie: mdCookie },
+    body: { title: 'Updated Terms', body_text: 'Updated terms body for Phase 18.' }
+  });
+  assert(publish.status === 200 && publish.data.version_no === initialVersion + 1, `terms publish expected version ${initialVersion + 1}, got ${JSON.stringify(publish.data)}`);
+  const afterPublish = await request('/api/terms');
+  assert(afterPublish.data.terms.title === 'Updated Terms' && afterPublish.data.terms.body_text.includes('Phase 18'), 'public terms did not update');
+
+  const signup = await request('/api/signup', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.60' },
+    body: {
+      full_name: 'Terms Accepted Client', email: 'terms.phase18@example.com', phone_number: '08088000338',
+      residential_address: '12 Signup Test Street', branch_id: ikeja, password: 'password123', terms_accepted: true
+    }
+  });
+  assert(signup.status === 200 && signup.data.terms.version_no === publish.data.version_no, 'signup did not return the accepted terms version');
+  const acceptance = db.prepare('SELECT * FROM terms_acceptances WHERE client_id=?').get(signup.data.client_id);
+  assert(acceptance && acceptance.terms_version_id === publish.data.id, 'terms acceptance was not recorded against the client');
+
+  const form = new FormData();
+  form.append('title', 'Terms With PDF');
+  form.append('body_text', 'Terms body with an uploaded PDF document.');
+  form.append('file', new File([new TextEncoder().encode('%PDF-1.4\n%%EOF\n')], 'terms.pdf', { type: 'application/pdf' }));
+  const upload = await request('/api/admin/terms', { method: 'POST', headers: { Cookie: mdCookie }, body: form });
+  assert(upload.status === 200 && upload.data.document_url, `terms PDF upload failed: ${JSON.stringify(upload.data)}`);
+  const document = await request(upload.data.document_url);
+  assert(document.status === 200 && new TextDecoder().decode(document.data).startsWith('%PDF'), 'terms PDF download failed');
+  const withDocument = await request('/api/terms');
+  assert(withDocument.data.terms.document_url === upload.data.document_url, 'active terms missing document link');
+
+  const forbidden = await request('/api/admin/terms', {
+    method: 'POST', headers: { Cookie: mkt1Cookie }, body: { title: 'Blocked Terms', body_text: 'Blocked' }
+  });
+  assert(forbidden.status === 403, 'marketer must not publish terms');
+
+  const activate = await request(`/api/admin/terms/${publish.data.id}/activate`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(activate.status === 200, 'activating a previous terms version failed');
+  const rolledBack = await request('/api/terms');
+  assert(rolledBack.data.terms.version_no === publish.data.version_no, 'terms version activation did not roll back');
 });
 
 console.log('\n--- 3. Property media and document security ---');
@@ -1188,7 +1249,7 @@ await test('public signup sends an OTP and the client can verify their own accou
     method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.77' }, body: {
       full_name: 'Phase 14 Public OTP Client', email: 'otp.public.phase14@example.com',
       phone_number: '08087770002', residential_address: '10 Signup Test Street', branch_id: ikeja,
-      password: 'password123'
+      password: 'password123', terms_accepted: true
     }
   });
   assert(signup.status === 200, `signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
@@ -1642,7 +1703,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 20, `expected 20 migrations, found ${files.length}`);
+  assert(files.length === 21, `expected 21 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

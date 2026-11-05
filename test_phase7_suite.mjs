@@ -867,7 +867,7 @@ await test('public client sign-up creates a client portal account and auto-login
     method: 'POST', body: {
       full_name: 'New Portal Client', email: 'new.portal@example.com', phone_number: '08079990001',
       residential_address: '1 Signup Test Street', state: 'Lagos', city: 'Ikeja',
-      password: 'password123', branch_id: 1
+      password: 'password123', branch_id: 1, terms_accepted: true
     }
   });
   assert(signup.status === 200, `sign-up expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
@@ -884,21 +884,21 @@ await test('public client sign-up creates a client portal account and auto-login
   const duplicateEmail = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Duplicate Email', email: 'new.portal@example.com', phone_number: '08079990002',
-      residential_address: '2 Signup Test Street', password: 'password123', branch_id: 1
+      residential_address: '2 Signup Test Street', password: 'password123', branch_id: 1, terms_accepted: true
     }
   });
   assert(duplicateEmail.status === 409, 'duplicate sign-up email expected 409');
   const duplicatePhone = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Duplicate Phone', email: 'new.portal2@example.com', phone_number: '08079990001',
-      residential_address: '3 Signup Test Street', password: 'password123', branch_id: 1
+      residential_address: '3 Signup Test Street', password: 'password123', branch_id: 1, terms_accepted: true
     }
   });
   assert(duplicatePhone.status === 409, 'duplicate sign-up phone expected 409');
   const weak = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Weak Password', email: 'new.portal3@example.com', phone_number: '08079990003',
-      residential_address: '4 Signup Test Street', password: 'short', branch_id: 1
+      residential_address: '4 Signup Test Street', password: 'short', branch_id: 1, terms_accepted: true
     }
   });
   assert(weak.status === 400, 'weak sign-up password expected 400');
@@ -912,7 +912,7 @@ await test('public sign-up ignores privileged role/marketer/team/price and assig
       password: 'password123', role_name: 'Managing Director', role_id: 1,
       branch_id: db.prepare("SELECT id FROM branches WHERE name='Head Office'").get().id,
       assigned_branch_id: 2, original_marketer_id: mkt1Id, team_lead_id: tl1Id,
-      agreed_purchase_price: 5000000, status: 'Completed'
+      agreed_purchase_price: 5000000, status: 'Completed', terms_accepted: true
     }
   });
   assert(signup.status === 200, `sign-up injection test expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
@@ -944,7 +944,7 @@ await test('client sign-up session cookie, login, logout and expiry are enforced
   const signup = await request('/api/signup', {
     method: 'POST', body: {
       full_name: 'Session Test Client', email: 'session.portal@example.com', phone_number: '08079990101',
-      residential_address: '6 Signup Test Street', password: 'password123', branch_id: 1
+      residential_address: '6 Signup Test Street', password: 'password123', branch_id: 1, terms_accepted: true
     }
   });
   assert(signup.status === 200, 'session test sign-up expected 200');
