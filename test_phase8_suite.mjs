@@ -1350,14 +1350,145 @@ await test('verified webhook creates commission once, duplicate creates none, fa
   assert(db.prepare('SELECT COUNT(*) AS c FROM commission_entries WHERE client_id=? AND plan_id=?').get(failClient, plan.data.id).c >= 3, 'retry created no commission entries');
 });
 
-console.log('\n--- 11. Migration reproducibility and database integrity ---');
+console.log('\n--- 11. Test-account expiry and monthly marketer reactivation ---');
+await test('expired test accounts cannot log in and are deactivated', async () => {
+  const expiredId = upsertUser('expired.test.p8@bliss.com', 'Expired Test', 'Marketer', ikeja);
+  db.prepare("UPDATE users SET is_test=1, test_expires_at='2020-01-01', is_active=1 WHERE id=?").run(expiredId);
+  const clock = makeEnv({ TEST_NOW: '2026-02-15' });
+  const res = await request('/api/login', { method: 'POST', body: { email: 'expired.test.p8@bliss.com', password: 'password123' }, env: clock });
+  assert(res.status === 403, `expired test login expected 403, got ${res.status}`);
+  assert(/expired after 14 days/i.test(res.data.error || ''), 'expiry message is unclear');
+  assert(db.prepare('SELECT is_active FROM users WHERE id=?').get(expiredId).is_active === 0, 'expired test account stayed active');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action='test_account.expired' AND target_id=?").get(String(expiredId)).c > 0, 'expiry was not audited');
+});
+
+await test('lapsed marketer sees a clear message, BM sees pending list, reactivation is audited', async () => {
+  const lapsedId = upsertUser('lapsed.marketer.p8@bliss.com', 'Lapsed Marketer', 'Marketer', ikeja);
+  db.prepare("UPDATE users SET access_valid_until='2026-01-31', is_active=1, is_test=0 WHERE id=?").run(lapsedId);
+  const clock = makeEnv({ TEST_NOW: '2026-02-15' });
+  const blocked = await request('/api/login', { method: 'POST', body: { email: 'lapsed.marketer.p8@bliss.com', password: 'password123' }, env: clock });
+  assert(blocked.status === 403, `lapsed marketer login expected 403, got ${blocked.status}`);
+  assert(/monthly access has lapsed/i.test(blocked.data.error || '') && /contact your branch manager/i.test(blocked.data.error || ''), 'lapse message does not tell the marketer what to do');
+  assert(db.prepare('SELECT access_lapsed_at FROM users WHERE id=?').get(lapsedId).access_lapsed_at, 'lapse was not recorded');
+  const pending = await request('/api/staff/reactivation-pending', { headers: { Cookie: bm1Cookie }, env: clock });
+  assert(pending.status === 200 && pending.data.pending.some(row => row.id === lapsedId), 'branch manager pending list missing lapsed marketer');
+  const reactivated = await request(`/api/staff/${lapsedId}/reactivate`, { method: 'POST', headers: { Cookie: bm1Cookie }, body: {}, env: clock });
+  assert(reactivated.status === 200 && reactivated.data.valid_until === '2026-02-28', 'reactivation did not extend to month end');
+  const row = db.prepare('SELECT is_active, access_valid_until, reactivated_at, reactivated_by FROM users WHERE id=?').get(lapsedId);
+  assert(row.is_active === 1 && row.reactivated_at && row.reactivated_by === bm1Id, 'reactivation record incomplete');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action='marketer.reactivated' AND actor_user_id=? AND target_id=?").get(bm1Id, String(lapsedId)).c > 0, 'reactivation not audited with actor');
+  const allowed = await request('/api/login', { method: 'POST', body: { email: 'lapsed.marketer.p8@bliss.com', password: 'password123' }, env: clock });
+  assert(allowed.status === 200, 'reactivated marketer cannot log in');
+});
+
+await test('per-role access setting off allows month-end login and scheduled job expires lapsed accounts', async () => {
+  const clock = makeEnv({ TEST_NOW: '2026-02-15' });
+  const setting = await request('/api/staff/access-settings', { method: 'PUT', headers: { Cookie: mdCookie }, body: { role_name: 'Marketer', enabled: false }, env: clock });
+  assert(setting.status === 200 && setting.data.enabled === 0, 'could not disable monthly reactivation');
+  const openId = upsertUser('open.marketer.p8@bliss.com', 'Open Marketer', 'Marketer', ikeja);
+  db.prepare("UPDATE users SET access_valid_until='2026-01-31', is_active=1, is_test=0 WHERE id=?").run(openId);
+  const allowed = await request('/api/login', { method: 'POST', body: { email: 'open.marketer.p8@bliss.com', password: 'password123' }, env: clock });
+  assert(allowed.status === 200, 'setting off still blocked a lapsed marketer');
+  await request('/api/staff/access-settings', { method: 'PUT', headers: { Cookie: mdCookie }, body: { role_name: 'Marketer', enabled: true }, env: clock });
+
+  const scheduledId = upsertUser('scheduled.lapse.p8@bliss.com', 'Scheduled Lapse', 'Marketer', ikeja);
+  db.prepare("UPDATE users SET access_valid_until='2026-02-01', is_active=1, is_test=0 WHERE id=?").run(scheduledId);
+  await worker.scheduled({}, clock, { waitUntil() {} });
+  assert(db.prepare('SELECT is_active FROM users WHERE id=?').get(scheduledId).is_active === 0, 'scheduled job did not deactivate lapsed marketer');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action='marketer.access_lapsed' AND target_id=?").get(String(scheduledId)).c > 0, 'scheduled lapse was not audited');
+});
+
+console.log('\n--- 12. Care date filter, lead ordering/colour logs and phone cleanup ---');
+await test('customer care from/to date filter and clearance queue actually apply', async () => {
+  const oldRef = 'BLC-P8-CARE-OLD';
+  db.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, email_address, status, assigned_branch_id,
+    created_by, original_marketer_id, created_at) VALUES (?, 'Care Old Client', '08088000501', 'care.old.p8@example.com', 'Prospect', ?, ?, ?, '2020-01-15 09:00:00')`)
+    .run(oldRef, ikeja, bm1Id, mkt1Id);
+  const oldId = db.prepare('SELECT id FROM clients WHERE client_reference=?').get(oldRef).id;
+  const inRange = await request('/api/customer-care/clients?from=2020-01-01&to=2020-01-31&limit=100', { headers: { Cookie: careBranchCookie } });
+  assert(inRange.status === 200 && inRange.data.clients.some(row => row.id === oldId), 'date range did not include matching client');
+  const afterRange = await request('/api/customer-care/clients?from=2021-01-01&limit=100', { headers: { Cookie: careBranchCookie } });
+  assert(!afterRange.data.clients.some(row => row.id === oldId), 'from filter did not exclude older client');
+  const beforeRange = await request('/api/customer-care/clients?to=2019-12-31&limit=100', { headers: { Cookie: careBranchCookie } });
+  assert(!beforeRange.data.clients.some(row => row.id === oldId), 'to filter did not exclude newer client');
+
+  const clearance = await request(`/api/customer-care/clients/${oldId}/clearance`, {
+    method: 'POST', headers: { Cookie: careBranchCookie }, body: { status: 'cleared', note: 'Verified' }
+  });
+  assert(clearance.status === 200, 'care clearance failed');
+  const cleared = await request('/api/customer-care/clients?status=cleared&limit=100', { headers: { Cookie: careBranchCookie } });
+  const pending = await request('/api/customer-care/clients?status=pending_clearance&limit=100', { headers: { Cookie: careBranchCookie } });
+  assert(cleared.data.clients.some(row => row.id === oldId), 'cleared queue omitted cleared client');
+  assert(!pending.data.clients.some(row => row.id === oldId), 'pending queue included cleared client');
+});
+
+await test('lead contact history is newest-first for same-second entries and temperature changes are logged', async () => {
+  const created = await request('/api/leads', {
+    method: 'POST', headers: { Cookie: bm1Cookie }, body: {
+      full_name: 'PHONE Audit Lead', phone_number: '08088000601', source: 'Audit',
+      status: 'New Lead', lead_temperature: 'Hot', assigned_marketer_id: mkt1Id, branch_id: ikeja
+    }
+  });
+  assert(created.status === 200, `lead create expected 200, got ${created.status}`);
+  const leadId = created.data.id;
+  const first = Number(db.prepare(`INSERT INTO lead_follow_ups (lead_id, staff_id, note, channel, outcome, contacted_at, created_at)
+    VALUES (?, ?, 'First contact', 'call', 'Connected', '2026-02-15 10:00:00', '2026-02-15 10:00:00')`).run(leadId, mkt1Id).lastInsertRowid);
+  const second = Number(db.prepare(`INSERT INTO lead_follow_ups (lead_id, staff_id, note, channel, outcome, contacted_at, created_at)
+    VALUES (?, ?, 'Second contact', 'whatsapp', 'Interested', '2026-02-15 10:00:00', '2026-02-15 10:00:00')`).run(leadId, mkt1Id).lastInsertRowid);
+  const detail = await request(`/api/leads/${leadId}`, { headers: { Cookie: bm1Cookie } });
+  assert(detail.status === 200, 'lead detail expected 200');
+  assert(detail.data.follow_ups[0].id === second && detail.data.follow_ups[1].id === first, 'same-second contact history is not newest-first');
+  assert(detail.data.follow_ups.length === 2, 'contact count is wrong');
+  const changed = await request(`/api/leads/${leadId}`, {
+    method: 'PUT', headers: { Cookie: bm1Cookie }, body: { lead_temperature: 'Cold' }
+  });
+  assert(changed.status === 200, 'temperature change expected 200');
+  const after = await request(`/api/leads/${leadId}`, { headers: { Cookie: bm1Cookie } });
+  assert(after.data.lead.lead_temperature === 'Cold', 'temperature did not change');
+  assert(after.data.temperature_history.length >= 1 && after.data.temperature_history[0].new_temperature === 'Cold', 'temperature change was not logged');
+  const list = await request('/api/leads?limit=100', { headers: { Cookie: bm1Cookie } });
+  assert(list.status === 200 && list.data.temperature_counts.Cold >= 1, 'lead list temperature counts missing');
+});
+
+await test('phone cleanup reports invalid/missing numbers and saves one scoped correction at a time', async () => {
+  const badRef = 'BLC-P8-PHONE-BAD';
+  const invalidRef = 'BLC-P8-PHONE-INVALID';
+  db.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, email_address, status, assigned_branch_id,
+    created_by, original_marketer_id) VALUES (?, 'Phone Bad Format', '0803 111 2222', 'phone.bad.p8@example.com', 'Prospect', ?, ?, ?)`)
+    .run(badRef, ikeja, mkt1Id, mkt1Id);
+  db.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, email_address, status, assigned_branch_id,
+    created_by, original_marketer_id) VALUES (?, 'Phone Invalid', '12345', 'phone.invalid.p8@example.com', 'Prospect', ?, ?, ?)`)
+    .run(invalidRef, ikeja, mkt1Id, mkt1Id);
+  const badId = db.prepare('SELECT id FROM clients WHERE client_reference=?').get(badRef).id;
+  const report = await request('/api/phone-cleanup', { headers: { Cookie: mkt1Cookie } });
+  assert(report.status === 200, `phone cleanup expected 200, got ${report.status}`);
+  const badRow = report.data.clients.find(row => row.client_id === badId);
+  assert(badRow && badRow.reason === 'normalise_to_+234' && badRow.proposed_value === '+2348031112222', 'phone cleanup did not propose the +234 correction');
+  assert(report.data.grouped.some(group => group.branch_name && group.marketers.some(m => m.clients.some(c => c.client_id === badId))), 'phone cleanup grouping missing');
+  const storedBefore = db.prepare('SELECT phone_number FROM clients WHERE id=?').get(badId).phone_number;
+  assert(storedBefore === '0803 111 2222', 'read-only report rewrote the stored number');
+  const fixed = await request(`/api/clients/${badId}`, {
+    method: 'PUT', headers: { Cookie: mkt1Cookie }, body: { phone_number: '+2348031112222' }
+  });
+  assert(fixed.status === 200, `marketer phone fix expected 200, got ${fixed.status}: ${JSON.stringify(fixed.data)}`);
+  assert(db.prepare('SELECT phone_number FROM clients WHERE id=?').get(badId).phone_number === '+2348031112222', 'individual phone fix was not saved');
+  const after = await request('/api/phone-cleanup', { headers: { Cookie: mkt1Cookie } });
+  assert(!after.data.clients.some(row => row.client_id === badId), 'corrected client still appears in cleanup report');
+  assert(after.data.clients.some(row => row.client_id === db.prepare('SELECT id FROM clients WHERE client_reference=?').get(invalidRef).id), 'invalid number disappeared from report');
+  const wrongField = await request(`/api/clients/${badId}`, {
+    method: 'PUT', headers: { Cookie: mkt1Cookie }, body: { full_name: 'Not allowed' }
+  });
+  assert(wrongField.status === 403, 'marketer must not edit non-phone client fields');
+});
+
+console.log('\n--- 13. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
   for (const suffix of ['', '-wal', '-shm']) rmSync(cleanPath + suffix, { force: true });
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 17, `expected 17 migrations, found ${files.length}`);
+  assert(files.length === 18, `expected 18 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

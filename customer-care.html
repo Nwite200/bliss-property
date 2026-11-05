@@ -38,6 +38,10 @@
         <div class="filters mb-16">
           <input type="search" id="careSearch" placeholder="Search client, reference or phone…">
           <select id="careStatus"><option value="">All clients</option><option value="pending_clearance">Pending clearance</option><option value="cleared">Cleared</option></select>
+          <label class="small muted" for="careFrom">From</label>
+          <input type="date" id="careFrom" title="Client registered from">
+          <label class="small muted" for="careTo">To</label>
+          <input type="date" id="careTo" title="Client registered to">
           <select id="careBranch"><option value="">All branches</option></select>
           <button class="btn btn-green btn-sm" type="button" id="applyCareFilters">Filter</button>
           <button class="btn btn-ghost btn-sm" type="button" id="resetCareFilters">Reset</button>

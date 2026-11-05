@@ -14,6 +14,8 @@
     if (el("careSearch").value.trim()) p.set("q", el("careSearch").value.trim());
     if (el("careStatus").value) p.set("status", el("careStatus").value);
     if (el("careBranch").value) p.set("branch_id", el("careBranch").value);
+    if (el("careFrom").value) p.set("from", el("careFrom").value);
+    if (el("careTo").value) p.set("to", el("careTo").value);
     return p;
   }
 
@@ -177,6 +179,8 @@
     el("resetCareFilters").addEventListener("click", () => {
       el("careSearch").value = "";
       el("careStatus").value = "";
+      el("careFrom").value = "";
+      el("careTo").value = "";
       if (el("careBranch").style.display !== "none") el("careBranch").value = "";
       page = 1; loadClients();
     });

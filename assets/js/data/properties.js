@@ -1,21 +1,6 @@
 // Bliss Legacy Limited — Sample Property Data (DEMONSTRATION CONTENT).
 // Structured for seamless future API and administrative backend integration.
 
-window.BLIS_CONFIG = {
-  companyName: "Bliss Legacy Limited",
-  tagline: "Your Future Begins With the Right Property.",
-  whatsappNumber: "2348000000000", // Configurable placeholder (format: country code without +)
-  phone: "+234 800 000 0000",       // Configurable placeholder
-  email: "info@blisslegacylimited.com", // Configurable placeholder
-  address: "Head Office, Lagos, Nigeria", // Configurable placeholder
-  social: {
-    facebook: "https://facebook.com",
-    instagram: "https://instagram.com",
-    twitter: "https://twitter.com",
-    linkedin: "https://linkedin.com"
-  }
-};
-
 window.BLIS_BRANCHES = [
   {
     name: "Head Office",

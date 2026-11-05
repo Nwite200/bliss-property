@@ -54,6 +54,64 @@
     renderTeams();
   }
 
+  async function loadReactivation() {
+    if (!["Managing Director", "Branch Manager", "Super Admin"].includes(me.role)) return;
+    el("reactivationCard").style.display = "";
+    try {
+      const [pending, settings] = await Promise.all([
+        S.fetchJson("/api/staff/reactivation-pending"),
+        S.fetchJson("/api/staff/access-settings")
+      ]);
+      const rows = pending.pending || [];
+      el("reactivationCount").textContent = `${rows.length} pending`;
+      el("reactivationBody").innerHTML = rows.length ? rows.map(row => `
+        <tr>
+          <td><strong>${S.escape(row.full_name)}</strong><div class="small muted">${S.escape(row.email)}</div></td>
+          <td>${S.escape(row.branch_name || "-")}</td>
+          <td>${S.escape(row.access_valid_until || "-")}</td>
+          <td>${row.access_lapsed_at ? S.formatDateTime(row.access_lapsed_at) : "-"}</td>
+          <td>${S.staffBadge(row.is_active)}</td>
+          <td><button class="btn btn-green btn-xs" type="button" data-reactivate="${row.id}">Reactivate</button></td>
+        </tr>`).join("") : '<tr><td colspan="6"><div class="empty-state">No marketers waiting for reactivation.</div></td></tr>';
+      el("reactivationBody").querySelectorAll("[data-reactivate]").forEach(button => {
+        button.addEventListener("click", async () => {
+          try {
+            await S.fetchJson(`/api/staff/${button.getAttribute("data-reactivate")}/reactivate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            S.toast("Marketer reactivated to the end of this month.");
+            await loadReactivation();
+            await loadStaff();
+          } catch (error) { S.toast(error.message, true); }
+        });
+      });
+
+      const canSettings = ["Managing Director", "Super Admin"].includes(me.actual_role || me.role);
+      const roleSettings = (settings.settings || []).filter(row => row.role_name === "Marketer");
+      el("accessSettingsWrap").innerHTML = roleSettings.length ? `
+        <div class="card-head" style="padding:0"><h3 style="font-size:14px">Per-role access setting</h3><span class="small muted">${canSettings ? "Owners only" : "Read only"}</span></div>
+        ${roleSettings.map(row => `
+          <label class="tag" style="display:inline-flex;align-items:center;gap:8px;padding:8px 10px;margin-top:8px">
+            <input type="checkbox" data-role-setting="${S.escape(row.role_name)}" ${Number(row.monthly_reactivation_enabled) ? "checked" : ""} ${canSettings ? "" : "disabled"}>
+            Monthly reactivation for ${S.escape(row.role_name)}
+          </label>`).join("")}` : "";
+      el("accessSettingsWrap").querySelectorAll("[data-role-setting]").forEach(input => {
+        input.addEventListener("change", async () => {
+          try {
+            await S.fetchJson("/api/staff/access-settings", {
+              method: "PUT", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ role_name: input.getAttribute("data-role-setting"), enabled: input.checked })
+            });
+            S.toast("Access setting saved.");
+          } catch (error) {
+            input.checked = !input.checked;
+            S.toast(error.message, true);
+          }
+        });
+      });
+    } catch (error) {
+      el("reactivationCard").style.display = "none";
+    }
+  }
+
   async function loadStaff() {
     const params = new URLSearchParams();
     params.set("limit", "100");
@@ -318,6 +376,7 @@
     await loadBranches();
     await loadTeams();
     await loadStaff();
+    await loadReactivation();
     bindTabs();
     fillSelect(el("staffRole"), roleOptions().map(role => ({ role })), "role", "role");
     el("newStaffBtn").addEventListener("click", () => openStaffModal(null));

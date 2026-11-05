@@ -136,6 +136,7 @@
       { href: "sms-center.html", label: "✉️ SMS Centre", page: "sms", roles: ["Managing Director", "Head Accountant", "Branch Manager", "Finance Officer"], requiresSmsAccess: true },
       { href: "properties.html", label: "🏡 Properties", page: "properties", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "clients.html", label: "👥 Clients", page: "clients", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "phone-cleanup.html", label: "📞 Phone Cleanup", page: "phone-cleanup", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer"] },
       { section: "Sales & Teams" },
       { href: "leads.html", label: "🎯 Lead Pipeline", page: "leads", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer"] },
       { href: "staff-management.html", label: "👔 Staff & Teams", page: "staff", roles: ["Managing Director", "Branch Manager"] },

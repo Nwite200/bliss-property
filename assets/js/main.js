@@ -12,9 +12,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const phoneEl = document.getElementById('contactPhone');
   const emailEl = document.getElementById('contactEmail');
   const addrEl = document.getElementById('contactAddress');
-  if (phoneEl) phoneEl.textContent = c.phone || '+234 800 000 0000 (Configurable placeholder)';
-  if (emailEl) emailEl.textContent = c.email || 'info@blisslegacylimited.com (Configurable placeholder)';
-  if (addrEl) addrEl.textContent = c.address || 'Head Office, Lagos, Nigeria (Configurable placeholder)';
+  if (phoneEl) phoneEl.textContent = c.phone || 'Contact phone not configured';
+  if (emailEl) emailEl.textContent = c.email || 'Contact email not configured';
+  if (addrEl) addrEl.textContent = c.address || 'Head office address not configured';
 
   // Dedicated WhatsApp action button in Contact section
   const waBtn = document.getElementById('waBtn');

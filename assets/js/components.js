@@ -26,19 +26,18 @@ Bliss.findProperty = function(idOrSlug) {
 
 Bliss.whatsappLink = function(msg) {
   const c = Bliss.config();
-  const rawNum = (c.whatsappNumber || "").replace(/\D/g, "");
-  const num = rawNum || "2348000000000";
+  const num = String(c.whatsappNumber || "").replace(/\D/g, "");
+  if (!num) return null;
   const text = msg || "Hello Bliss Legacy Limited, I would like to make an enquiry regarding your properties.";
   return `https://wa.me/${num}?text=${encodeURIComponent(text)}`;
 };
 
 Bliss.enquireWhatsApp = function(msg) {
-  const c = Bliss.config();
-  if (!c.whatsappNumber) {
-    const proceed = confirm("WhatsApp phone number is currently using placeholder (2348000000000). Would you like to proceed for testing?");
-    if (!proceed) return;
-  }
   const url = Bliss.whatsappLink(msg);
+  if (!url) {
+    alert("WhatsApp contact has not been configured yet. Please use the phone or email shown on the site.");
+    return;
+  }
   window.open(url, "_blank", "noopener,noreferrer");
 };
 

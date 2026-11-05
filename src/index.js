@@ -1116,6 +1116,16 @@ function todayOnly() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function currentDate(env) {
+  return dateOnly(env && env.TEST_NOW) || todayOnly();
+}
+
+function endOfMonth(dateText) {
+  const date = new Date(String(dateText).slice(0, 10) + "T00:00:00Z");
+  if (isNaN(date.getTime())) return null;
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+}
+
 function defaultDateRange(url) {
   const today = todayOnly();
   const fallbackFrom = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
@@ -1277,6 +1287,20 @@ function canManageLeads(role) {
 
 function canManageStaff(role) {
   return ["Managing Director", "Branch Manager"].includes(role);
+}
+
+async function monthlyReactivationEnabled(env, roleName) {
+  const row = await env.DB.prepare("SELECT monthly_reactivation_enabled FROM role_access_settings WHERE role_name=?")
+    .bind(roleName).first();
+  return Boolean(row && Number(row.monthly_reactivation_enabled) === 1);
+}
+
+function testAccountExpired(user, env) {
+  return Number(user.is_test || 0) === 1 && user.test_expires_at && String(user.test_expires_at).slice(0, 10) < currentDate(env);
+}
+
+function monthlyAccessLapsed(user, env) {
+  return user.access_valid_until && String(user.access_valid_until).slice(0, 10) < currentDate(env);
 }
 
 function canAccessCommissions(actor) {
@@ -1765,6 +1789,38 @@ async function retryCommissionGeneration(env) {
   }
   return { examined: failures.length, resolved };
 }
+
+async function expireTestAccounts(env) {
+  const today = currentDate(env);
+  const { results } = await env.DB.prepare(`
+    SELECT id FROM users WHERE is_test=1 AND is_active=1 AND test_expires_at IS NOT NULL AND date(test_expires_at) < date(?)
+  `).bind(today).all();
+  for (const row of results) {
+    await env.DB.prepare("UPDATE users SET is_active=0, deactivated_at=datetime('now') WHERE id=?").bind(row.id).run();
+    await audit(env, null, "test_account.expired", "user", String(row.id), { reason: "14_day_expiry" });
+  }
+  return { expired: results.length };
+}
+
+async function expireMonthlyMarketerAccess(env) {
+  const enabled = await monthlyReactivationEnabled(env, "Marketer");
+  if (!enabled) return { skipped: true, reason: "setting_off" };
+  const today = currentDate(env);
+  const { results } = await env.DB.prepare(`
+    SELECT u.id, u.branch_id FROM users u JOIN roles r ON r.id=u.role_id
+    WHERE r.name='Marketer' AND u.is_active=1 AND u.access_valid_until IS NOT NULL
+      AND date(u.access_valid_until) < date(?)
+  `).bind(today).all();
+  for (const row of results) {
+    await env.DB.prepare(`
+      UPDATE users SET is_active=0, access_lapsed_at=COALESCE(access_lapsed_at, datetime('now')), updated_at=datetime('now')
+      WHERE id=?
+    `).bind(row.id).run();
+    await audit(env, null, "marketer.access_lapsed", "user", String(row.id), { reason: "month_end" }, row.branch_id);
+  }
+  return { lapsed: results.length };
+}
+
 
 
 async function applyPaymentCommissionAdjustments(env, payment, adjustmentType, actorId, reason) {
@@ -4438,7 +4494,7 @@ export default {
 
       // Look up user by email directly OR by client reference / phone
       let user = await env.DB.prepare(
-        "SELECT u.id, u.email, u.password_hash, u.is_active, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE LOWER(u.email)=?"
+        "SELECT u.id, u.email, u.password_hash, u.is_active, u.is_test, u.test_expires_at, u.access_valid_until, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE LOWER(u.email)=?"
       ).bind(ident).first();
 
       if (!user) {
@@ -4449,24 +4505,42 @@ export default {
         if (clientMatch) {
           if (clientMatch.user_id) {
             user = await env.DB.prepare(
-              "SELECT u.id, u.email, u.password_hash, u.is_active, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?"
+              "SELECT u.id, u.email, u.password_hash, u.is_active, u.is_test, u.test_expires_at, u.access_valid_until, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?"
             ).bind(clientMatch.user_id).first();
           } else if (clientMatch.email_address) {
             user = await env.DB.prepare(
-              "SELECT u.id, u.email, u.password_hash, u.is_active, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE LOWER(u.email)=?"
+              "SELECT u.id, u.email, u.password_hash, u.is_active, u.is_test, u.test_expires_at, u.access_valid_until, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE LOWER(u.email)=?"
             ).bind(clientMatch.email_address.toLowerCase()).first();
           }
         }
       }
 
-      if (!user || !user.is_active) {
-        await audit(env, null, "login.failure", "user", ident, { reason: "not_found_or_inactive" });
+      if (!user) {
+        await audit(env, null, "login.failure", "user", ident, { reason: "not_found" });
         return json({ error: "Invalid credentials" }, 401);
       }
 
       const ok = await verifyPassword(password, user.password_hash);
       if (!ok) {
         await audit(env, user.id, "login.failure", "user", ident, { reason: "bad_password" });
+        return json({ error: "Invalid credentials" }, 401);
+      }
+
+      if (testAccountExpired(user, env)) {
+        await env.DB.prepare("UPDATE users SET is_active=0, deactivated_at=datetime('now') WHERE id=?").bind(user.id).run();
+        await audit(env, user.id, "test_account.expired", "user", String(user.id), { test_expires_at: user.test_expires_at });
+        return json({ error: "This test account has expired after 14 days. Contact the administrator." }, 403);
+      }
+      const lapsedMonthly = user.role_name === "Marketer" && monthlyAccessLapsed(user, env) &&
+        await monthlyReactivationEnabled(env, "Marketer");
+      if (lapsedMonthly) {
+        await env.DB.prepare("UPDATE users SET access_lapsed_at=COALESCE(access_lapsed_at, datetime('now')) WHERE id=?")
+          .bind(user.id).run();
+        await audit(env, user.id, "marketer.access_lapsed", "user", String(user.id), { access_valid_until: user.access_valid_until });
+        return json({ error: "Your monthly access has lapsed. Contact your branch manager or the MD for reactivation." }, 403);
+      }
+      if (!user.is_active) {
+        await audit(env, null, "login.failure", "user", ident, { reason: "inactive" });
         return json({ error: "Invalid credentials" }, 401);
       }
 
@@ -5846,6 +5920,62 @@ export default {
     }
 
 
+    if (path === "/api/phone-cleanup" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Branch Manager", "Team Lead", "Marketer"].includes(actor.role_name)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const scope = await resolvePhase6Scope(env, actor);
+      const clientScope = clientScopeSql(scope, "c");
+      const { results } = await env.DB.prepare(`
+        SELECT c.id, c.client_reference, c.full_name, c.phone_number, c.assigned_branch_id,
+               b.name AS branch_name, c.original_marketer_id, m.full_name AS marketer_name
+        FROM clients c
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        LEFT JOIN users m ON m.id=c.original_marketer_id
+        WHERE c.is_deleted=0 AND ${clientScope.clause}
+        ORDER BY b.name, m.full_name, c.full_name
+      `).bind(...clientScope.binds).all();
+      const rows = [];
+      for (const client of results) {
+        const stored = client.phone_number ? String(client.phone_number).trim() : "";
+        const proposed = normalizeNigerianPhone(stored);
+        if (proposed && stored === proposed) continue;
+        let reason = "invalid_number";
+        if (!stored) reason = "missing_phone";
+        else if (proposed) reason = "normalise_to_+234";
+        rows.push({
+          client_id: client.id,
+          client_reference: client.client_reference,
+          client_name: client.full_name,
+          branch_id: client.assigned_branch_id,
+          branch_name: client.branch_name || "Unassigned",
+          marketer_id: client.original_marketer_id,
+          marketer_name: client.marketer_name || "Unassigned",
+          stored_value: stored || null,
+          proposed_value: proposed,
+          reason
+        });
+      }
+      const byBranch = {};
+      for (const row of rows) {
+        const branch = row.branch_name || "Unassigned";
+        byBranch[branch] = byBranch[branch] || { branch_name: branch, count: 0, marketers: {} };
+        byBranch[branch].count++;
+        const marketer = row.marketer_name || "Unassigned";
+        byBranch[branch].marketers[marketer] = byBranch[branch].marketers[marketer] || { marketer_name: marketer, count: 0, clients: [] };
+        byBranch[branch].marketers[marketer].count++;
+        byBranch[branch].marketers[marketer].clients.push(row);
+      }
+      const grouped = Object.values(byBranch).map(branch => ({
+        ...branch,
+        marketers: Object.values(branch.marketers)
+      }));
+      return json({ total: rows.length, clients: rows, grouped });
+    }
+
+
     const clientDetailMatch = path.match(/^\/api\/clients\/(\d+)$/);
     if (clientDetailMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
@@ -5940,7 +6070,7 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager", "Team Lead"].includes(actor.role_name)) {
+      if (!["Managing Director", "Branch Manager", "Team Lead", "Marketer"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
       }
       const id = clientDetailMatch[1];
@@ -5948,6 +6078,9 @@ export default {
       if (!client) return json({ error: "Not found" }, 404);
       if (!canManageClient(actor, client)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
+      if (actor.role_name === "Marketer" && Object.keys(body || {}).some(key => key !== "phone_number")) {
+        return json({ error: "Marketers may only correct a client phone number" }, 403);
+      }
       if (!["Managing Director", "Branch Manager"].includes(actor.role_name) &&
           (body.agreed_purchase_price !== undefined || body.interested_property_id !== undefined)) {
         return json({ error: "Only a Managing Director or Branch Manager can change contract price or property ownership" }, 403);
@@ -9014,6 +9147,10 @@ export default {
       if (branchId && String(actor.care_scope || "").toLowerCase() === "national") {
         clauses.push("c.assigned_branch_id=?"); binds.push(Number(branchId));
       }
+      const from = dateOnly(url.searchParams.get("from"));
+      const to = dateOnly(url.searchParams.get("to"));
+      if (from) { clauses.push("date(c.created_at) >= date(?)"); binds.push(from); }
+      if (to) { clauses.push("date(c.created_at) <= date(?)"); binds.push(to); }
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "20", 10)));
       const offset = (page - 1) * limit;
@@ -9651,6 +9788,10 @@ export default {
       const newId = res.meta.last_row_id;
       const managerId = await inferManagerId(env, role_name, resolvedBranch, team_id || null);
       await env.DB.prepare("UPDATE users SET manager_id=? WHERE id=?").bind(managerId, newId).run();
+      if (role_name === "Marketer") {
+        await env.DB.prepare("UPDATE users SET access_valid_until=? WHERE id=?")
+          .bind(endOfMonth(currentDate(env)), newId).run();
+      }
       if (body.commission_access !== undefined && ["Managing Director", "Super Admin"].includes(actorActualRole)) {
         await env.DB.prepare("UPDATE users SET commission_access=? WHERE id=?")
           .bind(isTruthy(body.commission_access) ? 1 : 0, newId).run();
@@ -9787,6 +9928,10 @@ export default {
       await env.DB.prepare(`
         UPDATE users SET full_name=?, email=?, role_id=?, branch_id=?, care_scope=?, updated_at=datetime('now') WHERE id=?
       `).bind(fullName, email, role.id, nextBranch, nextCareScope, target.id).run();
+      if (nextRoleName === "Marketer" && (!target.access_valid_until || target.role_name !== "Marketer")) {
+        await env.DB.prepare("UPDATE users SET access_valid_until=? WHERE id=?")
+          .bind(endOfMonth(currentDate(env)), target.id).run();
+      }
       await env.DB.prepare(`
         INSERT INTO staff_profiles (user_id, phone_number, job_title, date_joined, notes, updated_by, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -9840,6 +9985,76 @@ export default {
       }, nextBranch);
       return json({ ok: true });
     }
+
+    if (path === "/api/staff/access-settings" && (request.method === "GET" || request.method === "PUT")) {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Branch Manager", "Super Admin"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (request.method === "PUT" && actor.actual_role_name !== "Super Admin" && actor.role_name !== "Managing Director") {
+        return json({ error: "Only the MD or Super Admin can change access settings" }, 403);
+      }
+      if (request.method === "GET") {
+        const { results } = await env.DB.prepare("SELECT role_name, monthly_reactivation_enabled FROM role_access_settings ORDER BY role_name").all();
+        return json({ settings: results });
+      }
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const body = await request.json();
+      const roleName = String(body.role_name || "").trim();
+      if (!roleName) return json({ error: "Role name is required" }, 400);
+      const role = await env.DB.prepare("SELECT id FROM roles WHERE name=?").bind(roleName).first();
+      if (!role) return json({ error: "Role not found" }, 404);
+      const enabled = isTruthy(body.enabled) ? 1 : 0;
+      await env.DB.prepare(`
+        INSERT INTO role_access_settings (role_name, monthly_reactivation_enabled, updated_by, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(role_name) DO UPDATE SET monthly_reactivation_enabled=excluded.monthly_reactivation_enabled,
+          updated_by=excluded.updated_by, updated_at=datetime('now')
+      `).bind(roleName, enabled, actor.id).run();
+      await audit(env, actor.id, "staff.access_setting", "role", roleName, { enabled }, actor.branch_id);
+      return json({ ok: true, role_name: roleName, enabled });
+    }
+
+    if (path === "/api/staff/reactivation-pending" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Branch Manager", "Super Admin"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const clauses = ["r.name='Marketer'", "s.monthly_reactivation_enabled=1", "u.access_valid_until IS NOT NULL", "date(u.access_valid_until) < date(?)"];
+      const binds = [currentDate(env)];
+      if (actor.role_name === "Branch Manager") { clauses.push("u.branch_id=?"); binds.push(actor.branch_id); }
+      const { results } = await env.DB.prepare(`
+        SELECT u.id, u.email, u.full_name, u.is_active, u.branch_id, u.access_valid_until, u.access_lapsed_at,
+               u.reactivated_at, b.name AS branch_name, r.name AS role_name
+        FROM users u JOIN roles r ON r.id=u.role_id
+        LEFT JOIN branches b ON b.id=u.branch_id
+        JOIN role_access_settings s ON s.role_name=r.name
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY u.access_valid_until, u.full_name
+      `).bind(...binds).all();
+      return json({ pending: results });
+    }
+
+    const staffReactivateMatch = path.match(/^\/api\/staff\/(\d+)\/reactivate$/);
+    if (staffReactivateMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Branch Manager", "Super Admin"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const target = await env.DB.prepare(`
+        SELECT u.id, u.branch_id, u.email, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?
+      `).bind(staffReactivateMatch[1]).first();
+      if (!target) return json({ error: "Staff member not found" }, 404);
+      if (target.role_name !== "Marketer") return json({ error: "Only marketer accounts use monthly reactivation" }, 400);
+      if (actor.role_name === "Branch Manager" && Number(target.branch_id) !== Number(actor.branch_id)) return json({ error: "Cross-branch forbidden" }, 403);
+      const validUntil = endOfMonth(currentDate(env));
+      await env.DB.prepare(`
+        UPDATE users SET is_active=1, access_valid_until=?, access_lapsed_at=NULL,
+          reactivated_at=datetime('now'), reactivated_by=?, deactivated_at=NULL, updated_at=datetime('now')
+        WHERE id=?
+      `).bind(validUntil, actor.id, target.id).run();
+      await audit(env, actor.id, "marketer.reactivated", "user", String(target.id), { valid_until: validUntil }, target.branch_id);
+      return json({ ok: true, valid_until: validUntil });
+    }
+
 
     const staffStatusMatch = path.match(/^\/api\/staff\/(\d+)\/status$/);
     if (staffStatusMatch && request.method === "POST") {
@@ -10158,7 +10373,7 @@ export default {
       if (!lead || lead.is_demo || !canAccessLeadScope(scope, lead)) return json({ error: "Lead not found" }, 404);
       const { results: followUps } = await env.DB.prepare(`
         SELECT f.*, u.full_name AS staff_name FROM lead_follow_ups f
-        LEFT JOIN users u ON u.id=f.staff_id WHERE f.lead_id=? ORDER BY f.created_at DESC
+        LEFT JOIN users u ON u.id=f.staff_id WHERE f.lead_id=? ORDER BY f.created_at DESC, f.id DESC
       `).bind(lead.id).all();
       const { results: activity } = await env.DB.prepare(`
         SELECT al.id, al.action, al.created_at, u.full_name AS actor_name
@@ -11471,6 +11686,8 @@ export default {
       await dispatchSmsSchedules(env);
       await reconcileAlatpayPayments(env);
       await retryCommissionGeneration(env);
+      await expireTestAccounts(env);
+      await expireMonthlyMarketerAccess(env);
       const settings = await getSmsSettings(env);
       if (settings.enabled && settings.provider !== "mock") {
         try {

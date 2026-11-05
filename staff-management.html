@@ -41,6 +41,19 @@
       </div>
 
       <section id="staffTab">
+        <div class="card" id="reactivationCard" style="margin-bottom:20px;display:none">
+          <div class="card-head">
+            <h3>Monthly marketer reactivation</h3>
+            <span class="small muted" id="reactivationCount">Loading…</span>
+          </div>
+          <p class="small muted">Marketers whose monthly access has lapsed cannot log in. Reactivating extends access to the end of the current month and records who did it and when.</p>
+          <div class="table-responsive"><table class="table">
+            <thead><tr><th>Marketer</th><th>Branch</th><th>Access valid until</th><th>Lapsed at</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody id="reactivationBody"><tr><td colspan="6">Loading…</td></tr></tbody>
+          </table></div>
+          <div id="accessSettingsWrap" style="margin-top:16px"></div>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h3>Staff directory</h3>

@@ -8,7 +8,7 @@ This is an honest list of what the current implementation does **not** provide. 
 
 1. **Super Admin role exists**, with permission-guarded admin routes and a system administration page. It inherits MD business scope for legacy routes; granular permissions apply to `/api/admin/*`.
 2. **No staff invitation or approval workflow.** Staff accounts are created with a password and are active immediately.
-3. **No employee self-application.** Marketers and other staff cannot apply for an account.
+3. **No employee self-application.** Marketers and other staff cannot apply for an account. Seeded test accounts expire after 14 days and can be wiped with `wipe_test_data.py`.
 4. **No email verification** for staff or clients.
 5. **No forced first-login password reset.** `users.must_reset_password` is not enforced.
 6. **No staff deletion or anonymisation.** Deactivation retains all records.
@@ -39,7 +39,7 @@ This is an honest list of what the current implementation does **not** provide. 
 5. Payment receipts are generated on verification; there is no bank-grade receipt verification service.
 6. Payment plans support outright, part payment, daily, weekly, bi-monthly and monthly. Schedule edits regenerate expected items and keep immutable history.
 7. Defaulting is calculated on read from the generated schedule and verified payments; it clears automatically on catch-up. It is not a nightly materialised balance table.
-8. Commission generation is explicit; it is not automatically triggered by every payment webhook.
+8. Commission generation is automatic on every verified payment and idempotent. Failures are flagged for retry, and a dry-run backfill report is available; creating backfill entries still requires owner approval.
 9. Commission plan edits create versions, and new versions do not retroactively commission payments from before the version was created.
 10. Property payment plans support enabled/disabled catalogues and lock purchase terms at onboarding. Editing a property plan does not migrate existing clients; this is intentional.
 11. SMS delivery is adapter-based. Termii is the first production adapter; Africa's Talking is registered as an alternative. Delivery receipts from the provider are not yet ingested, so `delivered` is currently confirmed only by the mock adapter.
