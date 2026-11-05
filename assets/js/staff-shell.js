@@ -141,7 +141,7 @@
       { href: "staff-management.html", label: "👔 Staff & Teams", page: "staff", roles: ["Managing Director", "Branch Manager"] },
       { href: "activity-centre.html", label: "🕘 Activity Centre", page: "activity", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Finance" },
-      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], requiresCommissionAccess: true },
+      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
       { href: "reports.html", label: "📄 Financial Reports", page: "reports", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
       { href: "finance-dashboard.html", label: "💳 Finance & Ledger", page: "finance", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
       { href: "provider-config.html", label: "🏦 Payment Provider", page: "provider", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
@@ -154,7 +154,8 @@
     ];
     let items = links.filter(item => (!item.roles || item.roles.includes(role)) &&
       (!item.requiresCommissionAccess || me.can_access_commissions) &&
-      (!item.requiresSmsAccess || me.sms_access)).map(item => {
+      (!item.requiresSmsAccess || me.sms_access) &&
+      (!item.commissionNav || me.can_access_commissions || ["Marketer", "Team Lead", "Branch Manager"].includes(role))).map(item => {
       if (item.section) return `<div class="section-label">${item.section}</div>`;
       return `<a href="${item.href}" ${item.page === activePage ? 'class="active"' : ""} ${item.id ? `id="${item.id}"` : ""} ${item.page === "logout" ? 'style="color:#E74C3C"' : ""}>${item.label}</a>`;
     }).join("");

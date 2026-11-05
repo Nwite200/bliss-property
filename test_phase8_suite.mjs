@@ -840,13 +840,17 @@ await test('commission applies to outright payments but caps easy-buy commission
   assert(versions === 2, `expected two plan versions, got ${versions}`);
 });
 
-await test('staff and team leads are denied commission endpoints', async () => {
+await test('staff and team leads see only their own commission amounts', async () => {
   const staff = await request('/api/commissions', { headers: { Cookie: mkt1Cookie } });
   const staffGenerate = await request('/api/commissions/generate', { method: 'POST', headers: { Cookie: mkt1Cookie }, body: {} });
   const lead = await request('/api/commissions', { headers: { Cookie: tlCookie } });
   const leadPlans = await request('/api/commission-plans', { headers: { Cookie: tlCookie } });
-  assert(staff.status === 403 && staffGenerate.status === 403, 'staff commission access must be denied');
-  assert(lead.status === 403 && leadPlans.status === 403, 'team lead commission access must be denied');
+  assert(staff.status === 200 && Array.isArray(staff.data.entries), 'staff own commission list expected 200');
+  assert(staff.generate !== 200 && staffGenerate.status === 403, 'staff must not generate commission');
+  assert(lead.status === 200 && Array.isArray(lead.data.entries), 'team lead own commission list expected 200');
+  assert(leadPlans.status === 403, 'team lead must not read commission plan rules');
+  const keys = Object.keys(staff.data.entries[0] || {}).sort();
+  assert(keys.join(',') === ['adjusted_kobo','client_name','client_reference','commission_ref','created_at','earned_kobo','expected_kobo','id','outstanding_kobo','paid_kobo','status'].sort().join(','), 'staff commission response leaked calculation fields');
 });
 
 await test('lead bulk import, inspection scheduling and conversion retain marketer attribution', async () => {

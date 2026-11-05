@@ -9,6 +9,7 @@
   let currentEntry = null;
   const canManage = () => me && ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role);
   const hasCommissionAccess = () => me && me.can_access_commissions === true;
+  const canViewCommission = () => hasCommissionAccess() || ["Marketer", "Team Lead", "Project Manager", "Branch Manager"].includes(me && (me.actual_role || me.role));
 
   function commissionableLabel(plan) {
     if (plan.commissionable_mode === 'first_months') return `First ${Number(plan.commissionable_first_months || 2)} month(s) only`;
@@ -122,24 +123,34 @@
   }
 
   function renderKpis(summary) {
-    el('commissionKpis').innerHTML = [
-      ['Commission earned', summary.earned_kobo],
-      ['Awaiting approval', summary.pending_approval_kobo],
-      ['Approved', summary.approved_kobo],
-      ['Paid', summary.paid_kobo],
-      ['Outstanding', summary.outstanding_kobo]
-    ].map(([label, value]) => `<div class="kpi"><div class="label">${label}</div><div class="value">${money(value || 0)}</div><div class="delta">${summary.total_count || 0} total entries</div></div>`).join('');
+    const values = hasCommissionAccess()
+      ? [
+        ['Commission earned', summary.earned_kobo],
+        ['Awaiting approval', summary.pending_approval_kobo],
+        ['Approved', summary.approved_kobo],
+        ['Paid', summary.paid_kobo],
+        ['Outstanding', summary.outstanding_kobo]
+      ]
+      : [
+        ['Commission earned', summary.earned_kobo],
+        ['Expected after adjustments', summary.expected_kobo],
+        ['Paid', summary.paid_kobo],
+        ['Outstanding', summary.outstanding_kobo],
+        ['Entries', null]
+      ];
+    el('commissionKpis').innerHTML = values.map(([label, value]) => `<div class="kpi"><div class="label">${label}</div><div class="value">${value === null ? (summary.total_count || 0) : money(value || 0)}</div><div class="delta">${summary.total_count || 0} total entries</div></div>`).join('');
   }
 
   function renderEntries() {
+    const own = !hasCommissionAccess();
     el('commissionBody').innerHTML = entries.length ? entries.map(entry => `
       <tr>
         <td><strong>${S.escape(entry.commission_ref)}</strong><div class="small muted">${S.escape(entry.created_at || '').slice(0, 10)}</div></td>
-        <td>${S.escape(entry.recipient_name || '-')}<div class="small muted">${S.escape(entry.recipient_role || '')}</div></td>
+        <td>${S.escape(entry.recipient_name || (own ? me.full_name : '-'))}<div class="small muted">${S.escape(entry.recipient_role || '')}</div></td>
         <td>${S.escape(entry.client_name || '-')}<div class="small muted">${S.escape(entry.client_reference || '')}</div></td>
-        <td>${S.escape(entry.plan_name || '-')}<div class="small muted">${S.escape(entry.basis || '')}</div></td>
-        <td>${entry.rate_bps ? (entry.rate_bps / 100).toFixed(2) + '%' : 'Fixed'}</td>
-        <td class="nowrap">${money(entry.commission_kobo)}</td>
+        <td>${own ? '—' : S.escape(entry.plan_name || '-')}<div class="small muted">${own ? '' : S.escape(entry.basis || '')}</div></td>
+        <td>${own ? '—' : (entry.rate_bps ? (entry.rate_bps / 100).toFixed(2) + '%' : 'Fixed')}</td>
+        <td class="nowrap">${money(own ? entry.expected_kobo : entry.commission_kobo)}</td>
         <td class="nowrap">${money(entry.paid_kobo)}</td>
         <td class="nowrap">${money(entry.outstanding_kobo)}</td>
         <td>${S.badge(entry.status, S.statusTone(entry.status))}</td>
@@ -279,6 +290,23 @@
 
   function renderEntryDetail(data) {
     const entry = data.entry;
+    if (!hasCommissionAccess()) {
+      el('commissionDetailTitle').textContent = entry.commission_ref || 'My commission';
+      el('commissionDetailBody').innerHTML = `
+        <div class="card" style="box-shadow:none">
+          <div class="card-head"><h3>${S.escape(entry.client_name || 'Commission')}</h3>${S.badge(entry.status, S.statusTone(entry.status))}</div>
+          <table class="table">
+            <tr><td class="muted">Commission reference</td><td>${S.escape(entry.commission_ref)}</td></tr>
+            <tr><td class="muted">Client</td><td>${S.escape(entry.client_name || '-')} (${S.escape(entry.client_reference || '')})</td></tr>
+            <tr><td class="muted">Earned</td><td>${money(entry.earned_kobo)}</td></tr>
+            <tr><td class="muted">Expected after adjustments</td><td><strong>${money(entry.expected_kobo)}</strong></td></tr>
+            <tr><td class="muted">Paid</td><td>${money(entry.paid_kobo)}</td></tr>
+            <tr><td class="muted">Outstanding</td><td>${money(entry.outstanding_kobo)}</td></tr>
+          </table>
+          <div class="mini-list mt-16">${(data.payments || []).map(p => `<div class="mini-item"><div class="mini-main"><strong>${S.escape(p.payment_ref)} · ${money(p.amount_kobo)}</strong><span>${S.escape(p.method)} · ${S.formatDateTime(p.paid_at)} · ${S.escape(p.external_reference || '')}</span></div></div>`).join('') || '<div class="empty-state">No payments recorded.</div>'}</div>
+        </div>`;
+      return;
+    }
     const canAct = canManage();
     const actionButtons = [];
     if (canAct && ["Draft", "Calculated"].includes(entry.status)) actionButtons.push(`<button class="btn btn-green btn-sm" data-action="submit">Submit for approval</button>`);
@@ -407,7 +435,7 @@
   document.addEventListener('DOMContentLoaded', async () => {
     me = await S.initShell('commissions');
     if (!me) return;
-    if (!hasCommissionAccess()) {
+    if (!canViewCommission()) {
       S.toast('Commission access is restricted.', true);
       window.location.href = 'dashboard.html';
       return;

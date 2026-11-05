@@ -550,7 +550,7 @@ await test('commission payments support partial payment, idempotency, double-pay
   const otherMarketer = await request(`/api/commissions/payments/${finalPayment.data.payment_id}/receipt`, {
     headers: { Cookie: mkt2Cookie }
   });
-  assert(otherMarketer.status === 403, 'staff must not download commission receipts');
+  assert(otherMarketer.status === 404, 'another recipient must not download the receipt');
   const paymentRow = db.prepare("SELECT r2_key FROM commission_payments WHERE id=?").get(finalPayment.data.payment_id);
   assert(paymentRow.r2_key && paymentRow.r2_key.startsWith('commission-receipts/'), 'commission receipt not stored in R2');
   const publicLeak = await request(`/api/files/${encodeURIComponent(paymentRow.r2_key)}`);
@@ -613,35 +613,62 @@ await test('plan updates preserve existing entries and manual corrections remain
 });
 
 console.log('\n--- 5. Isolation and analytics ---');
-await test('commission visibility is denied to staff and team leads, and scoped for permitted roles', async () => {
+await test('staff see only their own commission amounts while permitted users see everything', async () => {
   const mkt1 = await request('/api/commissions?limit=100', { headers: { Cookie: mkt1Cookie } });
-  assert(mkt1.status === 403, 'marketer commission list must be denied');
+  assert(mkt1.status === 200, 'marketer own commission list expected 200');
+  assert(mkt1.data.entries.length > 0, 'marketer own commission list should not be empty');
+  const ownKeys = ['id','commission_ref','client_name','client_reference','status','earned_kobo','expected_kobo','adjusted_kobo','paid_kobo','outstanding_kobo','created_at'];
+  assert(Object.keys(mkt1.data.entries[0]).sort().join(',') === ownKeys.sort().join(','), `marketer keys leaked calculation fields: ${Object.keys(mkt1.data.entries[0])}`);
+  assert(!('rate_bps' in mkt1.data.entries[0]) && !('basis' in mkt1.data.entries[0]) && !('plan_name' in mkt1.data.entries[0]), 'marketer saw rate/calculation fields');
   const mkt2 = await request('/api/commissions?limit=100', { headers: { Cookie: mkt2Cookie } });
-  assert(mkt2.status === 403, 'marketer two commission list must be denied');
+  assert(mkt2.status === 200, 'second marketer own commission expected 200');
+  const mkt1Db = db.prepare('SELECT COUNT(*) AS c FROM commission_entries WHERE recipient_user_id=?').get(mkt1Id).c;
+  assert(mkt1.data.pagination.total === mkt1Db, 'marketer saw another recipient commission');
+  const otherEntry = db.prepare('SELECT id FROM commission_entries WHERE recipient_user_id=? LIMIT 1').get(mkt2Id);
+  if (otherEntry) {
+    const otherRead = await request(`/api/commissions/${otherEntry.id}`, { headers: { Cookie: mkt1Cookie } });
+    assert(otherRead.status === 404, 'marketer read another marketer commission');
+  }
+  if (!db.prepare('SELECT id FROM commission_entries WHERE recipient_user_id=? LIMIT 1').get(tl1Id)) {
+    const plan = db.prepare('SELECT id FROM commission_plans ORDER BY id LIMIT 1').get();
+    const rule = db.prepare('SELECT id FROM commission_plan_rules WHERE plan_id=? ORDER BY id LIMIT 1').get(plan.id);
+    db.prepare(`INSERT INTO commission_entries (commission_ref, plan_id, rule_id, client_id, recipient_user_id,
+      recipient_role, branch_id, team_id, marketer_id, team_lead_id, source_type, source_key, basis,
+      qualifying_amount_kobo, rate_bps, commission_kobo, status, approval_required, created_by)
+      VALUES ('AUDIT-TL-OWN', ?, ?, ?, ?, 'Team Lead', 1, ?, ?, ?, 'fixed', 'audit:tl:own', 'fixed', 10000, 0, 100, 'Calculated', 0, ?)`).run(
+      plan.id, rule.id, adaId, tl1Id, teamAlphaId, mkt1Id, tl1Id, mdId);
+  }
   const tl1 = await request('/api/commissions?limit=100', { headers: { Cookie: tl1Cookie } });
-  assert(tl1.status === 403, 'team lead commission list must be denied');
+  assert(tl1.status === 200 && Object.keys(tl1.data.entries[0] || {}).sort().join(',') === ownKeys.sort().join(','), 'team lead own commission shape incorrect');
   const bm1 = await request('/api/commissions?limit=100', { headers: { Cookie: bm1Cookie } });
-  assert(bm1.status === 403, 'branch manager commission access requires explicit grant');
+  assert(bm1.status === 200, 'branch manager own commission should be visible');
   const fin = await request('/api/commissions?limit=100', { headers: { Cookie: finCookie } });
-  assert(fin.status === 200, 'explicitly granted finance commission list expected 200');
-  assert(fin.data.entries.length > 0, 'finance should see company commissions');
+  assert(fin.status === 200 && fin.data.entries.length > 0, 'explicitly granted finance should see all commissions');
+  assert('rate_bps' in fin.data.entries[0] && 'plan_name' in fin.data.entries[0], 'full-access response is missing rate/plan fields');
+  const branches = [...new Set(fin.data.entries.map(e => e.branch_id))];
+  assert(branches.length >= 1, 'full-access user should see all branch entries');
+  const careRoleId = db.prepare("SELECT id FROM roles WHERE name='Customer Care'").get().id;
+  const careId = upsertUser('care.commission.p7@bliss.com', 'Care P7', careRoleId, 1);
+  const careCookie = await login('care.commission.p7@bliss.com');
+  const careCommission = await request('/api/commissions', { headers: { Cookie: careCookie } });
+  assert(careCommission.status === 403, 'customer care must see no commission data');
   const client = await request('/api/commissions', { headers: { Cookie: adaCookie } });
   assert(client.status === 403, 'client commission access expected 403');
-  const crossEntry = fin.data.entries[0];
-  const crossRead = await request(`/api/commissions/${crossEntry.id}`, { headers: { Cookie: bm2Cookie } });
-  assert(crossRead.status === 403, 'ungranted branch manager must not read commission detail');
+  const crossRead = await request(`/api/commissions/${fin.data.entries[0].id}`, { headers: { Cookie: bm2Cookie } });
+  assert(crossRead.status === 404, 'own-only branch manager must not read another recipient commission');
 });
 
-await test('role dashboards expose commission data only to explicitly permitted roles', async () => {
+await test('dashboards show own commission amounts without rates and full data for permitted users', async () => {
   const mkt = await request('/api/dashboard', { headers: { Cookie: mkt1Cookie } });
-  assert(mkt.status === 200 && mkt.data.commission_summary, 'dashboard should keep a zeroed commission summary shape');
-  assert(mkt.data.commission_summary.total_count === 0 && mkt.data.recent_commissions.length === 0, 'marketer dashboard leaked commission data');
+  assert(mkt.status === 200 && mkt.data.commission_summary.total_count > 0, 'marketer own commission summary missing');
+  assert(!('rate_bps' in (mkt.data.recent_commissions[0] || {})), 'marketer dashboard leaked rate fields');
+  assert('expected_kobo' in mkt.data.commission_summary, 'marketer dashboard summary missing expected amount');
   const tl = await request('/api/dashboard', { headers: { Cookie: tl1Cookie } });
-  assert(tl.data.commission_summary.total_count === 0 && tl.data.recent_commissions.length === 0, 'team lead dashboard leaked commission data');
+  assert(tl.data.commission_summary.total_count > 0 && !('rate_bps' in (tl.data.recent_commissions[0] || {})), 'team lead own commission dashboard incorrect');
   const bm = await request('/api/dashboard', { headers: { Cookie: bm1Cookie } });
-  assert(bm.data.commission_summary.total_count === 0, 'ungranted branch manager dashboard leaked commission data');
+  assert(bm.data.commission_summary && !('gross_earned_kobo' in bm.data.commission_summary), 'branch manager dashboard should be own-amount shape');
   const finance = await request('/api/dashboard', { headers: { Cookie: finCookie } });
-  assert(finance.data.commission_summary.earned_kobo > 0, 'granted finance commission summary missing');
+  assert(finance.data.commission_summary.gross_earned_kobo > 0, 'granted finance full commission summary missing');
 });
 
 await test('MD analytics include commission liabilities, category sales and refund summaries', async () => {

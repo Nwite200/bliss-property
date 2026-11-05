@@ -1173,11 +1173,13 @@ function placeholders(values) {
 async function resolvePhase6Scope(env, actor) {
   const scope = {
     role: actor.role_name,
+    actualRole: actor.actual_role_name || actor.role_name,
     actorId: actor.id,
     branchId: actor.branch_id,
     teamIds: [],
     memberIds: [actor.id],
-    teamLeadIds: []
+    teamLeadIds: [],
+    commissionAccess: canAccessCommissions(actor)
   };
   if (actor.role_name === "Team Lead") {
     const { results: teams } = await env.DB.prepare(
@@ -1283,6 +1285,42 @@ function canAccessCommissions(actor) {
   return Number(actor.commission_access || 0) === 1;
 }
 
+function canViewOwnCommission(actor) {
+  const actualRole = actor && (actor.actual_role_name || actor.role_name);
+  return ["Marketer", "Team Lead", "Project Manager", "Branch Manager"].includes(actualRole);
+}
+
+function ownCommissionEntry(entry) {
+  const earned = Number(entry.commission_kobo || 0);
+  const adjusted = Number(entry.adjusted_kobo || 0);
+  const expected = Math.max(0, earned + adjusted);
+  const paid = Number(entry.paid_kobo || 0);
+  return {
+    id: entry.id,
+    commission_ref: entry.commission_ref,
+    client_name: entry.client_name || null,
+    client_reference: entry.client_reference || null,
+    status: entry.status,
+    earned_kobo: earned,
+    expected_kobo: expected,
+    adjusted_kobo: adjusted,
+    paid_kobo: paid,
+    outstanding_kobo: Math.max(0, expected - paid),
+    created_at: entry.created_at
+  };
+}
+
+function ownCommissionSummary(entries) {
+  const list = entries || [];
+  return {
+    total_count: list.length,
+    earned_kobo: list.reduce((sum, row) => sum + Number(row.earned_kobo || 0), 0),
+    expected_kobo: list.reduce((sum, row) => sum + Number(row.expected_kobo || 0), 0),
+    paid_kobo: list.reduce((sum, row) => sum + Number(row.paid_kobo || 0), 0),
+    outstanding_kobo: list.reduce((sum, row) => sum + Number(row.outstanding_kobo || 0), 0)
+  };
+}
+
 function commissionAmount(amountKobo, rateBps) {
   if (!Number.isInteger(amountKobo) || !Number.isInteger(rateBps) || rateBps <= 0) return 0;
   // Integer basis-point rounding: half-up to the nearest kobo.
@@ -1298,18 +1336,10 @@ function commissionOutstanding(entry) {
 }
 
 function commissionScopeSql(scope, alias = "ce") {
-  if (["Managing Director", "Finance Officer"].includes(scope.role)) return { clause: "1=1", binds: [] };
-  if (scope.role === "Branch Manager") return { clause: `${alias}.branch_id = ?`, binds: [scope.branchId] };
-  if (scope.role === "Team Lead") {
-    const clauses = [`${alias}.team_lead_id = ?`];
-    const binds = [scope.actorId];
-    if (scope.teamIds.length) {
-      clauses.push(`${alias}.team_id IN (${placeholders(scope.teamIds)})`);
-      binds.push(...scope.teamIds);
-    }
-    return { clause: `(${clauses.join(" OR ")})`, binds };
+  if (scope.commissionAccess) return { clause: "1=1", binds: [] };
+  if (["Marketer", "Team Lead", "Project Manager", "Branch Manager"].includes(scope.actualRole || scope.role)) {
+    return { clause: `${alias}.recipient_user_id = ?`, binds: [scope.actorId] };
   }
-  if (scope.role === "Marketer") return { clause: `${alias}.recipient_user_id = ?`, binds: [scope.actorId] };
   return { clause: "1=0", binds: [] };
 }
 
@@ -2300,10 +2330,20 @@ async function buildAnalytics(env, actor, scope, url) {
   }
   teamRankings.sort((a, b) => b.verified_kobo - a.verified_kobo || b.contract_value_kobo - a.contract_value_kobo);
 
-  const commissionSummary = canAccessCommissions(actor)
-    ? await getCommissionSummary(env, scope)
-    : { total_count: 0, earned_kobo: 0, gross_earned_kobo: 0, draft_kobo: 0,
-        pending_approval_kobo: 0, approved_kobo: 0, paid_kobo: 0, outstanding_kobo: 0, adjusted_kobo: 0 };
+  let commissionSummary = { total_count: 0, earned_kobo: 0, gross_earned_kobo: 0, draft_kobo: 0,
+    pending_approval_kobo: 0, approved_kobo: 0, paid_kobo: 0, outstanding_kobo: 0, adjusted_kobo: 0 };
+  if (canAccessCommissions(actor)) {
+    commissionSummary = await getCommissionSummary(env, scope);
+  } else if (canViewOwnCommission(actor)) {
+    const own = await getCommissionSummary(env, scope);
+    commissionSummary = {
+      total_count: own.total_count,
+      earned_kobo: own.gross_earned_kobo,
+      expected_kobo: own.earned_kobo,
+      paid_kobo: own.paid_kobo,
+      outstanding_kobo: own.outstanding_kobo
+    };
+  }
 
   const { results: categoryClientRows } = await env.DB.prepare(`
     SELECT COALESCE(pc.name,'Uncategorised') AS category_name,
@@ -9348,7 +9388,7 @@ export default {
 
       const activityData = await queryActivities(env, scope, new URL("http://local/api/activity?limit=8"), 8);
       let recentCommissions = [];
-      if (canAccessCommissions(actor)) {
+      if (canAccessCommissions(actor) || canViewOwnCommission(actor)) {
         const commissionScope = commissionScopeSql(scope, "ce");
         const result = await env.DB.prepare(`
           SELECT ce.id, ce.commission_ref, ce.commission_kobo, ce.paid_kobo, ce.adjusted_kobo,
@@ -9362,7 +9402,9 @@ export default {
           WHERE ${commissionScope.clause}
           ORDER BY ce.created_at DESC LIMIT 8
         `).bind(...commissionScope.binds).all();
-        recentCommissions = result.results;
+        recentCommissions = canAccessCommissions(actor)
+          ? result.results
+          : result.results.map(ownCommissionEntry);
       }
       return json({
         me,
@@ -10840,33 +10882,52 @@ export default {
     if (path === "/api/commissions" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const fullAccess = canAccessCommissions(actor);
+      const ownView = !fullAccess && canViewOwnCommission(actor);
+      if (!fullAccess && !ownView) return json({ error: "Forbidden" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
-      const scoped = commissionScopeSql(scope, "ce");
-      const clauses = [scoped.clause];
-      const binds = [...scoped.binds];
-      const status = url.searchParams.get("status");
-      const planId = url.searchParams.get("plan_id");
-      const clientId = url.searchParams.get("client_id");
-      const from = dateOnly(url.searchParams.get("from"));
-      const to = dateOnly(url.searchParams.get("to"));
-      if (status) { clauses.push("ce.status=?"); binds.push(status); }
-      if (planId) { clauses.push("ce.plan_id=?"); binds.push(planId); }
-      if (clientId) { clauses.push("ce.client_id=?"); binds.push(clientId); }
-      if (["Managing Director", "Finance Officer"].includes(actor.role_name)) {
+      const clauses = [];
+      const binds = [];
+      if (fullAccess) {
+        clauses.push("1=1");
         const branchId = url.searchParams.get("branch_id");
         const teamId = url.searchParams.get("team_id");
         const marketerId = url.searchParams.get("marketer_id");
         if (branchId) { clauses.push("ce.branch_id=?"); binds.push(branchId); }
         if (teamId) { clauses.push("ce.team_id=?"); binds.push(teamId); }
         if (marketerId) { clauses.push("ce.marketer_id=?"); binds.push(marketerId); }
+      } else {
+        clauses.push("ce.recipient_user_id=?");
+        binds.push(actor.id);
       }
+      const status = url.searchParams.get("status");
+      const planId = url.searchParams.get("plan_id");
+      const clientId = url.searchParams.get("client_id");
+      const from = dateOnly(url.searchParams.get("from"));
+      const to = dateOnly(url.searchParams.get("to"));
+      if (status) { clauses.push("ce.status=?"); binds.push(status); }
+      if (planId && fullAccess) { clauses.push("ce.plan_id=?"); binds.push(planId); }
+      if (clientId) { clauses.push("ce.client_id=?"); binds.push(clientId); }
       if (from) { clauses.push("date(ce.created_at) >= date(?)"); binds.push(from); }
       if (to) { clauses.push("date(ce.created_at) <= date(?)"); binds.push(to); }
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "20", 10)));
       const offset = (page - 1) * limit;
       const whereSql = "WHERE " + clauses.join(" AND ");
+      if (!fullAccess) {
+        const { results: allOwn } = await env.DB.prepare(`
+          SELECT ce.id, ce.commission_ref, ce.commission_kobo, ce.adjusted_kobo, ce.paid_kobo,
+                 ce.status, ce.created_at, c.full_name AS client_name, c.client_reference
+          FROM commission_entries ce JOIN clients c ON c.id=ce.client_id
+          ${whereSql} ORDER BY ce.created_at DESC, ce.id DESC
+        `).bind(...binds).all();
+        const sanitized = allOwn.map(ownCommissionEntry);
+        return json({
+          entries: sanitized.slice(offset, offset + limit),
+          summary: ownCommissionSummary(sanitized),
+          pagination: { page, limit, total: sanitized.length }
+        });
+      }
       const { results: entries } = await env.DB.prepare(`
         SELECT ce.*, c.full_name AS client_name, c.client_reference,
                cp.name AS plan_name, u.full_name AS recipient_name,
@@ -10904,9 +10965,10 @@ export default {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
-      if (!canAccessCommissions(actor)) return json({ error: "Commission access is required" }, 403);
-      const scope = await resolvePhase6Scope(env, actor);
-      const scoped = commissionScopeSql(scope, "ce");
+      const fullAccess = canAccessCommissions(actor);
+      const ownView = !fullAccess && canViewOwnCommission(actor);
+      if (!fullAccess && !ownView) return json({ error: "Commission access is required" }, 403);
+      const scoped = fullAccess ? { clause: "1=1", binds: [] } : { clause: "ce.recipient_user_id = ?", binds: [actor.id] };
       const payment = await env.DB.prepare(`
         SELECT cpay.*, ce.commission_ref, ce.recipient_role, ce.commission_kobo,
                u.full_name AS recipient_name, cp.name AS plan_name,
@@ -10951,7 +11013,23 @@ export default {
     if (commissionMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const fullAccess = canAccessCommissions(actor);
+      const ownView = !fullAccess && canViewOwnCommission(actor);
+      if (!fullAccess && !ownView) return json({ error: "Forbidden" }, 403);
+      if (ownView) {
+        const own = await env.DB.prepare(`
+          SELECT ce.id, ce.commission_ref, ce.commission_kobo, ce.adjusted_kobo, ce.paid_kobo,
+                 ce.status, ce.created_at, c.full_name AS client_name, c.client_reference
+          FROM commission_entries ce JOIN clients c ON c.id=ce.client_id
+          WHERE ce.id=? AND ce.recipient_user_id=?
+        `).bind(commissionMatch[1], actor.id).first();
+        if (!own) return json({ error: "Commission not found" }, 404);
+        const payments = await env.DB.prepare(`
+          SELECT payment_ref, amount_kobo, method, external_reference, paid_at
+          FROM commission_payments WHERE entry_id=? ORDER BY paid_at DESC
+        `).bind(own.id).all();
+        return json({ entry: ownCommissionEntry(own), payments: payments.results });
+      }
       const scope = await resolvePhase6Scope(env, actor);
       const scoped = commissionScopeSql(scope, "ce");
       const entry = await env.DB.prepare(`
