@@ -254,7 +254,29 @@ There is no invitation or approval step yet.
 
 ---
 
-## 7. If a demo account fails to log in
+## 7. Install as an app (PWA)
+
+The staging site is installable on iPhone, iPad and Android.
+
+- **iPhone/iPad:** open the site in Safari → Share → **Add to Home Screen** → Add.
+- **Android:** open in Chrome → browser menu → **Install app** / **Add to Home screen**.
+- The site also shows an **Install app** / **Add to Home Screen** button when the browser supports installation.
+- Installed mode opens without browser chrome and caches the app shell for the branded offline fallback.
+- Live API data, receipts, reports and financial records are **not** cached.
+- Offline fallback: `https://bliss-property.easterntechexpo.workers.dev/offline`
+
+PWA files:
+
+- `manifest.json`
+- `sw.js`
+- `assets/js/pwa.js`
+- `assets/css/pwa` styles are injected by `pwa.js`
+- `assets/icons/icon-192.png`, `icon-512.png`, `icon-maskable-512.png`, `apple-touch-icon.png`
+- `offline.html`
+
+---
+
+## 8. If a demo account fails to log in
 
 1. Confirm `npm run dev` is running at `http://localhost:8787`.
 2. Confirm the local password from the secure handover.

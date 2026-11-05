@@ -1,10 +1,10 @@
 /* Bliss Legacy Limited — PWA service worker.
    Static assets only. API and authenticated financial data are never cached. */
-const CACHE_VERSION = "bliss-pwa-v1";
+const CACHE_VERSION = "bliss-pwa-v2";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/",
-  "/offline.html",
+  "/offline",
   "/manifest.json",
   "/assets/css/styles.css",
   "/assets/css/motion.css",
@@ -50,7 +50,7 @@ self.addEventListener("fetch", event => {
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request).catch(() =>
-        caches.match(request).then(cached => cached || caches.match("/offline.html"))
+        caches.match(request).then(cached => cached || caches.match("/offline"))
       )
     );
     return;

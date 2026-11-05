@@ -60,6 +60,8 @@ Architecture and safety
 - No Supabase, Firebase or alternative primary backend.
 - Staging deployment: https://bliss-property.easterntechexpo.workers.dev
 - Production deployment: https://bliss-legacy-limited.easterntechexpo.workers.dev
+- PWA: installable on iPhone/iPad (Safari → Share → Add to Home Screen) and Android (Chrome → Install app)
+- PWA manifest: manifest.json; service worker: sw.js; offline: offline.html
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
 - There is no separate Super Admin role; the Managing Director is the highest implemented role.

@@ -436,7 +436,7 @@ await test('PWA manifest, service worker and install flow are wired for iOS and 
   }
   const sw = readFileSync('sw.js', 'utf8');
   assert(sw.includes('/api/') && sw.includes('return;'), 'service worker must not cache API responses');
-  assert(sw.includes('/offline.html'), 'offline fallback missing');
+  assert(sw.includes('/offline'), 'offline fallback missing');
   assert(sw.includes('skipWaiting') && sw.includes('clients.claim'), 'service worker activation missing');
   const pwa = readFileSync('assets/js/pwa.js', 'utf8');
   assert(pwa.includes('navigator.serviceWorker.register("/sw.js"'), 'service worker registration missing');
