@@ -101,7 +101,20 @@ async function getSessionUser(env, request) {
     return null;
   }
   if (!row.is_active) return null;
+  // Super Admin inherits the MD business scope for existing routes, but keeps
+  // its actual role for the admin permissions API and UI.
+  row.actual_role_name = row.role_name;
+  if (row.role_name === "Super Admin") row.role_name = "Managing Director";
   return row;
+}
+
+async function roleHasPermission(env, roleId, permission) {
+  const row = await env.DB.prepare(`
+    SELECT rp.role_id FROM role_permissions rp
+    JOIN permissions p ON p.id=rp.permission_id
+    WHERE rp.role_id=? AND p.name=?
+  `).bind(roleId, permission).first();
+  return Boolean(row);
 }
 
 async function audit(env, actorId, action, targetType, targetId, metadata, branchId) {
@@ -2163,6 +2176,59 @@ async function buildClientPropertyPortfolio(env, client) {
 }
 
 // In-app Notification creation helper
+async function clientStaffRecipients(env, client) {
+  const recipients = new Set();
+  if (!client) return recipients;
+  for (const id of [client.original_marketer_id, client.team_lead_id, client.referred_by_staff_id]) {
+    if (id) recipients.add(Number(id));
+  }
+  if (client.assigned_branch_id) {
+    const { results } = await env.DB.prepare(`
+      SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+      WHERE u.is_active=1 AND r.name='Branch Manager' AND u.branch_id=?
+    `).bind(client.assigned_branch_id).all();
+    for (const row of results) recipients.add(Number(row.id));
+  }
+  return recipients;
+}
+
+async function notifyClientCreated(env, client, actorId) {
+  const recipients = await clientStaffRecipients(env, client);
+  for (const userId of recipients) {
+    if (actorId && Number(userId) === Number(actorId)) continue;
+    await createNotification(env, {
+      userId,
+      type: "client.created",
+      title: "New Client",
+      message: `${client.full_name} (${client.client_reference}) was added${client.referred_by_staff_id ? " through a staff referral" : ""}.`,
+      metadata: { client_id: client.id, client_reference: client.client_reference, branch_id: client.assigned_branch_id }
+    });
+  }
+}
+
+async function notifyPaymentVerified(env, payment, actorId) {
+  const client = await env.DB.prepare(`
+    SELECT id, client_reference, full_name, assigned_branch_id, original_marketer_id, team_lead_id, referred_by_staff_id
+    FROM clients WHERE id=?
+  `).bind(payment.client_id).first();
+  const recipients = await clientStaffRecipients(env, client);
+  const { results: finance } = await env.DB.prepare(`
+    SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+    WHERE u.is_active=1 AND r.name='Finance Officer'
+  `).all();
+  for (const row of finance) recipients.add(Number(row.id));
+  for (const userId of recipients) {
+    if (actorId && Number(userId) === Number(actorId)) continue;
+    await createNotification(env, {
+      userId,
+      type: "payment.verified",
+      title: "Payment Verified",
+      message: `${formatNGN(payment.amount_kobo || toKobo(payment.amount))} was verified for ${client ? client.full_name : "a client"} (${client ? client.client_reference : payment.transaction_ref}).`,
+      metadata: { payment_id: payment.id, transaction_ref: payment.transaction_ref, client_id: payment.client_id }
+    });
+  }
+}
+
 async function createNotification(env, { userId, clientId, type, title, message, metadata, dedupeKey }) {
   try {
     if (dedupeKey) {
@@ -2278,6 +2344,75 @@ async function dispatchPaymentReminders(env) {
         dedupeKey: `upcoming:${schedule.id}:${schedule.next_due_date}`
       });
     }
+  }
+}
+
+// Durable Object: one instance per chat room/conversation. Messages are
+// persisted in D1 and broadcast only to WebSocket clients attached to this room.
+export class ChatRoom {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
+      return new Response("Expected WebSocket upgrade", { status: 426 });
+    }
+    const userId = Number(request.headers.get("X-Bliss-User-Id"));
+    const roomId = Number(request.headers.get("X-Bliss-Room-Id"));
+    const userName = String(request.headers.get("X-Bliss-User-Name") || "Staff");
+    if (!userId || !roomId) return new Response("Unauthorized", { status: 401 });
+
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    server.serializeAttachment({ userId, roomId, userName });
+    this.state.acceptWebSocket(server);
+
+    const { results } = await this.env.DB.prepare(`
+      SELECT m.id, m.room_id, m.sender_id, m.message, m.created_at, u.full_name AS sender_name
+      FROM chat_messages m JOIN users u ON u.id=m.sender_id
+      WHERE m.room_id=? ORDER BY m.id DESC LIMIT 50
+    `).bind(roomId).all();
+    try {
+      server.send(JSON.stringify({ type: "history", messages: results.reverse() }));
+    } catch (error) {}
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(ws, rawMessage) {
+    const attachment = ws.deserializeAttachment ? ws.deserializeAttachment() : null;
+    if (!attachment || !attachment.userId || !attachment.roomId) return;
+    let payload;
+    try {
+      payload = JSON.parse(typeof rawMessage === "string" ? rawMessage : new TextDecoder().decode(rawMessage));
+    } catch (error) {
+      return;
+    }
+    const text = String(payload && payload.message || "").trim().slice(0, 2000);
+    if (!text) return;
+
+    const inserted = await this.env.DB.prepare(
+      "INSERT INTO chat_messages (room_id, sender_id, message) VALUES (?, ?, ?)"
+    ).bind(attachment.roomId, attachment.userId, text).run();
+    const row = await this.env.DB.prepare(`
+      SELECT m.id, m.room_id, m.sender_id, m.message, m.created_at, u.full_name AS sender_name
+      FROM chat_messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?
+    `).bind(inserted.meta.last_row_id).first();
+    const outbound = JSON.stringify({ type: "message", message: row });
+    for (const socket of this.state.getWebSockets()) {
+      try { socket.send(outbound); } catch (error) {}
+    }
+  }
+
+  async webSocketClose(ws) {
+    try { ws.close(); } catch (error) {}
+  }
+
+  async webSocketError(ws) {
+    try { ws.close(); } catch (error) {}
   }
 }
 
@@ -2498,6 +2633,15 @@ export default {
         message: `Your client portal account is ready. Your client reference is ${clientRef}.`,
         metadata: { client_id: clientId, client_reference: clientRef }
       });
+      await notifyClientCreated(env, {
+        id: clientId,
+        full_name: String(full_name).trim(),
+        client_reference: clientRef,
+        assigned_branch_id: resolvedBranch,
+        original_marketer_id: attribution.originalMarketerId,
+        team_lead_id: attribution.teamLeadId,
+        referred_by_staff_id: attribution.referredByStaffId
+      }, userId);
       const session = await createSession(env, userId);
       const cookie = `${SESSION_COOKIE}=${session.id}; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=${new Date(session.expires).toUTCString()}`;
       return json({
@@ -2647,6 +2791,7 @@ export default {
         email: user.email,
         full_name: user.full_name,
         role: user.role_name,
+        actual_role: user.actual_role_name || user.role_name,
         role_id: user.role_id,
         branch_id: user.branch_id,
         branch_name: staffDetails ? staffDetails.branch_name : null,
@@ -2661,6 +2806,269 @@ export default {
           : null,
         client: clientDetails
       });
+    }
+
+    // =========================================================================
+    // SUPER ADMIN — permission-guarded system administration
+    // =========================================================================
+    async function adminActor(permission) {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return { error: json({ error: "Unauthenticated" }, 401) };
+      if (!["Managing Director", "Super Admin"].includes(actor.actual_role_name || actor.role_name)) {
+        return { error: json({ error: "Forbidden" }, 403) };
+      }
+      if (!(await roleHasPermission(env, actor.role_id, permission))) {
+        return { error: json({ error: `Missing permission: ${permission}` }, 403) };
+      }
+      return { actor };
+    }
+
+    if (path === "/api/admin/overview" && request.method === "GET") {
+      const auth = await adminActor("admin.system");
+      if (auth.error) return auth.error;
+      const roles = await env.DB.prepare("SELECT id, name FROM roles ORDER BY id").all();
+      const staff = await env.DB.prepare("SELECT COUNT(*) AS c FROM users u JOIN roles r ON r.id=u.role_id WHERE r.name<>'Client' AND u.is_active=1").first();
+      const clients = await env.DB.prepare("SELECT COUNT(*) AS c FROM clients WHERE is_deleted=0").first();
+      const audit = await env.DB.prepare("SELECT COUNT(*) AS c FROM audit_logs").first();
+      return json({
+        roles: roles.results,
+        staff_count: staff ? staff.c : 0,
+        client_count: clients ? clients.c : 0,
+        audit_count: audit ? audit.c : 0,
+        actual_role: auth.actor.actual_role_name || auth.actor.role_name
+      });
+    }
+
+    if (path === "/api/admin/roles" && request.method === "GET") {
+      const auth = await adminActor("admin.roles");
+      if (auth.error) return auth.error;
+      const { results: roles } = await env.DB.prepare("SELECT id, name FROM roles ORDER BY id").all();
+      const { results: permissions } = await env.DB.prepare("SELECT id, name FROM permissions ORDER BY name").all();
+      const { results: mappings } = await env.DB.prepare(`
+        SELECT rp.role_id, p.name AS permission_name FROM role_permissions rp
+        JOIN permissions p ON p.id=rp.permission_id
+      `).all();
+      const byRole = {};
+      for (const row of mappings) {
+        if (!byRole[row.role_id]) byRole[row.role_id] = [];
+        byRole[row.role_id].push(row.permission_name);
+      }
+      return json({
+        roles: roles.map(role => ({ ...role, permissions: byRole[role.id] || [] })),
+        permissions: permissions.map(p => p.name)
+      });
+    }
+
+    const adminRolePermissionsMatch = path.match(/^\/api\/admin\/roles\/(\d+)\/permissions$/);
+    if (adminRolePermissionsMatch && request.method === "PUT") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const auth = await adminActor("admin.permissions");
+      if (auth.error) return auth.error;
+      if ((auth.actor.actual_role_name || auth.actor.role_name) !== "Super Admin") {
+        return json({ error: "Only a Super Admin can change role permissions" }, 403);
+      }
+      const roleId = Number(adminRolePermissionsMatch[1]);
+      const role = await env.DB.prepare("SELECT id, name FROM roles WHERE id=?").bind(roleId).first();
+      if (!role) return json({ error: "Role not found" }, 404);
+      if (role.name === "Super Admin") return json({ error: "The Super Admin role permissions are protected" }, 409);
+      const body = await request.json().catch(() => ({}));
+      const names = Array.isArray(body.permission_names) ? [...new Set(body.permission_names.map(String))] : null;
+      if (!names) return json({ error: "permission_names must be an array" }, 400);
+      const placeholdersSql = names.length ? names.map(() => "?").join(",") : null;
+      let permissions = [];
+      if (names.length) {
+        const rows = await env.DB.prepare(`SELECT id, name FROM permissions WHERE name IN (${placeholdersSql})`).bind(...names).all();
+        permissions = rows.results;
+        if (permissions.length !== names.length) return json({ error: "One or more permissions are invalid" }, 400);
+      }
+      await env.DB.prepare("DELETE FROM role_permissions WHERE role_id=?").bind(roleId).run();
+      for (const permission of permissions) {
+        await env.DB.prepare("INSERT INTO role_permissions (role_id, permission_id) VALUES (?,?)").bind(roleId, permission.id).run();
+      }
+      await audit(env, auth.actor.id, "admin.role.permissions", "role", String(roleId), { role: role.name, permissions: names }, auth.actor.branch_id);
+      return json({ ok: true, role_id: roleId, permissions: names });
+    }
+
+    if (path === "/api/admin/audit" && request.method === "GET") {
+      const auth = await adminActor("admin.audit");
+      if (auth.error) return auth.error;
+      const action = url.searchParams.get("action");
+      const actorId = url.searchParams.get("actor_id");
+      const dateFrom = url.searchParams.get("from");
+      const dateTo = url.searchParams.get("to");
+      const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") || "100", 10)));
+      const clauses = ["1=1"];
+      const binds = [];
+      if (action) { clauses.push("al.action LIKE ?"); binds.push(`%${action}%`); }
+      if (actorId) { clauses.push("al.actor_user_id=?"); binds.push(Number(actorId)); }
+      if (dateFrom) { clauses.push("date(al.created_at) >= date(?)"); binds.push(dateFrom); }
+      if (dateTo) { clauses.push("date(al.created_at) <= date(?)"); binds.push(dateTo); }
+      const { results } = await env.DB.prepare(`
+        SELECT al.id, al.action, al.target_type, al.target_id, al.metadata, al.created_at, al.branch_id,
+               u.full_name AS actor_name, b.name AS branch_name
+        FROM audit_logs al LEFT JOIN users u ON u.id=al.actor_user_id
+        LEFT JOIN branches b ON b.id=al.branch_id
+        WHERE ${clauses.join(" AND ")} ORDER BY al.id DESC LIMIT ?
+      `).bind(...binds, limit).all();
+      return json({ audit: results });
+    }
+
+    // Staff in-app notifications
+    if (path === "/api/staff/notifications" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const unreadOnly = url.searchParams.get("unread") === "1";
+      const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "50", 10)));
+      const clauses = ["n.user_id=?"];
+      const binds = [actor.id];
+      if (unreadOnly) clauses.push("n.is_read=0");
+      const { results } = await env.DB.prepare(`
+        SELECT n.id, n.type, n.title, n.message, n.is_read, n.metadata, n.created_at
+        FROM notifications n WHERE ${clauses.join(" AND ")}
+        ORDER BY n.created_at DESC LIMIT ?
+      `).bind(...binds, limit).all();
+      const unread = await env.DB.prepare("SELECT COUNT(*) AS c FROM notifications WHERE user_id=? AND is_read=0").bind(actor.id).first();
+      return json({
+        notifications: results.map(row => ({
+          ...row,
+          is_read: Boolean(row.is_read),
+          metadata: row.metadata ? (() => { try { return JSON.parse(row.metadata); } catch { return null; } })() : null
+        })),
+        unread_count: unread ? Number(unread.c) : 0
+      });
+    }
+
+    const staffNotificationReadMatch = path.match(/^\/api\/staff\/notifications\/(\d+)\/read$/);
+    if (staffNotificationReadMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const result = await env.DB.prepare("UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?")
+        .bind(staffNotificationReadMatch[1], actor.id).run();
+      if (!result.meta || Number(result.meta.changes) === 0) return json({ error: "Notification not found" }, 404);
+      return json({ ok: true });
+    }
+
+    if (path === "/api/staff/notifications/read-all" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      await env.DB.prepare("UPDATE notifications SET is_read=1 WHERE user_id=? AND is_read=0").bind(actor.id).run();
+      return json({ ok: true });
+    }
+
+    // Staff chat rooms and WebSocket handoff to the ChatRoom Durable Object.
+    async function chatRoomAccess(actor, roomId) {
+      const room = await env.DB.prepare("SELECT * FROM chat_rooms WHERE id=?").bind(roomId).first();
+      if (!room) return { error: json({ error: "Room not found" }, 404) };
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (["Managing Director", "Super Admin"].includes(actualRole)) return { room };
+      if (room.kind === "branch" && Number(room.branch_id) === Number(actor.branch_id)) return { room };
+      if (room.kind === "direct") {
+        const member = await env.DB.prepare("SELECT 1 AS ok FROM chat_room_members WHERE room_id=? AND user_id=?")
+          .bind(room.id, actor.id).first();
+        if (member) return { room };
+      }
+      return { error: json({ error: "Forbidden" }, 403) };
+    }
+
+    if (path === "/api/chat/rooms" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      const companyWide = ["Managing Director", "Super Admin"].includes(actualRole);
+      const branchClause = companyWide ? "1=1" : "r.kind='branch' AND r.branch_id=?";
+      const branchBinds = companyWide ? [] : [actor.branch_id];
+      const { results: rooms } = await env.DB.prepare(`
+        SELECT r.*, b.name AS branch_name,
+          (SELECT m.message FROM chat_messages m WHERE m.room_id=r.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+          (SELECT m.created_at FROM chat_messages m WHERE m.room_id=r.id ORDER BY m.id DESC LIMIT 1) AS last_message_at,
+          (SELECT u.full_name FROM chat_room_members cm JOIN users u ON u.id=cm.user_id
+             WHERE cm.room_id=r.id AND cm.user_id<>? LIMIT 1) AS direct_name
+        FROM chat_rooms r LEFT JOIN branches b ON b.id=r.branch_id
+        WHERE (${branchClause}) OR (
+          r.kind='direct' AND EXISTS (SELECT 1 FROM chat_room_members cm2 WHERE cm2.room_id=r.id AND cm2.user_id=?)
+        )
+        ORDER BY r.kind, r.name
+      `).bind(actor.id, ...branchBinds, actor.id).all();
+      return json({
+        rooms: rooms.map(room => ({
+          ...room,
+          display_name: room.kind === "direct" ? (room.direct_name || room.name) : room.name
+        }))
+      });
+    }
+
+    if (path === "/api/chat/rooms" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const targetId = Number(body.user_id || 0);
+      if (!targetId) return json({ error: "A staff member is required" }, 400);
+      if (Number(targetId) === Number(actor.id)) return json({ error: "You cannot start a chat with yourself" }, 400);
+      const target = await env.DB.prepare(`
+        SELECT u.id, u.branch_id, u.full_name, r.name AS role_name
+        FROM users u JOIN roles r ON r.id=u.role_id
+        WHERE u.id=? AND u.is_active=1 AND r.name<>'Client'
+      `).bind(targetId).first();
+      if (!target) return json({ error: "Staff member not found" }, 404);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (!["Managing Director", "Super Admin"].includes(actualRole) &&
+          Number(target.branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Cross-branch chat is restricted" }, 403);
+      }
+      const existing = await env.DB.prepare(`
+        SELECT r.id FROM chat_rooms r
+        JOIN chat_room_members a ON a.room_id=r.id AND a.user_id=?
+        JOIN chat_room_members b ON b.room_id=r.id AND b.user_id=?
+        WHERE r.kind='direct' LIMIT 1
+      `).bind(actor.id, targetId).first();
+      if (existing) return json({ ok: true, room_id: existing.id, existing: true });
+      const res = await env.DB.prepare(
+        "INSERT INTO chat_rooms (name, kind, branch_id, created_by) VALUES (?, 'direct', ?, ?)"
+      ).bind(`Direct: ${actor.full_name} / ${target.full_name}`, actor.branch_id || target.branch_id, actor.id).run();
+      const roomId = res.meta.last_row_id;
+      await env.DB.prepare("INSERT INTO chat_room_members (room_id, user_id) VALUES (?,?)").bind(roomId, actor.id).run();
+      await env.DB.prepare("INSERT INTO chat_room_members (room_id, user_id) VALUES (?,?)").bind(roomId, targetId).run();
+      await audit(env, actor.id, "chat.room.create", "chat_room", String(roomId), { target_user_id: targetId }, actor.branch_id);
+      return json({ ok: true, room_id: roomId });
+    }
+
+    const chatMessagesMatch = path.match(/^\/api\/chat\/rooms\/(\d+)\/messages$/);
+    if (chatMessagesMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const access = await chatRoomAccess(actor, chatMessagesMatch[1]);
+      if (access.error) return access.error;
+      const { results } = await env.DB.prepare(`
+        SELECT m.id, m.room_id, m.sender_id, m.message, m.created_at, u.full_name AS sender_name
+        FROM chat_messages m JOIN users u ON u.id=m.sender_id
+        WHERE m.room_id=? ORDER BY m.id DESC LIMIT 100
+      `).bind(access.room.id).all();
+      return json({ messages: results.reverse() });
+    }
+
+    const chatSocketMatch = path.match(/^\/api\/chat\/rooms\/(\d+)\/socket$/);
+    if (chatSocketMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const access = await chatRoomAccess(actor, chatSocketMatch[1]);
+      if (access.error) return access.error;
+      if (!env.CHAT_ROOM) return json({ error: "Chat is not configured" }, 503);
+      const headers = new Headers(request.headers);
+      headers.set("X-Bliss-User-Id", String(actor.id));
+      headers.set("X-Bliss-Room-Id", String(access.room.id));
+      headers.set("X-Bliss-User-Name", actor.full_name || "Staff");
+      const stub = env.CHAT_ROOM.get(env.CHAT_ROOM.idFromName("room:" + access.room.id));
+      return stub.fetch(new Request(request.url, { method: "GET", headers }));
     }
 
     // Password Reset Request
@@ -3424,6 +3832,15 @@ export default {
         referral_code: referrer ? referrer.referral_code : null,
         referred_by_staff_id: referrer ? referrer.id : null
       }, resolvedBranchId);
+      await notifyClientCreated(env, {
+        id: newId,
+        full_name,
+        client_reference: ref,
+        assigned_branch_id: resolvedBranchId,
+        original_marketer_id: actor.id,
+        team_lead_id: teamLeadId,
+        referred_by_staff_id: referrer ? referrer.id : actor.id
+      }, actor.id);
       if (env.TASKS && typeof env.TASKS.send === "function") {
         await env.TASKS.send({ type: "client.registered", client_id: newId }).catch(() => {});
       }
@@ -4691,6 +5108,7 @@ export default {
         message: `Your payment of ${formatNGN(payment.amount_kobo || toKobo(payment.amount))} has been verified. Official Receipt #${receiptRef} is now available in your Receipts tab.`,
         metadata: { payment_id: payment.id, receipt_ref: receiptRef, transaction_ref: payment.transaction_ref }
       });
+      await notifyPaymentVerified(env, payment, actor.id);
 
       return json({ ok: true, receipt_ref: receiptRef, remaining_balance_kobo: remainingKobo });
     }
@@ -5021,6 +5439,7 @@ export default {
         message: `Your ALATPay payment of ${formatNGN(amountKobo)} has been verified. Official Receipt #${receipt.receipt_ref} is now available.`,
         metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, order_id: orderId, source: "alatpay" }
       });
+      await notifyPaymentVerified(env, payment, null);
       await audit(env, null, "webhook.received", "payment", String(payment.id), {
         event_id: eventId, order_id: orderId, transaction_id: transactionId, result: "verified"
       });
@@ -5162,6 +5581,7 @@ export default {
         message: `Your payment of ${formatNGN(payment.amount_kobo || toKobo(payment.amount))} has been verified. Official Receipt #${receipt.receipt_ref} is now available.`,
         metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, transaction_ref: payment.transaction_ref, source: "webhook" }
       });
+      await notifyPaymentVerified(env, payment, null);
 
       await recordEvent("verified", payment.id);
       return json({ ok: true, status: "verified", receipt_ref: receipt.receipt_ref });
@@ -5659,9 +6079,12 @@ export default {
       const { email, password, full_name, role_name, branch_id, branch_name, phone_number, job_title, date_joined, notes, team_id } = body || {};
       if (!email || !password || !full_name || !role_name) return json({ error: "Email, password, full name and role are required" }, 400);
       if (!validPassword(password)) return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
-      const allowed = actor.role_name === "Managing Director"
-        ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer"]
-        : ["Team Lead", "Marketer", "Finance Officer"];
+      const actorActualRole = actor.actual_role_name || actor.role_name;
+      const allowed = actorActualRole === "Super Admin"
+        ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Super Admin"]
+        : actor.role_name === "Managing Director"
+          ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer"]
+          : ["Team Lead", "Marketer", "Finance Officer"];
       if (!allowed.includes(role_name)) return json({ error: "Forbidden role" }, 403);
       let resolvedBranch = branch_id || null;
       if (!resolvedBranch && branch_name) {
@@ -5769,9 +6192,11 @@ export default {
         }
       }
       const body = await request.json();
-      const allowedRoles = actor.role_name === "Managing Director"
-        ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer"]
-        : ["Team Lead", "Marketer", "Finance Officer"];
+      const allowedRoles = (actor.actual_role_name || actor.role_name) === "Super Admin"
+        ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Super Admin"]
+        : actor.role_name === "Managing Director"
+          ? ["Branch Manager", "Team Lead", "Marketer", "Finance Officer"]
+          : ["Team Lead", "Marketer", "Finance Officer"];
       const nextRoleName = body.role_name || target.role_name;
       const editingOwnMdProfile = actor.role_name === "Managing Director" && target.role_name === "Managing Director";
       if (!allowedRoles.includes(nextRoleName) && !(editingOwnMdProfile && nextRoleName === "Managing Director")) {

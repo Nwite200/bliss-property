@@ -31,6 +31,14 @@ queue = "bliss-legacy-staging-tasks"
 max_batch_size = 10
 max_batch_timeout = 5
 
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]
+
 [triggers]
 crons = ["0 6 * * *"]
 

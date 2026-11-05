@@ -37,8 +37,8 @@ Tests
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm run test:phase8  (21 tests)
-- npm test              (all suites, 130 tests)
+- npm run test:phase8  (23 tests)
+- npm test              (all suites, 132 tests)
 
 Documentation
 -------------
@@ -66,6 +66,9 @@ Architecture and safety
 - ALATPay: Worker secrets ALATPAY_SECRET_KEY and ALATPAY_BUSINESS_ID; client/staff virtual-account endpoints; webhook /api/webhooks/alatpay
 - Client onboarding: alternate phone, next-of-kin name/phone/relationship/address and staff referral code
 - Staff referrals: unique referral_code on users, referral link /signup?ref=CODE, referred clients remain visible to the referring staff member
+- Super Admin: real role, permission-guarded /api/admin routes, configurable role_permissions and admin audit console (super-admin.html)
+- Staff notifications: in-app inbox with read/unread state at staff-notifications.html
+- Staff chat: Cloudflare Durable Object ChatRoom + WebSockets, persisted to D1 chat_messages, UI at staff-chat.html
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
 - There is no separate Super Admin role; the Managing Director is the highest implemented role.

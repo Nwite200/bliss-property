@@ -108,6 +108,7 @@ const mkt2Id = upsertUser('mkt2.p8@bliss.com', 'Phase 8 Marketer Two', 'Marketer
 const mkt3Id = upsertUser('mkt3.p8@bliss.com', 'Phase 8 Ajah Marketer', 'Marketer', ajah);
 const finId = upsertUser('fin.p8@bliss.com', 'Phase 8 Finance', 'Finance Officer', headOffice);
 const clientUserId = upsertUser('client.p8@example.com', 'Phase 8 Client', 'Client', ikeja);
+const saId = upsertUser('sa.p8@bliss.com', 'Phase 8 Super Admin', 'Super Admin', headOffice);
 db.prepare("UPDATE users SET referral_code='BL-P8-MD' WHERE id=?").run(mdId);
 db.prepare("UPDATE users SET referral_code='BL-P8-MKT' WHERE id=?").run(mkt1Id);
 
@@ -196,7 +197,10 @@ const bm1Cookie = await login('bm.ikeja.p8@bliss.com');
 const bm2Cookie = await login('bm.ajah.p8@bliss.com');
 const tlCookie = await login('tl.ikeja.p8@bliss.com');
 const mkt1Cookie = await login('mkt1.p8@bliss.com');
+const mkt2Cookie = await login('mkt2.p8@bliss.com');
+const mkt3Cookie = await login('mkt3.p8@bliss.com');
 const finCookie = await login('fin.p8@bliss.com');
+const saCookie = await login('sa.p8@bliss.com');
 const clientCookie = await login('client.p8@example.com');
 
 console.log('--- 1. Authentication, sessions and CSRF ---');
@@ -523,14 +527,73 @@ await test('landing page exposes ten listings including land and demo labels', a
   assert(main.includes('isDemo ?'), 'demo listings are not labelled');
 });
 
-console.log('\n--- 5. Migration reproducibility and database integrity ---');
+console.log('\n--- 5. Super Admin, staff notifications and chat ---');
+await test('Super Admin is a real role with permission-guarded admin routes and audit access', async () => {
+  const me = await request('/api/me', { headers: { Cookie: saCookie } });
+  assert(me.status === 200 && me.data.role === 'Managing Director' && me.data.actual_role === 'Super Admin', 'Super Admin session mapping incorrect');
+  const overview = await request('/api/admin/overview', { headers: { Cookie: saCookie } });
+  assert(overview.status === 200 && overview.data.roles.some(r => r.name === 'Super Admin'), 'Super Admin overview missing role data');
+  const denied = await request('/api/admin/overview', { headers: { Cookie: mkt1Cookie } });
+  assert(denied.status === 403, 'Marketer must not access admin overview');
+  const roles = await request('/api/admin/roles', { headers: { Cookie: saCookie } });
+  assert(roles.status === 200, 'Super Admin role list expected 200');
+  const superRole = roles.data.roles.find(r => r.name === 'Super Admin');
+  assert(superRole && superRole.permissions.includes('admin.permissions'), 'Super Admin permissions seed missing');
+  const teamLeadRole = roles.data.roles.find(r => r.name === 'Team Lead');
+  const mdAttempt = await request(`/api/admin/roles/${teamLeadRole.id}/permissions`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { permission_names: ['clients.read'] }
+  });
+  assert(mdAttempt.status === 403, 'MD must not change role permissions');
+  const saAttempt = await request(`/api/admin/roles/${teamLeadRole.id}/permissions`, {
+    method: 'PUT', headers: { Cookie: saCookie }, body: { permission_names: ['clients.read', 'reports.read'] }
+  });
+  assert(saAttempt.status === 200, `Super Admin permission update expected 200, got ${saAttempt.status}: ${JSON.stringify(saAttempt.data)}`);
+  const mapping = db.prepare(`
+    SELECT p.name FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id WHERE rp.role_id=?
+  `).all(teamLeadRole.id).map(r => r.name).sort();
+  assert(mapping.join(',') === 'clients.read,reports.read', 'Role permission mapping did not persist');
+  const audit = await request('/api/admin/audit?action=admin.role.permissions&limit=10', { headers: { Cookie: saCookie } });
+  assert(audit.status === 200 && audit.data.audit.length >= 1, 'Admin audit log missing permission event');
+});
+
+await test('staff notifications have read/unread state and chat rooms are persisted', async () => {
+  const inserted = db.prepare(`
+    INSERT INTO notifications (user_id, type, title, message, is_read)
+    VALUES (?, 'payment.verified', 'Payment Verified', 'Test payment notification', 0)
+  `).run(mkt1Id);
+  const inbox = await request('/api/staff/notifications', { headers: { Cookie: mkt1Cookie } });
+  assert(inbox.status === 200, 'Staff notification inbox expected 200');
+  assert(inbox.data.notifications.some(n => n.id === Number(inserted.lastInsertRowid) && n.is_read === false), 'Unread staff notification missing');
+  const read = await request(`/api/staff/notifications/${inserted.lastInsertRowid}/read`, {
+    method: 'POST', headers: { Cookie: mkt1Cookie }, body: {}
+  });
+  assert(read.status === 200, 'Staff notification read expected 200');
+  assert(db.prepare('SELECT is_read FROM notifications WHERE id=?').get(inserted.lastInsertRowid).is_read === 1, 'Notification read state not persisted');
+  const readAll = await request('/api/staff/notifications/read-all', {
+    method: 'POST', headers: { Cookie: mkt1Cookie }, body: {}
+  });
+  assert(readAll.status === 200, 'Staff notification read-all expected 200');
+
+  const rooms = await request('/api/chat/rooms', { headers: { Cookie: saCookie } });
+  assert(rooms.status === 200 && rooms.data.rooms.some(r => r.kind === 'branch'), 'Branch chat rooms missing');
+  const direct = await request('/api/chat/rooms', {
+    method: 'POST', headers: { Cookie: saCookie }, body: { user_id: mkt1Id }
+  });
+  assert(direct.status === 200 && direct.data.room_id, 'Direct chat room creation failed');
+  const messages = await request(`/api/chat/rooms/${direct.data.room_id}/messages`, { headers: { Cookie: saCookie } });
+  assert(messages.status === 200 && Array.isArray(messages.data.messages), 'Chat message history failed');
+  const outsider = await request(`/api/chat/rooms/${direct.data.room_id}/messages`, { headers: { Cookie: mkt3Cookie } });
+  assert(outsider.status === 403, 'Non-member must not read a direct chat');
+});
+
+console.log('\n--- 6. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
   for (const suffix of ['', '-wal', '-shm']) rmSync(cleanPath + suffix, { force: true });
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 10, `expected 10 migrations, found ${files.length}`);
+  assert(files.length === 11, `expected 11 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

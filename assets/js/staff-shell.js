@@ -3,6 +3,7 @@
   const BlissStaff = window.BlissStaff = window.BlissStaff || {};
 
   BlissStaff.roles = {
+    "Super Admin": "SA",
     "Managing Director": "MD",
     "Branch Manager": "BM",
     "Team Lead": "TL",
@@ -11,7 +12,7 @@
   };
 
   BlissStaff.isStaffRole = function (role) {
-    return ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"].includes(role);
+    return ["Super Admin", "Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"].includes(role);
   };
 
   BlissStaff.fetchJson = async function (path, options = {}) {
@@ -137,20 +138,26 @@
       { href: "reports.html", label: "📄 Financial Reports", page: "reports", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
       { href: "finance-dashboard.html", label: "💳 Finance & Ledger", page: "finance", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
       { href: "provider-config.html", label: "🏦 Payment Provider", page: "provider", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
+      { section: "Communication" },
+      { href: "staff-notifications.html", label: "🔔 Notifications", page: "notifications", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "staff-chat.html", label: "💬 Staff Chat", page: "chat", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Account" },
       { href: "index.html", label: "🌐 Public Website", page: "public", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "#", label: "🚪 Logout", page: "logout", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"], id: "logoutBtn" }
     ];
-    const items = links.filter(item => !item.roles || item.roles.includes(role)).map(item => {
+    let items = links.filter(item => !item.roles || item.roles.includes(role)).map(item => {
       if (item.section) return `<div class="section-label">${item.section}</div>`;
       return `<a href="${item.href}" ${item.page === activePage ? 'class="active"' : ""} ${item.id ? `id="${item.id}"` : ""} ${item.page === "logout" ? 'style="color:#E74C3C"' : ""}>${item.label}</a>`;
     }).join("");
+    if (["Super Admin", "Managing Director"].includes(me.actual_role || role)) {
+      items += `<div class="section-label">System</div><a href="super-admin.html" class="${activePage === "super-admin" ? "active" : ""}">🛡️ System Administration</a>`;
+    }
     const scopeLabel = ["Managing Director", "Finance Officer"].includes(role)
       ? "Company-wide"
       : (me.branch_name || "Branch");
     return `
       <div class="brand"><a href="dashboard.html"><img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" onerror="this.src='bliss-legacy-logo.png'"></a></div>
-      <div style="padding:0 8px 8px;font-size:11px;color:#9FB2A3">${BlissStaff.escape(me.full_name)}<br><span style="color:#6F8575">${BlissStaff.escape(role)} · ${BlissStaff.escape(scopeLabel)}</span></div>
+      <div style="padding:0 8px 8px;font-size:11px;color:#9FB2A3">${BlissStaff.escape(me.full_name)}<br><span style="color:#6F8575">${BlissStaff.escape(me.actual_role || role)} · ${BlissStaff.escape(scopeLabel)}</span></div>
       ${items}
       <div class="sidebar-note">In-app notifications are active. Email and WhatsApp delivery adapters remain pending provider integration.</div>
     `;

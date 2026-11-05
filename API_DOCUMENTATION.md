@@ -270,7 +270,32 @@ Marketers may generate only `commission` and `commission_liability`. Team Leads 
 
 ---
 
-## 11. Common validation rules
+## 11. Super Admin, staff notifications and chat
+
+### Super Admin
+
+- `GET /api/admin/overview` — permission `admin.system`
+- `GET /api/admin/roles` — permission `admin.roles`
+- `PUT /api/admin/roles/:id/permissions` — permission `admin.permissions`; actual Super Admin only
+- `GET /api/admin/audit` — permission `admin.audit`
+
+Super Admin inherits MD business scope for backward compatibility. `/api/me` returns both `role` (effective MD) and `actual_role` (`Super Admin`).
+
+### Staff notifications
+
+- `GET /api/staff/notifications?unread=1&limit=50`
+- `POST /api/staff/notifications/:id/read`
+- `POST /api/staff/notifications/read-all`
+
+### Staff chat
+
+- `GET /api/chat/rooms`
+- `POST /api/chat/rooms` with `{ user_id }` for a direct room
+- `GET /api/chat/rooms/:id/messages`
+- `GET /api/chat/rooms/:id/socket` — WebSocket upgrade; backed by the `CHAT_ROOM` Durable Object
+- Messages are persisted in D1 `chat_messages`.
+
+## 12. Common validation rules
 
 - Password minimum: 8 characters.
 - Phone: `+0-9() -`, 7–25 characters.

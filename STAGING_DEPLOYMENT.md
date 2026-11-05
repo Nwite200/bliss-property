@@ -28,7 +28,7 @@ These are separate from the production resources. Staging is not connected to `b
 
 ## 2. Migration status
 
-All ten migrations were applied to `bliss-legacy-staging-db` only:
+All eleven migrations were applied to `bliss-legacy-staging-db` only:
 
 - `0001_auth_org.sql`
 - `0002_properties.sql`
@@ -40,6 +40,7 @@ All ten migrations were applied to `bliss-legacy-staging-db` only:
 - `0008_phase7_commissions_reports.sql`
 - `0009_client_properties.sql`
 - `0010_referrals_onboarding_alatpay.sql`
+- `0011_super_admin_notifications_chat.sql`
 
 `wrangler d1 migrations list bliss-legacy-staging-db --remote` reports no pending migrations.
 
@@ -52,8 +53,8 @@ All ten migrations were applied to `bliss-legacy-staging-db` only:
 | Phase 5 | 62 | 0 | 0 |
 | Phase 6 | 21 | 0 | 0 |
 | Phase 7 | 26 | 0 | 0 |
-| Phase 8 | 21 | 0 | 0 |
-| **Total** | **130** | **0** | **0** |
+| Phase 8 | 23 | 0 | 0 |
+| **Total** | **132** | **0** | **0** |
 
 Also passed: `node --check` for the Worker, all external JS and all test suites; inline HTML script checks; `git diff --check`.
 
@@ -160,9 +161,50 @@ Until that dashboard step is completed, Git pushes will not automatically trigge
 - New client onboarding stores alternate phone and next-of-kin name, phone, relationship and address.
 - Referred clients are visible to the referrer through the role-scoped client queries.
 
-## 9. Deployment version
+## 9. Super Admin, staff notifications and chat
 
-Current staging deployment version ID: `1090b8bc-6a85-48e2-9a71-cdf280002290`
+### Super Admin
+
+- `Super Admin` is a real role seeded by migration `0011`.
+- Existing MD-style authorisation is inherited for compatibility; the actual role is returned as `actual_role`.
+- Admin APIs are permission-guarded:
+  - `GET /api/admin/overview` — `admin.system`
+  - `GET /api/admin/roles` — `admin.roles`
+  - `PUT /api/admin/roles/:id/permissions` — `admin.permissions` + actual Super Admin
+  - `GET /api/admin/audit` — `admin.audit`
+- Permission changes are written to `role_permissions` and `audit_logs`.
+- System Administration UI: `/super-admin.html`
+
+Staging Super Admin account:
+
+```text
+staging.superadmin@blisslegacy.test
+```
+
+The temporary password is supplied only in the secure handover/final response.
+
+### Staff notifications
+
+- In-app staff inbox: `/staff-notifications.html`
+- `GET /api/staff/notifications`
+- `POST /api/staff/notifications/:id/read`
+- `POST /api/staff/notifications/read-all`
+- Read/unread state is stored in the existing `notifications` table.
+- New-client and verified-payment events notify the relevant branch manager, marketer, team lead, referrer and finance users.
+
+### Staff chat
+
+- UI: `/staff-chat.html`
+- Durable Object binding: `CHAT_ROOM` (`ChatRoom` class)
+- WebSocket route: `/api/chat/rooms/:id/socket`
+- REST fallback/history: `/api/chat/rooms`, `/api/chat/rooms/:id/messages`
+- Messages persist to D1 `chat_messages`.
+- Branch rooms are created by migration `0011`; direct rooms are created by staff.
+- Verified locally: WebSocket connected, room history loaded, message sent and persisted.
+
+## 10. Deployment version
+
+Current staging deployment version ID: `38f06740-cca2-4324-88a8-0339235743e7`
 
 ---
 

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <title>Staff Notifications | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/motion.css">
+  <script src="assets/js/intro-config.js"></script>
+  <script src="assets/js/motion.js"></script>
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Bliss Legacy">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/icons/icon-192.png">
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <div class="dash-top">
+        <div>
+          <h1>Staff Notifications</h1>
+          <p style="color:var(--muted);font-size:13px">Payments, clients, leads, commissions and staff activity assigned to you.</p>
+        </div>
+        <button class="btn btn-outline" type="button" id="markAllReadBtn">Mark all read</button>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Inbox</h3><span class="small muted" id="unreadLabel">Loading…</span></div>
+        <div id="staffNotificationList" style="margin-top:14px">
+          <div class="empty-state">Loading notifications…</div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/staff-notifications.js"></script>
+  <script src="assets/js/mobile-nav.js"></script>
+  <script src="assets/js/pwa.js"></script>
+</body>
+</html>
