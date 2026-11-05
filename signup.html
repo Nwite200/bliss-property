@@ -204,9 +204,9 @@
           btn.textContent = 'Create Account';
           return;
         }
-        msg.textContent = `Account created. Your client reference is ${data.client_reference}. Redirecting to your portal…`;
+        msg.textContent = `Account created. Your client reference is ${data.client_reference}. Verify your account to continue…`;
         msg.className = 'signup-msg success';
-        setTimeout(() => { window.location.href = '/client-dashboard.html'; }, 1200);
+        setTimeout(() => { window.location.href = '/client-verify.html'; }, 900);
       } catch {
         msg.textContent = 'Network error. Please try again.';
         msg.className = 'signup-msg error';

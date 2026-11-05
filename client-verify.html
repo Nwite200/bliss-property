@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00B522" />
+  <title>Verify Your Account | Bliss Legacy Limited</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/motion.css">
+  <script src="assets/js/intro-config.js"></script>
+  <script src="assets/js/motion.js"></script>
+  <style>
+    body { background: var(--soft); min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 30px 16px; }
+    .verify-card { width: 100%; max-width: 480px; background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 28px; box-shadow: var(--shadow-md); }
+    .verify-logo { width: 170px; display: block; margin: 0 auto 14px; }
+    .verify-title { text-align: center; font-size: 23px; font-weight: 800; }
+    .verify-sub { text-align: center; color: var(--muted); font-size: 13px; margin: 6px 0 20px; line-height: 1.5; }
+    .code-input { font-family: 'Space Mono', monospace; font-size: 22px; letter-spacing: 8px; text-align: center; }
+    .verify-msg { font-size: 12px; margin-top: 10px; min-height: 18px; }
+    .verify-msg.error { color: #B91C1C; }
+    .verify-msg.success { color: var(--green-dark); }
+  </style>
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Bliss Legacy">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/icons/icon-192.png">
+</head>
+<body>
+  <div class="verify-card">
+    <img class="verify-logo" src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" onerror="this.src='bliss-legacy-logo.png'">
+    <div class="verify-title">Verify your account</div>
+    <p class="verify-sub" id="verifySub">We will send a 6-digit code to confirm this client account is real.</p>
+
+    <div id="verifiedState" style="display:none">
+      <div class="route-note" style="margin-bottom:16px">Your account is already verified.</div>
+      <a class="btn btn-green btn-block" href="client-dashboard.html">Go to my dashboard</a>
+    </div>
+
+    <div id="verifyFormWrap">
+      <div class="field-group">
+        <label class="field-label">Send code by</label>
+        <select class="field-input" id="verifyChannel">
+          <option value="sms">Phone SMS</option>
+          <option value="email">Email</option>
+        </select>
+      </div>
+      <button class="btn btn-green btn-block" type="button" id="sendOtpBtn">Send verification code</button>
+      <div class="small muted" id="otpStatus" style="margin-top:8px"></div>
+
+      <div style="margin-top:18px">
+        <label class="field-label" for="otpCode">Enter the 6-digit code</label>
+        <input class="field-input code-input" id="otpCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+      </div>
+      <button class="btn btn-green btn-block mt-16" type="button" id="verifyOtpBtn">Verify account</button>
+      <div class="verify-msg" id="verifyMsg"></div>
+      <div style="text-align:center;margin-top:14px">
+        <a class="small muted" href="client-dashboard.html">Skip for now</a>
+      </div>
+    </div>
+  </div>
+  <script>
+    const msg = document.getElementById('verifyMsg');
+    const otpStatus = document.getElementById('otpStatus');
+    let state = null;
+    async function api(path, options = {}) {
+      const res = await fetch(path, { credentials: 'include', ...options });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    }
+    async function load() {
+      try {
+        state = await api('/api/client/verification');
+      } catch (error) {
+        msg.textContent = 'Please sign in to verify your account.';
+        msg.className = 'verify-msg error';
+        return;
+      }
+      if (state.verification_status === 'verified') {
+        document.getElementById('verifiedState').style.display = 'block';
+        document.getElementById('verifyFormWrap').style.display = 'none';
+        document.getElementById('verifySub').textContent = 'This client account is verified.';
+        return;
+      }
+      const channel = document.getElementById('verifyChannel');
+      const emailOption = channel.querySelector('option[value="email"]');
+      const smsOption = channel.querySelector('option[value="sms"]');
+      emailOption.disabled = !(state.has_email && state.email_ready);
+      smsOption.disabled = !(state.has_phone && state.sms_ready);
+      if (emailOption.disabled && smsOption.disabled) {
+        otpStatus.textContent = 'No delivery channel is configured yet. Please contact Bliss Legacy.';
+        document.getElementById('sendOtpBtn').disabled = true;
+      } else if (!smsOption.disabled) {
+        channel.value = 'sms';
+      } else {
+        channel.value = 'email';
+      }
+      if (state.active_otp) {
+        otpStatus.textContent = `Code sent to ${state.active_otp.destination} (${state.active_otp.channel}).`;
+      }
+    }
+    document.getElementById('sendOtpBtn').addEventListener('click', async () => {
+      msg.textContent = ''; msg.className = 'verify-msg';
+      const button = document.getElementById('sendOtpBtn');
+      button.disabled = true;
+      try {
+        const result = await api('/api/client/verification/send', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel: document.getElementById('verifyChannel').value })
+        });
+        otpStatus.textContent = `Code sent to ${result.destination} (${result.channel}).`;
+        msg.textContent = 'Verification code sent.';
+        msg.className = 'verify-msg success';
+      } catch (error) {
+        msg.textContent = error.message;
+        msg.className = 'verify-msg error';
+      } finally {
+        button.disabled = false;
+      }
+    });
+    document.getElementById('verifyOtpBtn').addEventListener('click', async () => {
+      msg.textContent = ''; msg.className = 'verify-msg';
+      try {
+        await api('/api/client/verification/verify', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: document.getElementById('otpCode').value.trim() })
+        });
+        msg.textContent = 'Account verified. Redirecting…';
+        msg.className = 'verify-msg success';
+        setTimeout(() => { window.location.href = 'client-dashboard.html'; }, 900);
+      } catch (error) {
+        msg.textContent = error.message;
+        msg.className = 'verify-msg error';
+      }
+    });
+    load();
+  </script>
+  <script src="assets/js/mobile-nav.js"></script>
+  <script src="assets/js/pwa.js"></script>
+</body>
+</html>

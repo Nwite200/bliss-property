@@ -28,7 +28,7 @@ These are separate from the production resources. Staging is not connected to `b
 
 ## 2. Migration status
 
-All fourteen migrations were applied to `bliss-legacy-staging-db` only:
+All fifteen migrations were applied to `bliss-legacy-staging-db` only:
 
 - `0001_auth_org.sql`
 - `0002_properties.sql`
@@ -44,6 +44,7 @@ All fourteen migrations were applied to `bliss-legacy-staging-db` only:
 - `0012_revenue_hierarchy_attribution.sql`
 - `0013_plans_defaulting_inspections_commissions_providers.sql`
 - `0014_property_plans_customer_care_sms_leads.sql`
+- `0015_client_onboarding_otp.sql`
 
 `wrangler d1 migrations list bliss-legacy-staging-db --remote` reports no pending migrations.
 
@@ -56,8 +57,8 @@ All fourteen migrations were applied to `bliss-legacy-staging-db` only:
 | Phase 5 | 62 | 0 | 0 |
 | Phase 6 | 21 | 0 | 0 |
 | Phase 7 | 26 | 0 | 0 |
-| Phase 8 | 33 | 0 | 0 |
-| **Total** | **142** | **0** | **0** |
+| Phase 8 | 35 | 0 | 0 |
+| **Total** | **144** | **0** | **0** |
 
 Also passed: `node --check` for the Worker, all external JS and all test suites; inline HTML script checks; `git diff --check`.
 
@@ -278,9 +279,18 @@ The Super Admin temporary password is supplied only in the secure handover/final
   and required lost reason.
 - See `SMS_PROVIDER_SETUP.md` for SMS account and secret setup.
 
-## 13. Deployment version
+## 13. Client onboarding OTP
 
-Current staging deployment version ID: `32e681e9-f606-4933-a608-01a71c7846e7`
+- New clients start `unverified`; existing clients were backfilled `verified`.
+- Staff onboarding auto-sends a 6-digit code to email (if configured) or SMS.
+- Public signup redirects to `client-verify.html`.
+- Staff can resend and verify from the client detail page.
+- Codes expire in 10 minutes, allow five attempts and are stored hashed.
+- See `CLIENT_OTP_VERIFICATION.md` for email/SMS provider setup.
+
+## 14. Deployment version
+
+Current staging deployment version ID: `e53ce588-a1a1-443c-b800-539100bb6be1`
 
 ---
 

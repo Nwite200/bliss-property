@@ -44,6 +44,8 @@ This is an honest list of what the current implementation does **not** provide. 
 10. Property payment plans support enabled/disabled catalogues and lock purchase terms at onboarding. Editing a property plan does not migrate existing clients; this is intentional.
 11. SMS delivery is adapter-based. Termii is the first production adapter; Africa's Talking is registered as an alternative. Delivery receipts from the provider are not yet ingested, so `delivered` is currently confirmed only by the mock adapter.
 12. Customer Care uses a dedicated dashboard and only branch/national client-care scope. It has no commission, lead or finance access.
+13. Client OTP verification marks trust status but does not currently block portal access. Login/payment access remains available to unverified clients.
+14. Email OTP delivery uses the Resend adapter only; another email provider needs a new adapter and secrets.
 
 ---
 

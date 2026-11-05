@@ -3358,6 +3358,241 @@ async function sendAccountCreatedSms(env, clientId, actorId) {
   });
 }
 
+function emailProviderName(env) {
+  return String(env.EMAIL_PROVIDER || "resend").toLowerCase();
+}
+
+function emailProviderReady(env) {
+  const provider = emailProviderName(env);
+  if (provider === "mock") return String(env.ENVIRONMENT || "").toLowerCase() !== "production";
+  if (provider === "resend") return Boolean(env.RESEND_API_KEY && (env.EMAIL_FROM || env.RESEND_FROM));
+  return false;
+}
+
+async function sendEmailThroughProvider(env, to, subject, text) {
+  const provider = emailProviderName(env);
+  const recipient = String(to || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) throw Object.assign(new Error("Invalid email recipient"), { status: 400 });
+  if (provider === "mock") {
+    if (String(env.ENVIRONMENT || "").toLowerCase() === "production") {
+      throw Object.assign(new Error("Mock email adapter is disabled in production"), { permanent: true });
+    }
+    return { provider: "mock", providerMessageId: "mock-email-" + crypto.randomUUID() };
+  }
+  if (provider === "resend") {
+    if (!env.RESEND_API_KEY || !(env.EMAIL_FROM || env.RESEND_FROM)) {
+      throw Object.assign(new Error("RESEND_API_KEY and EMAIL_FROM are not configured"), { permanent: true });
+    }
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: env.EMAIL_FROM || env.RESEND_FROM,
+        to: [recipient],
+        subject: String(subject || "Bliss Legacy verification").slice(0, 180),
+        text: String(text || "").slice(0, 4000)
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `Email provider failed (${response.status})`);
+    return { provider: "resend", providerMessageId: data.id || null };
+  }
+  throw Object.assign(new Error(`Unknown email provider '${provider}'`), { permanent: true });
+}
+
+function generateOtpCode() {
+  const value = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
+  return String(value).padStart(6, "0");
+}
+
+async function hashOtpCode(code, salt) {
+  const bytes = new TextEncoder().encode(`${salt}:${code}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function maskDestination(channel, destination) {
+  const value = String(destination || "");
+  if (channel === "email") {
+    const [name, domain] = value.split("@");
+    if (!domain) return value;
+    return `${name.slice(0, 2)}***@${domain}`;
+  }
+  return value.length > 6 ? `${value.slice(0, 4)}***${value.slice(-3)}` : value;
+}
+
+async function createClientVerificationOtp(env, client, requestedChannel, actorId) {
+  let channel = String(requestedChannel || "").toLowerCase();
+  if (!["email", "sms"].includes(channel)) {
+    if (emailProviderReady(env) && client.email_address) channel = "email";
+    else channel = "sms";
+  }
+  const destination = channel === "email"
+    ? String(client.email_address || "").trim().toLowerCase()
+    : normalizeNigerianPhone(client.phone_number);
+  if (!destination) {
+    throw Object.assign(new Error(channel === "email" ? "This client has no valid email address" : "This client has no valid Nigerian phone number"), { status: 400 });
+  }
+  const recent = await env.DB.prepare(`
+    SELECT COUNT(*) AS c FROM client_verification_otps
+    WHERE client_id=? AND created_at >= datetime('now','-15 minutes')
+  `).bind(client.id).first();
+  if (Number(recent ? recent.c : 0) >= 5) {
+    throw Object.assign(new Error("Too many verification codes requested. Try again in 15 minutes."), { status: 429 });
+  }
+  await env.DB.prepare(`
+    UPDATE client_verification_otps SET consumed_at=datetime('now')
+    WHERE client_id=? AND consumed_at IS NULL
+  `).bind(client.id).run();
+  const code = generateOtpCode();
+  const salt = crypto.randomUUID();
+  const codeHash = await hashOtpCode(code, salt);
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const res = await env.DB.prepare(`
+    INSERT INTO client_verification_otps
+      (client_id, channel, destination, code_salt, code_hash, expires_at, delivery_status, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
+  `).bind(client.id, channel, destination, salt, codeHash, expiresAt, actorId || null).run();
+  const otpId = res.meta.last_row_id;
+  let deliveryStatus = "queued";
+  let providerMessageId = null;
+  let error = null;
+  try {
+    if (channel === "email") {
+      const result = await sendEmailThroughProvider(
+        env, destination, "Your Bliss Legacy verification code",
+        `Hello ${client.full_name || "Client"},\n\nYour Bliss Legacy verification code is ${code}.\nIt expires in 10 minutes. Do not share this code.\n\nBliss Legacy Limited`
+      );
+      deliveryStatus = "sent";
+      providerMessageId = result.providerMessageId || null;
+    } else {
+      const template = await getSmsTemplate(env, "client_verification_otp");
+      const body = renderSmsTemplate(template ? template.body : "Your Bliss Legacy verification code is {code}. It expires in 10 minutes.", { code });
+      const queued = await enqueueSms(env, {
+        clientId: client.id,
+        templateKey: "client_verification_otp",
+        phone: destination,
+        body,
+        idempotencyKey: `otp:${otpId}:client_verification_otp`,
+        createdBy: actorId || null
+      });
+      if (queued.skipped) {
+        deliveryStatus = "failed";
+        error = queued.reason === "disabled" ? "SMS is disabled globally" : (queued.reason || "SMS delivery is not available");
+      } else {
+        deliveryStatus = "sent";
+        providerMessageId = queued.id ? String(queued.id) : null;
+      }
+    }
+  } catch (sendError) {
+    deliveryStatus = "failed";
+    error = String(sendError.message || "Delivery failed").slice(0, 500);
+  }
+  await env.DB.prepare(`
+    UPDATE client_verification_otps SET delivery_status=?, provider_message_id=?, error=?, last_sent_at=datetime('now')
+    WHERE id=?
+  `).bind(deliveryStatus, providerMessageId, error, otpId).run();
+  if (deliveryStatus === "failed") {
+    throw Object.assign(new Error(error || "Unable to send the verification code"), { status: 503, otp_id: otpId });
+  }
+  await env.DB.prepare(`
+    UPDATE clients SET verification_status='unverified', verification_channel=?, verification_sent_at=datetime('now')
+    WHERE id=?
+  `).bind(channel, client.id).run();
+  await audit(env, actorId || null, "client.verification.sent", "client", String(client.id), {
+    channel, destination_masked: maskDestination(channel, destination), otp_id: otpId
+  }, client.assigned_branch_id);
+  return {
+    ok: true,
+    otp_id: otpId,
+    channel,
+    destination: maskDestination(channel, destination),
+    expires_at: expiresAt,
+    delivery_status: deliveryStatus
+  };
+}
+
+async function verifyClientVerificationOtp(env, clientId, code, actorId) {
+  const cleaned = String(code || "").replace(/\D/g, "");
+  if (!/^\d{6}$/.test(cleaned)) throw Object.assign(new Error("Enter the 6-digit verification code"), { status: 400 });
+  const otp = await env.DB.prepare(`
+    SELECT * FROM client_verification_otps
+    WHERE client_id=? AND consumed_at IS NULL
+    ORDER BY id DESC LIMIT 1
+  `).bind(clientId).first();
+  if (!otp) throw Object.assign(new Error("No active verification code. Request a new one."), { status: 404 });
+  if (parseDbDate(otp.expires_at) < new Date()) {
+    throw Object.assign(new Error("The verification code has expired. Request a new one."), { status: 410 });
+  }
+  if (Number(otp.attempts || 0) >= Number(otp.max_attempts || 5)) {
+    throw Object.assign(new Error("Too many incorrect attempts. Request a new code."), { status: 429 });
+  }
+  const candidate = await hashOtpCode(cleaned, otp.code_salt);
+  if (!secureCompare(candidate, otp.code_hash)) {
+    await env.DB.prepare("UPDATE client_verification_otps SET attempts=attempts+1 WHERE id=?").bind(otp.id).run();
+    throw Object.assign(new Error("Incorrect verification code"), { status: 400 });
+  }
+  await env.DB.prepare("UPDATE client_verification_otps SET consumed_at=datetime('now') WHERE id=?").bind(otp.id).run();
+  await env.DB.prepare(`
+    UPDATE clients SET verification_status='verified', verification_channel=?, verified_at=datetime('now'), updated_at=datetime('now')
+    WHERE id=?
+  `).bind(otp.channel, clientId).run();
+  await audit(env, actorId || null, "client.verification.verified", "client", String(clientId), {
+    channel: otp.channel, otp_id: otp.id
+  }, null);
+  return { ok: true, verification_status: "verified", channel: otp.channel };
+}
+
+async function getClientVerificationState(env, clientId) {
+  const client = await env.DB.prepare(`
+    SELECT id, client_reference, full_name, email_address, phone_number, verification_status,
+           verification_channel, verification_sent_at, verified_at
+    FROM clients WHERE id=?
+  `).bind(clientId).first();
+  if (!client) return null;
+  const smsSettings = await getSmsSettings(env);
+  const smsReady = smsSettings.enabled && (
+    smsSettings.provider === "mock"
+      || (smsSettings.provider === "termii" && Boolean(env.TERMII_API_KEY))
+      || (smsSettings.provider === "africastalking" && Boolean(env.AFRICASTALKING_API_KEY && env.AFRICASTALKING_USERNAME))
+  );
+  const otp = await env.DB.prepare(`
+    SELECT channel, destination, expires_at, delivery_status, created_at
+    FROM client_verification_otps
+    WHERE client_id=? AND consumed_at IS NULL AND expires_at > datetime('now')
+    ORDER BY id DESC LIMIT 1
+  `).bind(clientId).first();
+  return {
+    verification_status: client.verification_status || "unverified",
+    verification_channel: client.verification_channel || null,
+    verification_sent_at: client.verification_sent_at || null,
+    verified_at: client.verified_at || null,
+    has_email: Boolean(client.email_address),
+    has_phone: Boolean(normalizeNigerianPhone(client.phone_number)),
+    email_ready: emailProviderReady(env),
+    sms_ready: smsReady,
+    active_otp: otp ? {
+      channel: otp.channel,
+      destination: maskDestination(otp.channel, otp.destination),
+      expires_at: otp.expires_at,
+      delivery_status: otp.delivery_status,
+      created_at: otp.created_at
+    } : null
+  };
+}
+
+async function autoSendClientVerification(env, client, actorId) {
+  try {
+    return await createClientVerificationOtp(env, client, null, actorId);
+  } catch (error) {
+    return { ok: false, error: error.message || "Unable to send verification code" };
+  }
+}
+
+
 async function checkSmsLowBalance(env, settingsOverride) {
   const settings = settingsOverride || await getSmsSettings(env);
   if (settings.creditBalance === null || !Number.isFinite(Number(settings.creditBalance))) return { skipped: true };
@@ -3818,12 +4053,20 @@ export default {
         referred_by_staff_id: attribution.referredByStaffId
       }, userId);
       await sendAccountCreatedSms(env, clientId, userId);
+      const verification = await autoSendClientVerification(env, {
+        id: clientId,
+        full_name: String(full_name).trim(),
+        phone_number: normalizedPhone,
+        email_address: normalizedEmail,
+        assigned_branch_id: resolvedBranch
+      }, userId);
       const session = await createSession(env, userId);
       const cookie = `${SESSION_COOKIE}=${session.id}; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=${new Date(session.expires).toUTCString()}`;
       return json({
         ok: true,
         client_id: clientId,
         client_reference: clientRef,
+        verification,
         user: { id: userId, email: normalizedEmail, full_name: String(full_name).trim(), role: "Client" }
       }, 200, { "Set-Cookie": cookie });
     }
@@ -5140,14 +5383,71 @@ export default {
         referred_by_staff_id: referrer ? referrer.id : actor.id
       }, actor.id);
       await sendAccountCreatedSms(env, newId, actor.id);
+      const verification = await autoSendClientVerification(env, {
+        id: newId,
+        full_name,
+        phone_number: normalizedPhone,
+        email_address: email_address || null,
+        assigned_branch_id: resolvedBranchId
+      }, actor.id);
       if (env.TASKS && typeof env.TASKS.send === "function") {
         await env.TASKS.send({ type: "client.registered", client_id: newId }).catch(() => {});
       }
 
-      return json({ ok: true, id: newId, client_reference: ref, schedule_id: createdScheduleId });
+      return json({ ok: true, id: newId, client_reference: ref, schedule_id: createdScheduleId, verification });
     }
 
     // ---- Client details (Phase 4) ----
+    // ---- Client OTP verification (staff-assisted onboarding) ----
+    const clientVerificationMatch = path.match(/^\/api\/clients\/(\d+)\/verification(?:\/(send|verify))?$/);
+    if (clientVerificationMatch) {
+      if (clientVerificationMatch[2] && request.method === "POST" && !csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
+      const client = await env.DB.prepare(`
+        SELECT c.id, c.client_reference, c.full_name, c.phone_number, c.email_address,
+               c.assigned_branch_id, c.team_lead_id, c.created_by, c.original_marketer_id,
+               c.referred_by_staff_id, c.verification_status, c.verification_channel,
+               c.verification_sent_at, c.verified_at,
+               (SELECT ca.relationship_manager_id FROM client_assignments ca
+                 WHERE ca.client_id=c.id AND ca.is_primary=1 ORDER BY ca.assigned_at DESC LIMIT 1) AS current_relationship_manager_id
+        FROM clients c WHERE c.id=? AND c.is_deleted=0
+      `).bind(clientVerificationMatch[1]).first();
+      if (!client || !canManageClient(actor, client)) return json({ error: "Client not found" }, 404);
+      if (request.method === "GET") {
+        const state = await getClientVerificationState(env, client.id);
+        return json({ ok: true, client_id: client.id, ...state });
+      }
+      if (request.method === "POST" && clientVerificationMatch[2] === "send") {
+        const body = await request.json().catch(() => ({}));
+        try {
+          const result = await createClientVerificationOtp(env, client, body.channel, actor.id);
+          return json({ ok: true, client_id: client.id, ...result });
+        } catch (error) {
+          return json({ error: error.message || "Unable to send verification code" }, error.status || 500);
+        }
+      }
+      if (request.method === "POST" && clientVerificationMatch[2] === "verify") {
+        const body = await request.json().catch(() => ({}));
+        try {
+          const result = await verifyClientVerificationOtp(env, client.id, body.code, actor.id);
+          await createNotification(env, {
+            clientId: client.id,
+            type: "client.verified",
+            title: "Account Verified",
+            message: "Your client account has been verified. Thank you.",
+            metadata: { client_id: client.id, channel: result.channel }
+          });
+          return json({ ok: true, client_id: client.id, ...result });
+        } catch (error) {
+          return json({ error: error.message || "Unable to verify code" }, error.status || 400);
+        }
+      }
+      return json({ error: "Method not allowed" }, 405);
+    }
+
+
     const clientDetailMatch = path.match(/^\/api\/clients\/(\d+)$/);
     if (clientDetailMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
@@ -5483,6 +5783,46 @@ export default {
     // =========================================================================
 
     // 2. Client Dashboard
+    // ---- Client self-service OTP verification ----
+    if ((path === "/api/client/verification" || path === "/api/client/verification/send" || path === "/api/client/verification/verify")) {
+      const actor = await getSessionUser(env, request);
+      if (!actor || actor.role_name !== "Client") return json({ error: "Forbidden" }, 403);
+      const client = await getClientForActor(env, actor);
+      if (!client) return json({ error: "Client record not found" }, 404);
+      if (path === "/api/client/verification" && request.method === "GET") {
+        const state = await getClientVerificationState(env, client.id);
+        return json({ ok: true, client_id: client.id, ...state });
+      }
+      if (path === "/api/client/verification/send" && request.method === "POST") {
+        if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+        const body = await request.json().catch(() => ({}));
+        try {
+          const result = await createClientVerificationOtp(env, client, body.channel, actor.id);
+          return json({ ok: true, client_id: client.id, ...result });
+        } catch (error) {
+          return json({ error: error.message || "Unable to send verification code" }, error.status || 500);
+        }
+      }
+      if (path === "/api/client/verification/verify" && request.method === "POST") {
+        if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+        const body = await request.json().catch(() => ({}));
+        try {
+          const result = await verifyClientVerificationOtp(env, client.id, body.code, actor.id);
+          await createNotification(env, {
+            clientId: client.id,
+            type: "client.verified",
+            title: "Account Verified",
+            message: "Your client account has been verified. Thank you.",
+            metadata: { client_id: client.id, channel: result.channel }
+          });
+          return json({ ok: true, client_id: client.id, ...result });
+        } catch (error) {
+          return json({ error: error.message || "Unable to verify code" }, error.status || 400);
+        }
+      }
+      return json({ error: "Method not allowed" }, 405);
+    }
+
     if (path === "/api/client/dashboard" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
@@ -9748,7 +10088,14 @@ export default {
         metadata: { lead_id: lead.id, client_id: clientId, client_reference: ref }
       });
       await sendAccountCreatedSms(env, clientId, actor.id);
-      return json({ ok: true, client_id: clientId, client_reference: ref, schedule_id: conversionScheduleId });
+      const verification = await autoSendClientVerification(env, {
+        id: clientId,
+        full_name: lead.full_name,
+        phone_number: normalizeNigerianPhone(lead.phone_number) || lead.phone_number,
+        email_address: lead.email_address || null,
+        assigned_branch_id: lead.branch_id
+      }, actor.id);
+      return json({ ok: true, client_id: clientId, client_reference: ref, schedule_id: conversionScheduleId, verification });
     }
 
     // =========================================================================

@@ -388,6 +388,16 @@
         </div>
       </div>
 
+      <div class="card" id="verificationBanner" style="display:none;border-left:4px solid #F0C34B;margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <div>
+            <strong>Verify your account</strong>
+            <div class="small muted" style="margin-top:3px">Confirm your phone or email with a 6-digit code so Bliss Legacy knows this account is real.</div>
+          </div>
+          <a class="btn btn-green btn-sm" href="client-verify.html">Verify now</a>
+        </div>
+      </div>
+
       <!-- Financial KPI Summary Cards -->
       <div class="financial-kpi-grid">
         <div class="finance-kpi-card">
@@ -640,6 +650,14 @@
       } catch (err) {
         window.location.href = '/client-login.html';
       }
+
+      // Account verification banner
+      try {
+        const verification = await fetch('/api/client/verification', { credentials: 'include' }).then(r => r.ok ? r.json() : null);
+        if (verification && verification.verification_status !== 'verified') {
+          document.getElementById('verificationBanner').style.display = '';
+        }
+      } catch { /* optional */ }
 
       // Logout handler
       document.getElementById('logoutBtn').addEventListener('click', async (e) => {

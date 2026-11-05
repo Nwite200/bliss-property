@@ -423,7 +423,23 @@ See `SMS_PROVIDER_SETUP.md`.
 - `POST /api/leads/:id/status` with `status: "Lost"` requires `lost_reason`.
 - `GET /api/leads?temperature=Hot` and the list response's `temperature_counts` support temperature filters and counts.
 
-## 20. Common validation rules
+## 20. Client onboarding OTP
+
+- `GET /api/clients/:id/verification` — staff read verification state.
+- `POST /api/clients/:id/verification/send` — staff send a code (`channel: email|sms`).
+- `POST /api/clients/:id/verification/verify` — staff verify a client code.
+- `GET /api/client/verification` — logged-in client reads own state.
+- `POST /api/client/verification/send` — client requests a code.
+- `POST /api/client/verification/verify` — client verifies own account.
+
+Codes are 6 digits, expire in 10 minutes, allow five attempts and are stored
+hashed in `client_verification_otps`. New clients are `unverified`; successful
+verification records `verified_at` and the channel. Existing clients were
+backfilled as verified. Email uses the Resend adapter (`RESEND_API_KEY`,
+`EMAIL_FROM`); SMS uses the existing SMS provider. See
+`CLIENT_OTP_VERIFICATION.md`.
+
+## 21. Common validation rules
 
 - Password minimum: 8 characters.
 - Phone: `+0-9() -`, 7–25 characters.
@@ -437,7 +453,7 @@ See `SMS_PROVIDER_SETUP.md`.
 
 ---
 
-## 21. Known API gaps
+## 22. Known API gaps
 
 - No client transaction-statement PDF endpoint.
 - No team-performance or customer-performance report type.

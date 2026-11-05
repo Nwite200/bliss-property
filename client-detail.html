@@ -76,6 +76,18 @@
         </div>
       </div>
 
+      <div class="card" style="max-width:800px;margin-top:18px" id="clientVerificationCard">
+        <div class="card-head"><h3>Client verification (OTP)</h3><span id="verificationStatus"></span></div>
+        <p class="small muted">Confirm the client is real by sending a 6-digit code to their phone or email. The client reads the code back to staff for verification.</p>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="verificationChannel">Send code by</label><select class="field-input" id="verificationChannel"><option value="sms">Phone SMS</option><option value="email">Email</option></select></div>
+          <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-green" type="button" id="sendVerificationBtn">Send verification code</button></div>
+          <div class="field-group"><label class="field-label" for="verificationCode">Client's 6-digit code</label><input class="field-input" id="verificationCode" inputmode="numeric" maxlength="6" placeholder="000000"></div>
+          <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-green" type="button" id="verifyClientBtn">Verify client</button></div>
+        </div>
+        <div class="small muted" id="verificationMessage"></div>
+      </div>
+
       <div class="card" style="max-width:800px;margin-top:18px">
         <div class="card-head"><h3>Payment plan</h3><span class="small muted" id="planStatus"></span></div>
         <div id="paymentPlan" style="font-size:13px;color:var(--muted)">Loading payment plan…</div>

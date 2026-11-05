@@ -155,6 +155,53 @@ async function load() {
     el.innerHTML = data.notes.map(n => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="font-size:11px;color:var(--muted)">${new Date(n.created_at).toLocaleString()}</div><div style="padding-left:12px">${esc(n.note)}</div></div>`).join("");
   }
 
+  async function loadClientVerification() {
+    const card = document.getElementById("clientVerificationCard");
+    if (!card) return;
+    const data = await fetchJson("/clients/" + id + "/verification");
+    if (!data.ok) { card.style.display = "none"; return; }
+    const state = data.data;
+    const statusEl = document.getElementById("verificationStatus");
+    const msg = document.getElementById("verificationMessage");
+    statusEl.innerHTML = state.verification_status === "verified"
+      ? '<span class="badge badge-green">Verified</span>'
+      : '<span class="badge badge-amber">Unverified</span>';
+    const channel = document.getElementById("verificationChannel");
+    channel.querySelector('option[value="email"]').disabled = !(state.has_email && state.email_ready);
+    channel.querySelector('option[value="sms"]').disabled = !(state.has_phone && state.sms_ready);
+    if (!channel.querySelector('option[value="sms"]').disabled) channel.value = "sms";
+    else if (!channel.querySelector('option[value="email"]').disabled) channel.value = "email";
+    if (state.verification_status === "verified") {
+      msg.textContent = `Verified ${state.verified_at ? new Date(state.verified_at).toLocaleString() : ""} via ${state.verification_channel || "OTP"}.`;
+      document.getElementById("sendVerificationBtn").disabled = true;
+      document.getElementById("verifyClientBtn").disabled = true;
+      document.getElementById("verificationCode").disabled = true;
+      return;
+    }
+    msg.textContent = state.active_otp
+      ? `Code sent to ${state.active_otp.destination} via ${state.active_otp.channel}.`
+      : "No active code. Send one to the client.";
+    document.getElementById("sendVerificationBtn").onclick = async () => {
+      msg.textContent = "Sending…";
+      const result = await fetchJson("/clients/" + id + "/verification/send", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: channel.value })
+      });
+      if (!result.ok) { msg.textContent = result.data.error || "Unable to send code"; return; }
+      msg.textContent = `Code sent to ${result.data.destination} via ${result.data.channel}.`;
+    };
+    document.getElementById("verifyClientBtn").onclick = async () => {
+      const result = await fetchJson("/clients/" + id + "/verification/verify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: document.getElementById("verificationCode").value.trim() })
+      });
+      if (!result.ok) { msg.textContent = result.data.error || "Unable to verify"; return; }
+      msg.textContent = "Client verified.";
+      await loadClientVerification();
+    };
+  }
+  loadClientVerification();
+
   const meResult = await fetchJson("/me");
   if (meResult.ok && meResult.data.sms_access) {
     const optout = await fetchJson("/clients/" + id + "/sms-optout");

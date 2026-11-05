@@ -70,6 +70,7 @@ db.exec(`
   DELETE FROM commission_plans;
   DELETE FROM sms_messages;
   DELETE FROM sms_optouts;
+  DELETE FROM client_verification_otps;
   DELETE FROM client_care_calls;
   DELETE FROM client_care_records;
   DELETE FROM property_payment_plans;
@@ -1100,14 +1101,77 @@ await test('SMS is sent once per confirmed payment, normalises phones, respects 
   assert(optoutMessages.length === 1 && optoutMessages[0].status === 'opted_out', 'opt-out must be respected and recorded');
 });
 
-console.log('\n--- 9. Migration reproducibility and database integrity ---');
+console.log('\n--- 9. Client onboarding OTP verification ---');
+await test('staff onboarding sends an OTP and verifies the client exactly once', async () => {
+  const created = await request('/api/clients', {
+    method: 'POST', headers: { Cookie: mkt1Cookie }, body: {
+      full_name: 'Phase 14 OTP Client', phone_number: '08087770001',
+      email_address: 'otp.phase14@example.com', assigned_branch_id: ikeja
+    }
+  });
+  assert(created.status === 200, `OTP client create expected 200, got ${created.status}: ${JSON.stringify(created.data)}`);
+  assert(created.data.verification && created.data.verification.channel === 'sms', 'auto OTP should use SMS when email provider is not configured');
+  const clientId = created.data.id;
+  const otp = db.prepare("SELECT * FROM client_verification_otps WHERE client_id=? ORDER BY id DESC LIMIT 1").get(clientId);
+  assert(otp && otp.channel === 'sms' && otp.delivery_status === 'sent', 'verification OTP row missing or not sent');
+  const sms = db.prepare("SELECT body FROM sms_messages WHERE client_id=? AND template_key='client_verification_otp' ORDER BY id DESC LIMIT 1").get(clientId);
+  const code = (sms && sms.body.match(/\b(\d{6})\b/) || [])[1];
+  assert(code, 'verification code missing from queued SMS');
+  const status = await request(`/api/clients/${clientId}/verification`, { headers: { Cookie: mdCookie } });
+  assert(status.status === 200 && status.data.active_otp && status.data.verification_status === 'unverified', 'verification status/active OTP incorrect');
+  const wrong = await request(`/api/clients/${clientId}/verification/verify`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { code: '000000' }
+  });
+  assert(wrong.status === 400, 'wrong OTP expected 400');
+  const verified = await request(`/api/clients/${clientId}/verification/verify`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { code }
+  });
+  assert(verified.status === 200 && verified.data.verification_status === 'verified', `OTP verify expected 200 verified, got ${verified.status}: ${JSON.stringify(verified.data)}`);
+  assert(db.prepare('SELECT verification_status FROM clients WHERE id=?').get(clientId).verification_status === 'verified', 'client not marked verified');
+  const reuse = await request(`/api/clients/${clientId}/verification/verify`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { code }
+  });
+  assert(reuse.status === 404, 'consumed OTP must not be reusable');
+  const emailOtp = await request(`/api/clients/${clientId}/verification/send`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { channel: 'email' },
+    env: makeEnv({ EMAIL_PROVIDER: 'mock', ENVIRONMENT: 'test' })
+  });
+  assert(emailOtp.status === 200 && emailOtp.data.channel === 'email' && emailOtp.data.delivery_status === 'sent', 'email OTP send expected 200 sent');
+});
+
+await test('public signup sends an OTP and the client can verify their own account', async () => {
+  const signup = await request('/api/signup', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.77' }, body: {
+      full_name: 'Phase 14 Public OTP Client', email: 'otp.public.phase14@example.com',
+      phone_number: '08087770002', password: 'password123'
+    }
+  });
+  assert(signup.status === 200, `signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
+  const cookie = (signup.headers.get('set-cookie') || '').split(';')[0];
+  const clientId = signup.data.client_id;
+  const state = await request('/api/client/verification', { headers: { Cookie: cookie } });
+  assert(state.status === 200 && state.data.verification_status === 'unverified', 'public signup client should start unverified');
+  const otp = db.prepare("SELECT * FROM client_verification_otps WHERE client_id=? ORDER BY id DESC LIMIT 1").get(clientId);
+  assert(otp && otp.channel === 'sms', 'public signup should auto-send SMS OTP');
+  const sms = db.prepare("SELECT body FROM sms_messages WHERE client_id=? AND template_key='client_verification_otp' ORDER BY id DESC LIMIT 1").get(clientId);
+  const code = (sms && sms.body.match(/\b(\d{6})\b/) || [])[1];
+  assert(code, 'public signup OTP missing from SMS');
+  const verified = await request('/api/client/verification/verify', {
+    method: 'POST', headers: { Cookie: cookie }, body: { code }
+  });
+  assert(verified.status === 200 && verified.data.verification_status === 'verified', 'client self verification failed');
+  const finalState = await request('/api/client/verification', { headers: { Cookie: cookie } });
+  assert(finalState.data.verification_status === 'verified', 'public client verification state not persisted');
+});
+
+console.log('\n--- 10. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
   for (const suffix of ['', '-wal', '-shm']) rmSync(cleanPath + suffix, { force: true });
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 14, `expected 14 migrations, found ${files.length}`);
+  assert(files.length === 15, `expected 15 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

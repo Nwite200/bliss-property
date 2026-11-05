@@ -111,6 +111,6 @@ async function onSubmit(e) {
   };
   if (!body.full_name || !body.phone_number) { msg.textContent = "Full name and phone number are required."; return; }
   const res = await fetchJson("/clients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (res.ok) { window.location.href = "client-detail.html?id=" + res.data.id; } else { msg.textContent = res.data.error || "Registration failed"; }
+  if (res.ok) { window.location.href = "client-detail.html?id=" + res.data.id + "&verify=1"; } else { msg.textContent = res.data.error || "Registration failed"; }
 }
 load();
