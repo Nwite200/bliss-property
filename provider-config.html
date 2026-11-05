@@ -161,6 +161,7 @@
                     <option value="Not configured">Not configured</option>
                     <option value="Awaiting onboarding">Awaiting onboarding</option>
                     <option value="Awaiting credentials">Awaiting credentials</option>
+                    <option value="Awaiting business ID">Awaiting business ID</option>
                     <option value="Configured">Configured</option>
                     <option value="Active">Active</option>
                   </select>
@@ -181,6 +182,12 @@
                   Sent by the provider in the <span class="code-inline">X-Webhook-Secret</span> header. Stored server-side only and never returned by the API.
                   <span id="secretStateLabel">No secret stored.</span>
                 </div>
+              </div>
+
+              <div class="form-group">
+                <label for="providerBusinessId">ALATPay Business ID</label>
+                <input id="providerBusinessId" type="text" placeholder="Business ID from the ALATPay dashboard (not the secret key)" autocomplete="off">
+                <div class="form-hint">Required for virtual-account creation. The secret key stays in Worker secrets and is never shown here.</div>
               </div>
 
               <div class="form-group">
@@ -416,6 +423,7 @@
         try {
           const parsed = typeof cfg.config_json === "string" ? JSON.parse(cfg.config_json) : cfg.config_json;
           document.getElementById("providerConfigJson").value = JSON.stringify(parsed, null, 2);
+          document.getElementById("providerBusinessId").value = parsed.business_id || "";
         } catch {
           document.getElementById("providerConfigJson").value = "";
         }
@@ -473,15 +481,21 @@
         if (secret) payload.webhook_secret = secret;
 
         const rawJson = document.getElementById("providerConfigJson").value.trim();
+        let metadata = {};
         if (rawJson) {
           try {
-            payload.config_json = JSON.parse(rawJson);
+            metadata = JSON.parse(rawJson);
           } catch {
             msg.style.color = "#DC2626";
             msg.textContent = "Provider metadata must be valid JSON.";
             return;
           }
         }
+        metadata = metadata && typeof metadata === "object" ? metadata : {};
+        metadata.business_id = document.getElementById("providerBusinessId").value.trim();
+        if (!metadata.base_url) metadata.base_url = "https://apibox.alatpay.ng";
+        if (!metadata.webhook_url) metadata.webhook_url = "/api/webhooks/alatpay";
+        payload.config_json = metadata;
 
         const btn = document.getElementById("saveProviderBtn");
         btn.disabled = true;

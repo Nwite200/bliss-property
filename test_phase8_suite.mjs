@@ -108,6 +108,8 @@ const mkt2Id = upsertUser('mkt2.p8@bliss.com', 'Phase 8 Marketer Two', 'Marketer
 const mkt3Id = upsertUser('mkt3.p8@bliss.com', 'Phase 8 Ajah Marketer', 'Marketer', ajah);
 const finId = upsertUser('fin.p8@bliss.com', 'Phase 8 Finance', 'Finance Officer', headOffice);
 const clientUserId = upsertUser('client.p8@example.com', 'Phase 8 Client', 'Client', ikeja);
+db.prepare("UPDATE users SET referral_code='BL-P8-MD' WHERE id=?").run(mdId);
+db.prepare("UPDATE users SET referral_code='BL-P8-MKT' WHERE id=?").run(mkt1Id);
 
 const categoryId = Number(db.prepare("INSERT INTO property_categories (name) VALUES ('Phase 8 Category')").run().lastInsertRowid);
 const propPublished = Number(db.prepare(`INSERT INTO properties (reference,title,description,category_id,sale_price,state,city,address,branch_id,status,is_published,created_by)
@@ -273,6 +275,54 @@ await test('signup rate limiting blocks excessive registration attempts before h
     body: { full_name: 'Rate Limited Signup', email: 'ratelimit.p8@example.com', phone_number: '08088000222', password: 'password123' }
   });
   assert(res.status === 429, `rate limited signup expected 429, got ${res.status}`);
+});
+
+await test('client onboarding stores alternate phone, next of kin and valid staff referral attribution', async () => {
+  const signup = await request('/api/signup', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.55' },
+    body: {
+      full_name: 'Referred Client', email: 'referred.p8@example.com', phone_number: '08088000331',
+      alternate_phone: '08088000332', next_of_kin_name: 'Next Kin', next_of_kin_phone: '08088000333',
+      next_of_kin_relationship: 'Sibling', next_of_kin_address: '3 Next of Kin Street',
+      referral_code: 'BL-P8-MD', password: 'password123'
+    }
+  });
+  assert(signup.status === 200, `referred signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
+  const client = db.prepare('SELECT * FROM clients WHERE client_reference=?').get(signup.data.client_reference);
+  assert(client, 'referred client record missing');
+  assert(client.alternate_phone === '08088000332', 'alternate phone not stored');
+  assert(client.next_of_kin_name === 'Next Kin' && client.next_of_kin_phone === '08088000333', 'next-of-kin details not stored');
+  assert(client.next_of_kin_relationship === 'Sibling' && client.next_of_kin_address === '3 Next of Kin Street', 'next-of-kin relationship/address missing');
+  assert(client.referral_code_used === 'BL-P8-MD' && client.referred_by_staff_id === mdId, 'staff referral attribution missing');
+  assert(client.assigned_branch_id === headOffice, 'MD referral should fall back to Head Office branch');
+  const self = await request('/api/me', { headers: { Cookie: (signup.headers.get('set-cookie') || '').split(';')[0] } });
+  assert(self.status === 200 && self.data.role === 'Client', 'referred client session invalid');
+  const mdMe = await request('/api/me', { headers: { Cookie: mdCookie } });
+  assert(mdMe.data.referral_code === 'BL-P8-MD', 'staff referral code missing from /api/me');
+  assert(mdMe.data.referral_link && mdMe.data.referral_link.includes('ref=BL-P8-MD'), 'staff referral link missing');
+});
+
+await test('invalid referral codes are rejected and ALATPay never invents virtual accounts', async () => {
+  const invalid = await request('/api/signup', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.56' },
+    body: {
+      full_name: 'Invalid Referral', email: 'invalid-ref.p8@example.com', phone_number: '08088000334',
+      referral_code: 'DOES-NOT-EXIST', password: 'password123'
+    }
+  });
+  assert(invalid.status === 400, `invalid referral expected 400, got ${invalid.status}`);
+  const clientCookie = (await request('/api/login', {
+    method: 'POST', body: { email: 'referred.p8@example.com', password: 'password123' }
+  })).headers.get('set-cookie').split(';')[0];
+  const account = await request('/api/client/virtual-account', { headers: { Cookie: clientCookie } });
+  assert(account.status === 200, 'virtual account status expected 200');
+  assert(account.data.is_active === false && account.data.can_generate === false, 'ALATPay must not report a fake ready account');
+  assert(!account.data.account_number, 'ALATPay virtual account number was invented');
+  const create = await request('/api/client/virtual-account', {
+    method: 'POST', headers: { Cookie: clientCookie }, body: { amount: 100 }
+  });
+  assert(create.status === 503, `ALATPay without business ID expected 503, got ${create.status}`);
+  assert(!db.prepare("SELECT id FROM virtual_accounts WHERE account_status='active'").get(), 'no active virtual account should be created');
 });
 
 console.log('\n--- 3. Property media and document security ---');
@@ -480,7 +530,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 9, `expected 9 migrations, found ${files.length}`);
+  assert(files.length === 10, `expected 10 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

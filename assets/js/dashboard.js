@@ -329,6 +329,8 @@
       ["Role", me.role],
       ["Branch", me.branch_name || "-"],
       ["Team", me.team_names || "-"],
+      ["Referral code", me.referral_code || "-"],
+      ["Referral link", me.referral_link || "-"],
       ["Phone", me.phone_number || "-"],
       ["Job title", me.job_title || "-"],
       ["Last login", me.last_login_at ? S.formatDateTime(me.last_login_at) : "-"]

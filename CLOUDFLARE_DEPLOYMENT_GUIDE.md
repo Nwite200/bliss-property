@@ -137,7 +137,7 @@ Local D1 state is under `.wrangler/state/v3/d1/`. `.wrangler/` is ignored by Git
 npm test
 ```
 
-Expected current total: **128 passed, 0 failed, 0 skipped**.
+Expected current total: **130 passed, 0 failed, 0 skipped**.
 
 Also useful:
 

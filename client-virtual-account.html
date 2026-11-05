@@ -152,6 +152,9 @@
 
   <script src="assets/js/components.js"></script>
   <script>
+    const esc = (value) => String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     document.addEventListener('DOMContentLoaded', async () => {
       try {
         const res = await fetch('/api/client/virtual-account');
@@ -179,18 +182,71 @@
                   <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Associated Client Reference</span>
                   <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.client_reference}</div>
                 </div>
+                <div>
+                  <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Amount</span>
+                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${Bliss.money((data.amount_kobo || 0) / 100)}</div>
+                </div>
+                <div>
+                  <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Expires</span>
+                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.expires_at ? new Date(data.expires_at).toLocaleString() : 'Single payment'}</div>
+                </div>
               </div>
               <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:12px;font-size:12px;color:#2E7D32">
                 ✓ Payments transferred to this dedicated virtual account are verified and receipted automatically.
               </div>
             </div>
           `;
+        } else if (data.can_generate) {
+          box.innerHTML = `
+            <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:24px;margin-top:16px">
+              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">${esc(data.message || 'Generate a dedicated ALATPay account for your outstanding balance.')}</p>
+              <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+                <div style="flex:1;min-width:180px">
+                  <label class="field-label" for="vaAmount">Amount (₦)</label>
+                  <input class="field-input" id="vaAmount" type="number" min="100" step="100" value="${data.outstanding_ngn || ''}" placeholder="Amount">
+                </div>
+                <button class="btn btn-green" id="generateVaBtn">Generate payment account</button>
+              </div>
+              <div id="vaMsg" style="font-size:12px;margin-top:10px"></div>
+              <p style="font-size:11px;color:var(--muted);margin-top:12px">Outstanding balance: <strong>${Bliss.money(data.outstanding_ngn || 0)}</strong>. ALATPay accounts are issued by the bank for the amount you choose.</p>
+            </div>
+          `;
+          const generate = async () => {
+            const msg = document.getElementById('vaMsg');
+            const btn = document.getElementById('generateVaBtn');
+            const amount = Number(document.getElementById('vaAmount').value);
+            if (!Number.isFinite(amount) || amount < 100) {
+              msg.textContent = 'Enter at least ₦100.';
+              return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Generating…';
+            try {
+              const create = await fetch('/api/client/virtual-account', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ amount })
+              });
+              const created = await create.json();
+              if (!create.ok) {
+                msg.textContent = created.error || 'Unable to generate a payment account.';
+                btn.disabled = false;
+                btn.textContent = 'Generate payment account';
+                return;
+              }
+              window.location.reload();
+            } catch {
+              msg.textContent = 'Unable to generate a payment account. Please try again.';
+              btn.disabled = false;
+              btn.textContent = 'Generate payment account';
+            }
+          };
+          document.getElementById('generateVaBtn').addEventListener('click', generate);
         } else {
-          // Display the exact required prompt message
           box.innerHTML = `
             <div class="pending-callout-box">
               <strong style="color:var(--ink);font-size:14px;display:block;margin-bottom:6px">Integration Pending:</strong>
-              <p>${data.message || 'Your dedicated payment account will be available once our Wema Bank payment integration is activated. Please contact our finance team for payment assistance.'}</p>
+              <p>${esc(data.message || 'Your dedicated payment account will be available once ALATPay is fully configured. Please contact our finance team for payment assistance.')}</p>
               <div style="margin-top:16px;display:flex;gap:10px">
                 <button class="btn btn-green btn-sm" id="waFinanceBtn">Contact Finance Team on WhatsApp ↗</button>
               </div>

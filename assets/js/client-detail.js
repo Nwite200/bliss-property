@@ -20,12 +20,19 @@ async function load() {
   document.getElementById("clientMeta").textContent = c.phone_number + (c.email_address ? " · " + c.email_address : "") + " · " + (c.branch_name || "");
   document.getElementById("detailRef").textContent = c.client_reference;
   document.getElementById("detailPhone").textContent = c.phone_number;
+  document.getElementById("detailAltPhone").textContent = c.alternate_phone || "-";
   document.getElementById("detailEmail").textContent = c.email_address || "-";
   document.getElementById("detailAddress").textContent = c.residential_address || "-";
   document.getElementById("detailStateCity").textContent = [c.state, c.city].filter(Boolean).join(", ");
   document.getElementById("detailStatus").textContent = c.status;
   document.getElementById("detailBranch").textContent = c.branch_name || "-";
   document.getElementById("detailMarketer").textContent = c.original_marketer_name || "-";
+  document.getElementById("detailReferral").textContent = c.referred_by_name
+    ? `${c.referred_by_name} (${c.referred_by_code || "no code"})` : (c.referral_code_used || "-");
+  document.getElementById("detailNokName").textContent = c.next_of_kin_name || c.next_of_kin || "-";
+  document.getElementById("detailNokPhone").textContent = c.next_of_kin_phone || "-";
+  document.getElementById("detailNokRelationship").textContent = c.next_of_kin_relationship || "-";
+  document.getElementById("detailNokAddress").textContent = c.next_of_kin_address || "-";
   document.getElementById("detailPrice").textContent = money(c.agreed_purchase_price);
   const properties = Array.isArray(data.properties) ? data.properties : [];
   const financials = data.financials || {};

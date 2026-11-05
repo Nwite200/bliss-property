@@ -93,7 +93,7 @@ async function getSessionUser(env, request) {
   const sid = cookies[SESSION_COOKIE];
   if (!sid) return null;
   const row = await env.DB.prepare(
-    "SELECT s.id AS sid, s.expires_at, u.id, u.email, u.full_name, u.role_id, u.branch_id, u.is_active, r.name AS role_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.id=?"
+    "SELECT s.id AS sid, s.expires_at, u.id, u.email, u.full_name, u.role_id, u.branch_id, u.is_active, u.referral_code, r.name AS role_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.id=?"
   ).bind(sid).first();
   if (!row) return null;
   if (parseDbDate(row.expires_at) < new Date()) {
@@ -164,6 +164,198 @@ async function recentAuditCount(env, action, targetId, minutes) {
     "SELECT COUNT(*) AS c FROM audit_logs WHERE action=? AND target_id=? AND created_at >= datetime('now', ?)"
   ).bind(action, targetId, `-${minutes} minutes`).first();
   return row ? Number(row.c || 0) : 0;
+}
+
+function referralCodeCandidate() {
+  return "BL-" + crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
+}
+
+async function allocateReferralCode(env) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const code = referralCodeCandidate();
+    const existing = await env.DB.prepare("SELECT id FROM users WHERE referral_code=?").bind(code).first();
+    if (!existing) return code;
+  }
+  return "BL-" + Date.now().toString(36).toUpperCase().slice(-8);
+}
+
+async function resolveReferralStaff(env, rawCode) {
+  const code = String(rawCode || "").trim().toUpperCase();
+  if (!code) return null;
+  return env.DB.prepare(`
+    SELECT u.id, u.full_name, u.branch_id, u.referral_code, r.name AS role_name
+    FROM users u JOIN roles r ON r.id=u.role_id
+    WHERE UPPER(u.referral_code)=? AND u.is_active=1 AND r.name<>'Client'
+    LIMIT 1
+  `).bind(code).first();
+}
+
+async function buildReferralAttribution(env, referrer, fallbackUserId) {
+  const headOffice = await env.DB.prepare(
+    "SELECT id FROM branches ORDER BY CASE WHEN name='Head Office' THEN 0 ELSE 1 END, id LIMIT 1"
+  ).first();
+  const branchId = referrer && referrer.branch_id ? referrer.branch_id : (headOffice ? headOffice.id : null);
+  let teamLeadId = null;
+  if (referrer && referrer.role_name === "Team Lead") teamLeadId = referrer.id;
+  if (referrer && referrer.role_name === "Marketer") {
+    const team = await env.DB.prepare(`
+      SELECT t.team_lead_user_id FROM teams t
+      JOIN team_members tm ON tm.team_id=t.id
+      WHERE tm.user_id=? AND t.is_active=1 AND t.team_lead_user_id IS NOT NULL
+      ORDER BY t.id LIMIT 1
+    `).bind(referrer.id).first();
+    teamLeadId = team ? team.team_lead_user_id : null;
+  }
+  const canManage = referrer && ["Marketer", "Team Lead", "Branch Manager"].includes(referrer.role_name);
+  return {
+    branchId,
+    teamLeadId,
+    relationshipManagerId: canManage ? referrer.id : fallbackUserId,
+    originalMarketerId: referrer && referrer.role_name === "Marketer" ? referrer.id : fallbackUserId,
+    referredByStaffId: referrer ? referrer.id : null,
+    referralCodeUsed: referrer ? referrer.referral_code : null
+  };
+}
+
+const ALATPAY_DEFAULT_BASE = "https://apibox.alatpay.ng";
+
+async function getAlatpaySettings(env) {
+  const row = await env.DB.prepare(
+    "SELECT status, environment, config_json FROM provider_configs WHERE provider_key='wema_alat'"
+  ).first();
+  let config = {};
+  if (row && row.config_json) {
+    try { config = JSON.parse(row.config_json) || {}; } catch { config = {}; }
+  }
+  const secret = env.ALATPAY_SECRET_KEY || "";
+  const businessId = env.ALATPAY_BUSINESS_ID || config.business_id || "";
+  const baseUrl = String(env.ALATPAY_BASE_URL || config.base_url || ALATPAY_DEFAULT_BASE).replace(/\/+$/, "");
+  return {
+    row,
+    config,
+    secret,
+    businessId,
+    baseUrl,
+    ready: Boolean(secret && businessId),
+    status: secret && businessId ? "Configured" : (secret ? "Awaiting business ID" : "Awaiting credentials"),
+    providerName: "ALATPay by Wema Bank",
+    webhookPath: "/api/webhooks/alatpay"
+  };
+}
+
+async function alatpayRequest(env, path, options = {}) {
+  const settings = await getAlatpaySettings(env);
+  if (!settings.secret) {
+    throw Object.assign(new Error("ALATPay secret key is not configured"), { status: 503 });
+  }
+  let response;
+  try {
+    response = await fetch(settings.baseUrl + path, {
+      method: options.method || "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "Ocp-Apim-Subscription-Key": settings.secret
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body)
+    });
+  } catch (error) {
+    throw Object.assign(new Error("Unable to reach ALATPay"), { status: 503 });
+  }
+  const text = await response.text();
+  let payload;
+  try { payload = text ? JSON.parse(text) : {}; } catch { payload = { message: text }; }
+  if (!response.ok || payload.status === false) {
+    throw Object.assign(new Error(payload.message || `ALATPay request failed (${response.status})`), {
+      status: response.status === 401 || response.status === 403 ? 502 : 502,
+      payload
+    });
+  }
+  return payload.data === undefined ? payload : payload.data;
+}
+
+async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
+  const settings = await getAlatpaySettings(env);
+  if (!settings.ready) {
+    const error = new Error(settings.businessId
+      ? "ALATPay secret key is not configured"
+      : "ALATPay business ID is not configured. Add it in Payment Provider settings.");
+    error.status = 503;
+    throw error;
+  }
+  const amount = Number(amountKobo) / 100;
+  if (!Number.isFinite(amount) || amount < 100) {
+    throw Object.assign(new Error("ALATPay requires a payment amount of at least ₦100"), { status: 400 });
+  }
+  const parts = String(client.full_name || "Bliss Client").trim().split(/\s+/);
+  const firstName = parts.shift() || "Bliss";
+  const lastName = parts.join(" ") || "Client";
+  const orderId = "BL-" + String(client.client_reference || client.id) + "-" + Date.now().toString(36).toUpperCase();
+  const payload = {
+    businessId: settings.businessId,
+    amount,
+    currency: "NGN",
+    orderId,
+    description: "Bliss Legacy property payment",
+    customer: {
+      email: client.email_address || env.ALATPAY_DEFAULT_EMAIL || "info@blisslegacylimited.com",
+      phone: client.phone_number || "",
+      firstName,
+      lastName,
+      metadata: JSON.stringify({ client_id: client.id, client_reference: client.client_reference })
+    }
+  };
+  const data = await alatpayRequest(env, "/bank-transfer/api/v1/bankTransfer/virtualAccount", {
+    method: "POST",
+    body: payload
+  });
+  const accountNumber = data.virtualBankAccountNumber || data.accountNumber ||
+    data.virtualAccountNumber || data.account_number || data.accountNo;
+  if (!accountNumber) {
+    throw Object.assign(new Error("ALATPay did not return a virtual account number"), { status: 502 });
+  }
+  const transactionId = data.transactionId || data.transaction_id || null;
+  const bankName = data.bankName || data.bank_name || "Wema Bank";
+  const accountName = data.virtualBankAccountName || data.accountName ||
+    data.account_name || "Bliss Legacy Limited";
+  const expiresAt = data.expiredAt || data.expiresAt || null;
+  await env.DB.prepare(`
+    INSERT INTO virtual_accounts
+      (client_id, provider, bank_name, account_name, account_number, account_status,
+       provider_reference, transaction_id, order_id, expires_at, amount_kobo, metadata, updated_by, updated_at)
+    VALUES (?, 'wema_alat', ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(client_id) DO UPDATE SET
+      provider='wema_alat', bank_name=excluded.bank_name, account_name=excluded.account_name,
+      account_number=excluded.account_number, account_status='active',
+      provider_reference=excluded.provider_reference, transaction_id=excluded.transaction_id,
+      order_id=excluded.order_id, expires_at=excluded.expires_at, amount_kobo=excluded.amount_kobo,
+      metadata=excluded.metadata, updated_by=excluded.updated_by, updated_at=datetime('now')
+  `).bind(
+    client.id, bankName, accountName, String(accountNumber), transactionId || String(accountNumber),
+    transactionId || null, orderId, expiresAt, Number(amountKobo),
+    JSON.stringify({ response: data, request: payload }).slice(0, 5000), actorId || null
+  ).run();
+  await audit(env, actorId || null, "provider.virtual_account.create", "client", String(client.id), {
+    provider: "alatpay", order_id: orderId, transaction_id: transactionId, amount_kobo: Number(amountKobo)
+  }, client.assigned_branch_id);
+  return {
+    provider: "ALATPay by Wema Bank",
+    bank_name: bankName,
+    account_name: accountName,
+    account_number: String(accountNumber),
+    account_status: "active",
+    transaction_id: transactionId,
+    order_id: orderId,
+    expires_at: expiresAt,
+    amount_kobo: Number(amountKobo)
+  };
+}
+
+async function outstandingForClient(env, client) {
+  const row = await env.DB.prepare(
+    "SELECT COALESCE(SUM(amount_kobo),0) AS verified FROM payments WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'"
+  ).bind(client.id).first();
+  const contract = toKobo(client.agreed_purchase_price || 0);
+  return Math.max(0, contract - Number(row ? row.verified : 0));
 }
 
 // Financial integer kobo helpers. Decimal strings are parsed directly so
@@ -350,8 +542,8 @@ function clientScopeSql(scope, alias = "c") {
   if (scope.role === "Team Lead") {
     const ph = placeholders(scope.memberIds);
     return {
-      clause: `(${alias}.team_lead_id = ? OR ${alias}.original_marketer_id IN (${ph}) OR ${alias}.created_by IN (${ph}) OR EXISTS (SELECT 1 FROM client_assignments ca WHERE ca.client_id=${alias}.id AND ca.is_primary=1 AND ca.relationship_manager_id IN (${ph})))`,
-      binds: [scope.actorId, ...scope.memberIds, ...scope.memberIds, ...scope.memberIds]
+      clause: `(${alias}.team_lead_id = ? OR ${alias}.original_marketer_id IN (${ph}) OR ${alias}.created_by IN (${ph}) OR ${alias}.referred_by_staff_id = ? OR EXISTS (SELECT 1 FROM client_assignments ca WHERE ca.client_id=${alias}.id AND ca.is_primary=1 AND ca.relationship_manager_id IN (${ph})))`,
+      binds: [scope.actorId, ...scope.memberIds, ...scope.memberIds, scope.actorId, ...scope.memberIds]
     };
   }
   if (scope.role === "Marketer") {
@@ -362,8 +554,9 @@ function clientScopeSql(scope, alias = "c") {
         OR
         (NOT EXISTS (SELECT 1 FROM client_assignments ca3 WHERE ca3.client_id=${alias}.id AND ca3.is_primary=1)
          AND (${alias}.original_marketer_id = ? OR ${alias}.created_by = ?))
+        OR ${alias}.referred_by_staff_id = ?
       )`,
-      binds: [scope.actorId, scope.actorId, scope.actorId]
+      binds: [scope.actorId, scope.actorId, scope.actorId, scope.actorId]
     };
   }
   return { clause: "1=0", binds: [] };
@@ -2108,7 +2301,8 @@ export default {
       if (!email || !password || !full_name) return json({ error: "Missing fields" }, 400);
       const mdRole = await env.DB.prepare("SELECT id FROM roles WHERE name='Managing Director'").first();
       const hash = await hashPassword(password);
-      const res = await env.DB.prepare("INSERT INTO users (email, password_hash, full_name, role_id, branch_id) VALUES (?, ?, ?, ?, NULL)").bind(email.toLowerCase(), hash, full_name, mdRole.id).run();
+      const referralCode = await allocateReferralCode(env);
+      const res = await env.DB.prepare("INSERT INTO users (email, password_hash, full_name, role_id, branch_id, referral_code) VALUES (?, ?, ?, ?, NULL, ?)").bind(email.toLowerCase(), hash, full_name, mdRole.id, referralCode).run();
       await audit(env, res.meta.last_row_id, "setup.initialize", "user", String(res.meta.last_row_id), { email });
       return json({ ok: true, user_id: res.meta.last_row_id });
     }
@@ -2193,7 +2387,11 @@ export default {
     if (path === "/api/signup" && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const body = await request.json();
-      const { full_name, email, phone_number, password, interested_property_id } = body || {};
+      const {
+        full_name, email, phone_number, password, interested_property_id,
+        alternate_phone, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
+        next_of_kin_address, referral_code
+      } = body || {};
       if (!full_name || !email || !phone_number || !password) {
         return json({ error: "Full name, email, phone number and password are required" }, 400);
       }
@@ -2202,6 +2400,12 @@ export default {
       }
       if (!/^[+0-9()\s-]{7,25}$/.test(String(phone_number).trim())) {
         return json({ error: "A valid phone number is required" }, 400);
+      }
+      if (alternate_phone && !/^[+0-9()\s-]{7,25}$/.test(String(alternate_phone).trim())) {
+        return json({ error: "Alternate phone number is invalid" }, 400);
+      }
+      if (next_of_kin_phone && !/^[+0-9()\s-]{7,25}$/.test(String(next_of_kin_phone).trim())) {
+        return json({ error: "Next of kin phone number is invalid" }, 400);
       }
       if (!validPassword(password)) {
         return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
@@ -2230,12 +2434,15 @@ export default {
       `).first();
       if (!system) return json({ error: "Client registration is not available until the portal is initialized" }, 503);
 
-      // Clients cannot self-assign a branch. New accounts are parked in Head
-      // Office until authorised staff review and assign the relationship.
+      // Clients cannot self-assign a branch. A valid staff referral determines
+      // the branch/relationship attribution; otherwise Head Office is used.
+      const referrer = referral_code ? await resolveReferralStaff(env, referral_code) : null;
+      if (referral_code && !referrer) return json({ error: "Invalid referral code" }, 400);
+      const attribution = await buildReferralAttribution(env, referrer, system.id);
       const defaultBranch = await env.DB.prepare(`
         SELECT id FROM branches ORDER BY CASE WHEN name='Head Office' THEN 0 ELSE 1 END, id LIMIT 1
       `).first();
-      const resolvedBranch = defaultBranch ? defaultBranch.id : null;
+      const resolvedBranch = attribution.branchId || (defaultBranch ? defaultBranch.id : null);
       if (!resolvedBranch) return json({ error: "No branch is available for registration" }, 503);
 
       let propertyId = interested_property_id ? Number(interested_property_id) : null;
@@ -2253,28 +2460,36 @@ export default {
       `).bind(normalizedEmail, hash, String(full_name).trim(), clientRole.id, resolvedBranch).run();
       const userId = userRes.meta.last_row_id;
       const clientRef = "BLC-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
+      const nextOfKinLegacy = [next_of_kin_name, next_of_kin_relationship ? `(${next_of_kin_relationship})` : ""]
+        .filter(Boolean).join(" ").trim() || null;
       const clientRes = await env.DB.prepare(`
-        INSERT INTO clients (client_reference, full_name, phone_number, email_address, notes, status,
+        INSERT INTO clients (client_reference, full_name, phone_number, alternate_phone, email_address,
+          residential_address, next_of_kin, next_of_kin_name, next_of_kin_phone,
+          next_of_kin_relationship, next_of_kin_address, notes, status,
           sale_type, assigned_branch_id, created_by, original_marketer_id, team_lead_id,
-          agreed_purchase_price, interested_property_id, user_id)
-        VALUES (?, ?, ?, ?, ?, 'Prospect', 'New Sale', ?, ?, ?, NULL, NULL, ?, ?)
+          agreed_purchase_price, interested_property_id, referral_code_used, referred_by_staff_id, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Prospect', 'New Sale', ?, ?, ?, ?, NULL, ?, ?, ?, ?)
       `).bind(
-        clientRef, String(full_name).trim(), normalizedPhone, normalizedEmail,
+        clientRef, String(full_name).trim(), normalizedPhone, alternate_phone || null, normalizedEmail,
+        null, nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null,
+        next_of_kin_relationship || null, next_of_kin_address || null,
         "Self-registered through the public client portal.", resolvedBranch,
-        system.id, system.id, propertyId, userId
+        referrer ? referrer.id : system.id, attribution.originalMarketerId, attribution.teamLeadId,
+        propertyId, attribution.referralCodeUsed, attribution.referredByStaffId, userId
       ).run();
       const clientId = clientRes.meta.last_row_id;
       if (propertyId) await upsertClientPropertyAllocation(env, clientId, propertyId, 0, "Prospect");
       await env.DB.prepare(`
         INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by)
-        VALUES (?, ?, ?, NULL, ?)
-      `).bind(clientId, system.id, resolvedBranch, system.id).run();
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(clientId, attribution.relationshipManagerId, resolvedBranch, attribution.teamLeadId, system.id).run();
       await env.DB.prepare(`
         INSERT INTO client_status_history (client_id, old_status, new_status, changed_by)
         VALUES (?, NULL, 'Prospect', ?)
       `).bind(clientId, userId).run();
       await audit(env, userId, "client.self_register", "client", String(clientId), {
-        client_reference: clientRef, email: normalizedEmail, branch_id: resolvedBranch
+        client_reference: clientRef, email: normalizedEmail, branch_id: resolvedBranch,
+        referral_code: attribution.referralCodeUsed, referred_by_staff_id: attribution.referredByStaffId
       }, resolvedBranch);
       await createNotification(env, {
         userId,
@@ -2440,6 +2655,10 @@ export default {
         date_joined: staffDetails ? staffDetails.date_joined : null,
         last_login_at: staffDetails ? staffDetails.last_login_at : null,
         team_names: staffDetails ? staffDetails.team_names : null,
+        referral_code: user.role_name !== "Client" ? user.referral_code : null,
+        referral_link: user.role_name !== "Client" && user.referral_code
+          ? `${new URL(request.url).origin}/signup?ref=${encodeURIComponent(user.referral_code)}`
+          : null,
         client: clientDetails
       });
     }
@@ -2560,8 +2779,9 @@ export default {
       const existing = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=?").bind(email.toLowerCase()).first();
       if (existing) return json({ error: "Email already used" }, 409);
       const hash = await hashPassword(password);
-      const res = await env.DB.prepare("INSERT INTO users (email, password_hash, full_name, role_id, branch_id) VALUES (?, ?, ?, ?, ?)")
-        .bind(email.toLowerCase(), hash, full_name, role.id, branchId).run();
+      const referralCode = await allocateReferralCode(env);
+      const res = await env.DB.prepare("INSERT INTO users (email, password_hash, full_name, role_id, branch_id, referral_code) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(email.toLowerCase(), hash, full_name, role.id, branchId, referralCode).run();
       const newId = res.meta.last_row_id;
       if (role_name === "Marketer" && team_id) {
         const team = await env.DB.prepare("SELECT id, branch_id FROM teams WHERE id=?").bind(team_id).first();
@@ -3061,7 +3281,7 @@ export default {
       const role = actor.role_name;
       if (role === "Managing Director" || role === "Finance Officer") return { clause: "", binds: [] };
       if (role === "Branch Manager") return { clause: "c.assigned_branch_id = ?", binds: [actor.branch_id] };
-      if (role === "Team Lead") return { clause: "(c.team_lead_id = ? OR c.original_marketer_id = ? OR c.created_by = ?)", binds: [actor.id, actor.id, actor.id] };
+      if (role === "Team Lead") return { clause: "(c.team_lead_id = ? OR c.original_marketer_id = ? OR c.created_by = ? OR c.referred_by_staff_id = ?)", binds: [actor.id, actor.id, actor.id, actor.id] };
       if (role === "Marketer") {
         return {
           clause: `(
@@ -3070,8 +3290,9 @@ export default {
             OR
             (NOT EXISTS (SELECT 1 FROM client_assignments ca3 WHERE ca3.client_id=c.id AND ca3.is_primary=1)
              AND (c.original_marketer_id=? OR c.created_by=?))
+            OR c.referred_by_staff_id=?
           )`,
-          binds: [actor.id, actor.id, actor.id]
+          binds: [actor.id, actor.id, actor.id, actor.id]
         };
       }
       return { clause: "c.id = -1", binds: [] };
@@ -3082,9 +3303,11 @@ export default {
       if (role === "Managing Director") return true;
       if (role === "Branch Manager") return client.assigned_branch_id === actor.branch_id;
       if (role === "Team Lead") {
-        return client.team_lead_id === actor.id || client.original_marketer_id === actor.id || client.created_by === actor.id;
+        return client.team_lead_id === actor.id || client.original_marketer_id === actor.id ||
+          client.created_by === actor.id || Number(client.referred_by_staff_id) === Number(actor.id);
       }
       if (role === "Marketer") {
+        if (Number(client.referred_by_staff_id) === Number(actor.id)) return true;
         if (client.current_relationship_manager_id !== undefined && client.current_relationship_manager_id !== null) {
           return Number(client.current_relationship_manager_id) === Number(actor.id);
         }
@@ -3130,8 +3353,19 @@ export default {
         return json({ error: "Forbidden" }, 403);
       }
       const body = await request.json();
-      const { full_name, phone_number, email_address, residential_address, state, city, next_of_kin, notes, preferred_channel, status, assigned_branch_id, agreed_purchase_price, interested_property_id, sale_type } = body || {};
+      const {
+        full_name, phone_number, alternate_phone, email_address, residential_address, state, city,
+        next_of_kin, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship,
+        next_of_kin_address, notes, preferred_channel, status, assigned_branch_id,
+        agreed_purchase_price, interested_property_id, sale_type, referral_code
+      } = body || {};
       if (!full_name || !phone_number) return json({ error: "Full name and phone number required" }, 400);
+      if (alternate_phone && !/^[+0-9()\s-]{7,25}$/.test(String(alternate_phone).trim())) {
+        return json({ error: "Alternate phone number is invalid" }, 400);
+      }
+      if (next_of_kin_phone && !/^[+0-9()\s-]{7,25}$/.test(String(next_of_kin_phone).trim())) {
+        return json({ error: "Next of kin phone number is invalid" }, 400);
+      }
       const validStatuses = ["Prospect", "Interested", "Negotiation", "Reserved", "Active Buyer", "Completed", "Cancelled", "Inactive"];
       if (status && !validStatuses.includes(status)) return json({ error: "Invalid client status" }, 400);
       const resolvedSaleType = sale_type || "New Sale";
@@ -3165,13 +3399,17 @@ export default {
         .bind(phone_number, resolvedBranchId).first();
       if (dup) return json({ error: "A client with this phone number already exists in this branch" }, 409);
 
+      const referrer = referral_code ? await resolveReferralStaff(env, referral_code) : actor;
+      if (referral_code && !referrer) return json({ error: "Invalid referral code" }, 400);
+      const nextOfKinLegacy = [next_of_kin_name, next_of_kin_relationship ? `(${next_of_kin_relationship})` : ""]
+        .filter(Boolean).join(" ").trim() || next_of_kin || null;
       const ref = "BLC-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
       const teamLeadId = actor.role_name === "Team Lead" ? actor.id : null;
       const agreedPrice = agreed_purchase_price === undefined || agreed_purchase_price === null || agreed_purchase_price === ""
         ? null : Number(agreed_purchase_price);
 
-      const res = await env.DB.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, email_address, residential_address, state, city, next_of_kin, notes, preferred_channel, status, assigned_branch_id, created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id, sale_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .bind(ref, full_name, phone_number, email_address || null, residential_address || null, state || null, city || null, next_of_kin || null, notes || null, preferred_channel || null, status || "Prospect", resolvedBranchId, actor.id, actor.id, teamLeadId, agreedPrice, interested_property_id || null, resolvedSaleType).run();
+      const res = await env.DB.prepare(`INSERT INTO clients (client_reference, full_name, phone_number, alternate_phone, email_address, residential_address, state, city, next_of_kin, next_of_kin_name, next_of_kin_phone, next_of_kin_relationship, next_of_kin_address, notes, preferred_channel, status, assigned_branch_id, created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id, sale_type, referral_code_used, referred_by_staff_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(ref, full_name, phone_number, alternate_phone || null, email_address || null, residential_address || null, state || null, city || null, nextOfKinLegacy, next_of_kin_name || null, next_of_kin_phone || null, next_of_kin_relationship || null, next_of_kin_address || null, notes || null, preferred_channel || null, status || "Prospect", resolvedBranchId, actor.id, actor.id, teamLeadId, agreedPrice, interested_property_id || null, resolvedSaleType, referrer ? referrer.referral_code : null, referrer ? referrer.id : null).run();
       const newId = res.meta.last_row_id;
       if (interested_property_id) {
         await upsertClientPropertyAllocation(env, newId, Number(interested_property_id), agreedPrice || 0, status || "Prospect");
@@ -3181,7 +3419,11 @@ export default {
         .bind(newId, actor.id, resolvedBranchId, teamLeadId, actor.id).run();
       await env.DB.prepare("INSERT INTO client_status_history (client_id, old_status, new_status, changed_by) VALUES (?, ?, ?, ?)")
         .bind(newId, null, status || "Prospect", actor.id).run();
-      await audit(env, actor.id, "client.create", "client", String(newId), { full_name, phone_number, branch_id: resolvedBranchId }, resolvedBranchId);
+      await audit(env, actor.id, "client.create", "client", String(newId), {
+        full_name, phone_number, branch_id: resolvedBranchId,
+        referral_code: referrer ? referrer.referral_code : null,
+        referred_by_staff_id: referrer ? referrer.id : null
+      }, resolvedBranchId);
       if (env.TASKS && typeof env.TASKS.send === "function") {
         await env.TASKS.send({ type: "client.registered", client_id: newId }).catch(() => {});
       }
@@ -3198,6 +3440,7 @@ export default {
       const id = clientDetailMatch[1];
       const client = await env.DB.prepare(`
         SELECT c.*, u.full_name AS created_by_name, m.full_name AS original_marketer_name,
+               ref.full_name AS referred_by_name, ref.referral_code AS referred_by_code,
                b.name AS branch_name,
                (SELECT ca.relationship_manager_id FROM client_assignments ca
                  WHERE ca.client_id=c.id AND ca.is_primary=1 ORDER BY ca.assigned_at DESC LIMIT 1) AS current_relationship_manager_id,
@@ -3206,6 +3449,7 @@ export default {
         FROM clients c
         LEFT JOIN users u ON u.id=c.created_by
         LEFT JOIN users m ON m.id=c.original_marketer_id
+        LEFT JOIN users ref ON ref.id=c.referred_by_staff_id
         LEFT JOIN branches b ON b.id=c.assigned_branch_id
         WHERE c.id=? AND c.is_deleted=0
       `).bind(id).first();
@@ -3276,8 +3520,15 @@ export default {
       if (body.sale_type !== undefined && !SALE_TYPES.includes(body.sale_type)) {
         return json({ error: "Invalid sale type" }, 400);
       }
-      const fields = ["full_name", "phone_number", "email_address", "residential_address", "state", "city",
-        "next_of_kin", "notes", "preferred_channel", "agreed_purchase_price", "interested_property_id", "sale_type"];
+      for (const field of ["alternate_phone", "next_of_kin_phone"]) {
+        if (body[field] && !/^[+0-9()\s-]{7,25}$/.test(String(body[field]).trim())) {
+          return json({ error: `${field.replace(/_/g, " ")} is invalid` }, 400);
+        }
+      }
+      const fields = ["full_name", "phone_number", "alternate_phone", "email_address", "residential_address",
+        "state", "city", "next_of_kin", "next_of_kin_name", "next_of_kin_phone",
+        "next_of_kin_relationship", "next_of_kin_address", "notes", "preferred_channel",
+        "agreed_purchase_price", "interested_property_id", "sale_type"];
       const sets = [];
       const vals = [];
       const before = {};
@@ -3541,11 +3792,16 @@ export default {
           client_reference: client.client_reference,
           full_name: client.full_name,
           phone_number: client.phone_number,
+          alternate_phone: client.alternate_phone,
           email_address: client.email_address,
           residential_address: client.residential_address,
           state: client.state,
           city: client.city,
           next_of_kin: client.next_of_kin,
+          next_of_kin_name: client.next_of_kin_name,
+          next_of_kin_phone: client.next_of_kin_phone,
+          next_of_kin_relationship: client.next_of_kin_relationship,
+          next_of_kin_address: client.next_of_kin_address,
           status: client.status,
           branch_name: client.branch_name
         },
@@ -3570,11 +3826,16 @@ export default {
           client_reference: client.client_reference,
           full_name: client.full_name,
           phone_number: client.phone_number,
+          alternate_phone: client.alternate_phone,
           email_address: client.email_address,
           residential_address: client.residential_address,
           state: client.state,
           city: client.city,
           next_of_kin: client.next_of_kin,
+          next_of_kin_name: client.next_of_kin_name,
+          next_of_kin_phone: client.next_of_kin_phone,
+          next_of_kin_relationship: client.next_of_kin_relationship,
+          next_of_kin_address: client.next_of_kin_address,
           status: client.status,
           branch_name: client.branch_name
         }
@@ -3589,7 +3850,9 @@ export default {
       if (!client) return json({ error: "Not found" }, 404);
 
       const body = await request.json();
-      const permittedFields = ["full_name", "phone_number", "email_address", "residential_address", "state", "city", "next_of_kin"];
+      const permittedFields = ["full_name", "phone_number", "alternate_phone", "email_address",
+        "residential_address", "state", "city", "next_of_kin", "next_of_kin_name",
+        "next_of_kin_phone", "next_of_kin_relationship", "next_of_kin_address"];
       const sets = [];
       const vals = [];
       const before = {};
@@ -3603,6 +3866,9 @@ export default {
         if (field === "full_name" && !value) return json({ error: "Full name cannot be empty" }, 400);
         if (field === "phone_number") {
           if (!value || !/^[+0-9()\s-]{7,25}$/.test(value)) return json({ error: "Invalid phone number" }, 400);
+        }
+        if (["alternate_phone", "next_of_kin_phone"].includes(field) && value && !/^[+0-9()\s-]{7,25}$/.test(value)) {
+          return json({ error: `Invalid ${field.replace(/_/g, " ")}` }, 400);
         }
         if (field === "email_address") {
           if (!value || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return json({ error: "Invalid email address" }, 400);
@@ -3784,57 +4050,134 @@ export default {
       });
     }
 
-    // 8 & 9. ALAT by Wema Bank Virtual Account (Client View)
+    // 8 & 9. ALATPay Virtual Account (Client View)
     if (path === "/api/client/virtual-account" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor || actor.role_name !== "Client") return json({ error: "Forbidden" }, 403);
       const client = await getClientForActor(env, actor);
       if (!client) return json({ error: "Not found" }, 404);
 
-      // Check ALAT provider configuration status
-      const provider = await env.DB.prepare(
-        "SELECT status, environment FROM provider_configs WHERE provider_key='wema_alat'"
-      ).first();
-      const providerStatus = provider ? provider.status : "Not configured";
-
-      // Check if the real provider has provisioned an account for this client
-      let va = null;
-      if (providerStatus === "Active") {
-        va = await env.DB.prepare(
-          "SELECT * FROM virtual_accounts WHERE client_id=? AND provider='wema_alat'"
-        ).bind(client.id).first();
+      const settings = await getAlatpaySettings(env);
+      const outstandingKobo = await outstandingForClient(env, client);
+      let va = await env.DB.prepare(
+        "SELECT * FROM virtual_accounts WHERE client_id=? AND provider='wema_alat' ORDER BY id DESC LIMIT 1"
+      ).bind(client.id).first();
+      if (va && va.account_status === "active" && va.expires_at && parseDbDate(va.expires_at) < new Date()) {
+        await env.DB.prepare("UPDATE virtual_accounts SET account_status='expired', updated_at=datetime('now') WHERE id=?")
+          .bind(va.id).run();
+        va = { ...va, account_status: "expired" };
       }
 
-      const hasRealAccount = Boolean(
-        va &&
-        providerStatus === "Active" &&
-        va.account_number &&
-        va.account_status === "active"
-      );
-
-      if (!hasRealAccount) {
+      if (va && va.account_number && va.account_status === "active") {
         return json({
-          is_active: false,
-          provider: "ALAT by Wema Bank",
-          provider_status: providerStatus,
-          status: providerStatus,
-          notice: WEMA_PENDING_MESSAGE,
-          message: WEMA_PENDING_MESSAGE,
+          is_active: true,
+          provider: settings.providerName,
+          provider_status: settings.status,
+          status: settings.status,
+          bank_name: va.bank_name || "Wema Bank",
+          account_name: va.account_name,
+          account_number: va.account_number,
+          account_status: va.account_status,
+          amount_kobo: Number(va.amount_kobo || 0),
+          amount_ngn: fromKobo(Number(va.amount_kobo || 0)),
+          order_id: va.order_id,
+          transaction_id: va.transaction_id,
+          expires_at: va.expires_at,
+          outstanding_kobo: outstandingKobo,
+          outstanding_ngn: fromKobo(outstandingKobo),
           client_reference: client.client_reference
         });
       }
 
       return json({
-        is_active: true,
-        provider: "ALAT by Wema Bank",
-        provider_status: providerStatus,
-        status: providerStatus,
-        bank_name: va.bank_name || "Wema Bank",
-        account_name: va.account_name,
-        account_number: va.account_number,
-        account_status: va.account_status,
+        is_active: false,
+        can_generate: settings.ready,
+        outstanding_kobo: outstandingKobo,
+        outstanding_ngn: fromKobo(outstandingKobo),
+        provider: settings.providerName,
+        provider_status: settings.status,
+        status: settings.status,
+        notice: settings.ready
+          ? "Generate a dedicated ALATPay bank-transfer account for your outstanding balance."
+          : "ALATPay business ID is not configured yet. Please contact the finance team.",
+        message: settings.ready
+          ? "Generate a dedicated ALATPay bank-transfer account for your outstanding balance."
+          : "ALATPay business ID is not configured yet. Please contact the finance team.",
         client_reference: client.client_reference
       });
+    }
+
+    if (path === "/api/client/virtual-account" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor || actor.role_name !== "Client") return json({ error: "Forbidden" }, 403);
+      const client = await getClientForActor(env, actor);
+      if (!client) return json({ error: "Not found" }, 404);
+      const body = await request.json().catch(() => ({}));
+      const outstanding = await outstandingForClient(env, client);
+      const amountKobo = body && body.amount !== undefined && body.amount !== null && body.amount !== ""
+        ? toKobo(body.amount)
+        : outstanding;
+      if (!Number.isInteger(amountKobo) || amountKobo < 10000) {
+        return json({ error: "An amount of at least ₦100 is required" }, 400);
+      }
+      if (amountKobo > outstanding && outstanding > 0) {
+        return json({ error: "Amount cannot exceed the outstanding balance" }, 400);
+      }
+      try {
+        const account = await createAlatpayVirtualAccount(env, client, amountKobo, actor.id);
+        await createNotification(env, {
+          clientId: client.id,
+          type: "payment.virtual_account",
+          title: "Payment Account Created",
+          message: `A dedicated ALATPay account was created for ${formatNGN(amountKobo)}.`,
+          metadata: { order_id: account.order_id, account_number: account.account_number }
+        });
+        return json({ ok: true, ...account, client_reference: client.client_reference });
+      } catch (error) {
+        return json({ error: error.message || "Unable to create a virtual account" }, error.status || 502);
+      }
+    }
+
+    // Staff-assisted virtual-account generation
+    const staffVirtualAccountMatch = path.match(/^\/api\/finance\/clients\/(\d+)\/virtual-account$/);
+    if (staffVirtualAccountMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!["Managing Director", "Finance Officer", "Branch Manager"].includes(actor.role_name)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const client = await env.DB.prepare("SELECT * FROM clients WHERE id=? AND is_deleted=0")
+        .bind(staffVirtualAccountMatch[1]).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+      if (actor.role_name === "Branch Manager" && Number(client.assigned_branch_id) !== Number(actor.branch_id)) {
+        return json({ error: "Cross-branch forbidden" }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const outstanding = await outstandingForClient(env, client);
+      const amountKobo = body && body.amount !== undefined && body.amount !== null && body.amount !== ""
+        ? toKobo(body.amount)
+        : outstanding;
+      if (!Number.isInteger(amountKobo) || amountKobo < 10000) {
+        return json({ error: "An amount of at least ₦100 is required" }, 400);
+      }
+      if (amountKobo > outstanding && outstanding > 0) {
+        return json({ error: "Amount cannot exceed the outstanding balance" }, 400);
+      }
+      try {
+        const account = await createAlatpayVirtualAccount(env, client, amountKobo, actor.id);
+        await createNotification(env, {
+          clientId: client.id,
+          type: "payment.virtual_account",
+          title: "Payment Account Created",
+          message: `Your finance team created a dedicated ALATPay account for ${formatNGN(amountKobo)}.`,
+          metadata: { order_id: account.order_id, account_number: account.account_number }
+        });
+        return json({ ok: true, ...account, client_reference: client.client_reference });
+      } catch (error) {
+        return json({ error: error.message || "Unable to create a virtual account" }, error.status || 502);
+      }
     }
 
     // 10. Client Receipts
@@ -4559,6 +4902,131 @@ export default {
       return json({ ok: true, message: "ALAT by Wema Bank configuration updated." });
     }
 
+    // ALATPay webhook: trust is established by re-querying ALATPay with the
+    // server-side secret before any payment is verified.
+    if (path === "/api/webhooks/alatpay" && request.method === "POST") {
+      const body = await request.json().catch(() => null);
+      if (!body) return json({ error: "Invalid JSON payload" }, 400);
+      const source = body.data || body;
+      const transactionId = source.transactionId || source.transaction_id || source.id || body.transactionId;
+      if (!transactionId) return json({ error: "Missing ALATPay transaction ID" }, 400);
+
+      let remote;
+      try {
+        remote = await alatpayRequest(env, `/bank-transfer/api/v1/bankTransfer/transactions/${encodeURIComponent(transactionId)}`);
+      } catch (error) {
+        await audit(env, null, "webhook.rejected", "alatpay", String(transactionId), { reason: "provider_verification_failed" });
+        return json({ error: "Unable to verify ALATPay transaction" }, error.status || 503);
+      }
+      const data = remote.data || remote;
+      const statusText = String(data.status || data.transactionStatus || source.status || "").trim().toLowerCase();
+      if (!SUCCESS_EVENT_STATUSES.has(statusText)) {
+        return json({ ok: true, status: "ignored", payment_status: statusText || "unknown" }, 202);
+      }
+      const orderId = data.orderId || data.order_id || source.orderId || body.orderId;
+      if (!orderId) return json({ error: "Missing ALATPay order ID" }, 400);
+      const amountKobo = data.amount !== undefined ? toKobo(data.amount) : (source.amount !== undefined ? toKobo(source.amount) : null);
+      const currency = String(data.currency || source.currency || SUPPORTED_CURRENCY).trim().toUpperCase();
+      if (!Number.isInteger(amountKobo) || amountKobo <= 0) {
+        return json({ error: "Invalid ALATPay amount" }, 400);
+      }
+      if (currency !== SUPPORTED_CURRENCY) {
+        return json({ error: "Unsupported ALATPay currency" }, 409);
+      }
+      const eventId = `alatpay:${transactionId}:${statusText}:${amountKobo}`;
+      const seen = await env.DB.prepare("SELECT id, result FROM webhook_events WHERE event_id=?").bind(eventId).first();
+      if (seen) return json({ ok: true, already_processed: true, result: seen.result });
+
+      const va = await env.DB.prepare(
+        "SELECT * FROM virtual_accounts WHERE order_id=? OR transaction_id=? ORDER BY id DESC LIMIT 1"
+      ).bind(String(orderId), String(transactionId)).first();
+      if (!va) {
+        await env.DB.prepare(`
+          INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
+          VALUES ('alatpay', ?, ?, ?, ?, 'unmatched', datetime('now'))
+        `).bind(eventId, statusText, String(orderId), JSON.stringify({ body, remote }).slice(0, 4000)).run().catch(() => {});
+        return json({ ok: true, status: "logged", matched: false }, 202);
+      }
+
+      const client = await env.DB.prepare(
+        "SELECT id, client_reference, interested_property_id, agreed_purchase_price FROM clients WHERE id=? AND is_deleted=0"
+      ).bind(va.client_id).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+
+      let payment = await env.DB.prepare("SELECT * FROM payments WHERE transaction_ref=?").bind(String(orderId)).first();
+      if (!payment) {
+        await env.DB.prepare(`
+          INSERT INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo, is_demo)
+          VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Virtual Account', 'pending', ?, 0)
+        `).bind(client.id, client.interested_property_id || null, String(orderId), fromKobo(amountKobo), amountKobo).run();
+        payment = await env.DB.prepare("SELECT * FROM payments WHERE transaction_ref=?").bind(String(orderId)).first();
+      }
+      if (!payment) return json({ error: "Unable to record ALATPay payment" }, 500);
+      if (Number(payment.amount_kobo || toKobo(payment.amount)) !== amountKobo) {
+        await env.DB.prepare(`
+          INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
+          VALUES ('alatpay', ?, ?, ?, ?, 'amount_mismatch', datetime('now'))
+        `).bind(eventId, statusText, String(orderId), JSON.stringify({ body, remote }).slice(0, 4000)).run().catch(() => {});
+        return json({ error: "ALATPay amount does not match the pending payment" }, 409);
+      }
+      if (payment.status === "verified") {
+        await env.DB.prepare(`
+          INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
+          VALUES ('alatpay', ?, ?, ?, ?, 'duplicate', datetime('now'))
+        `).bind(eventId, statusText, String(orderId), JSON.stringify({ body, remote }).slice(0, 4000)).run().catch(() => {});
+        return json({ ok: true, already_processed: true });
+      }
+      if (payment.status !== "pending") {
+        return json({ error: `Payment cannot be verified from status ${payment.status}` }, 409);
+      }
+
+      const now = new Date().toISOString();
+      const updated = await env.DB.prepare(
+        "UPDATE payments SET status='verified', verified_at=?, verified_by=NULL WHERE id=? AND status='pending'"
+      ).bind(now, payment.id).run();
+      if (updated.meta && Number(updated.meta.changes) === 0) {
+        return json({ ok: true, already_processed: true });
+      }
+      const totalRow = await env.DB.prepare(
+        "SELECT COALESCE(SUM(amount_kobo),0) AS total_kobo FROM payments WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'"
+      ).bind(client.id).first();
+      const remainingKobo = Math.max(0, toKobo(client.agreed_purchase_price || 0) - Number(totalRow ? totalRow.total_kobo : 0));
+      let receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
+      if (!receipt) {
+        const receiptRef = newReceiptRef(false);
+        await env.DB.prepare(`
+          INSERT INTO receipts (payment_id, client_id, receipt_ref, amount, currency, amount_kobo, remaining_balance_kobo, is_demo, created_at)
+          VALUES (?, ?, ?, ?, 'NGN', ?, ?, 0, datetime('now'))
+        `).bind(payment.id, client.id, receiptRef, fromKobo(amountKobo), amountKobo, remainingKobo).run();
+        receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
+      }
+      await ensureReceiptPdf(env, {
+        ...payment,
+        ...receipt,
+        full_name: client.client_reference,
+        client_reference: client.client_reference,
+        payment_status: "verified",
+        payment_date: now
+      }).catch(() => {});
+      await env.DB.prepare("UPDATE virtual_accounts SET account_status='used', updated_at=datetime('now') WHERE id=?")
+        .bind(va.id).run();
+      await env.DB.prepare(`
+        INSERT INTO webhook_events (provider, event_id, event_type, transaction_ref, payload, result, processed_at)
+        VALUES ('alatpay', ?, ?, ?, ?, 'verified', datetime('now'))
+      `).bind(eventId, statusText, String(orderId), JSON.stringify({ body, remote }).slice(0, 4000)).run().catch(() => {});
+      await createNotification(env, {
+        clientId: client.id,
+        type: "payment.verified",
+        title: "Payment Successfully Verified",
+        message: `Your ALATPay payment of ${formatNGN(amountKobo)} has been verified. Official Receipt #${receipt.receipt_ref} is now available.`,
+        metadata: { payment_id: payment.id, receipt_ref: receipt.receipt_ref, order_id: orderId, source: "alatpay" }
+      });
+      await audit(env, null, "webhook.received", "payment", String(payment.id), {
+        event_id: eventId, order_id: orderId, transaction_id: transactionId, result: "verified"
+      });
+      return json({ ok: true, status: "verified", receipt_ref: receipt.receipt_ref });
+    }
+
     // ALAT by Wema Bank Webhook Receiver (idempotent, signature-gated)
     if (path === "/api/webhooks/wema-alat" && request.method === "POST") {
       const conf = await env.DB.prepare("SELECT status, webhook_secret FROM provider_configs WHERE provider_key='wema_alat'").first();
@@ -5211,10 +5679,11 @@ export default {
       const existing = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=?").bind(email.toLowerCase().trim()).first();
       if (existing) return json({ error: "Email already used" }, 409);
       const hash = await hashPassword(password);
+      const referralCode = await allocateReferralCode(env);
       const res = await env.DB.prepare(`
-        INSERT INTO users (email, password_hash, full_name, role_id, branch_id)
-        VALUES (?, ?, ?, ?, ?)
-      `).bind(email.toLowerCase().trim(), hash, full_name.trim(), role.id, resolvedBranch).run();
+        INSERT INTO users (email, password_hash, full_name, role_id, branch_id, referral_code)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(email.toLowerCase().trim(), hash, full_name.trim(), role.id, resolvedBranch, referralCode).run();
       const newId = res.meta.last_row_id;
       await env.DB.prepare(`
         INSERT INTO staff_profiles (user_id, phone_number, job_title, date_joined, notes, updated_by, updated_at)

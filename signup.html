@@ -62,9 +62,33 @@
           <label for="phone">Phone number *</label>
           <input id="phone" type="tel" autocomplete="tel" placeholder="08012345678" required>
         </div>
+        <div>
+          <label for="alternatePhone">Alternate phone number</label>
+          <input id="alternatePhone" type="tel" autocomplete="tel" placeholder="Optional second number">
+        </div>
         <div class="full">
           <label for="property">Interested property</label>
           <select id="property"><option value="">No property selected</option></select>
+        </div>
+        <div>
+          <label for="nokName">Next of kin name</label>
+          <input id="nokName" type="text" autocomplete="name">
+        </div>
+        <div>
+          <label for="nokPhone">Next of kin phone</label>
+          <input id="nokPhone" type="tel" autocomplete="tel">
+        </div>
+        <div>
+          <label for="nokRelationship">Next of kin relationship</label>
+          <input id="nokRelationship" type="text" placeholder="e.g. Spouse, sibling">
+        </div>
+        <div>
+          <label for="nokAddress">Next of kin address</label>
+          <input id="nokAddress" type="text">
+        </div>
+        <div class="full">
+          <label for="referralCode">Staff referral code</label>
+          <input id="referralCode" type="text" placeholder="Enter a staff referral code if you have one" autocomplete="off">
         </div>
         <div class="full">
           <div class="route-note" style="font-size:11px">New accounts are reviewed by our client team. Branch, marketer and team assignment is completed by authorised Bliss Legacy staff.</div>
@@ -98,6 +122,9 @@
   <script>
     (async () => {
       const propertySelect = document.getElementById('property');
+      const referralInput = document.getElementById('referralCode');
+      const referral = new URLSearchParams(window.location.search).get('ref');
+      if (referral && referralInput) referralInput.value = referral.trim().toUpperCase();
       try {
         const properties = await fetch('/api/properties?limit=50').then(r => r.json());
         propertySelect.innerHTML = '<option value="">No property selected</option>' + (properties.properties || []).map(p => `<option value="${p.id}">${p.reference} — ${p.title}</option>`).join('');
@@ -127,6 +154,12 @@
             full_name: document.getElementById('fullName').value.trim(),
             email: document.getElementById('email').value.trim(),
             phone_number: document.getElementById('phone').value.trim(),
+            alternate_phone: document.getElementById('alternatePhone').value.trim(),
+            next_of_kin_name: document.getElementById('nokName').value.trim(),
+            next_of_kin_phone: document.getElementById('nokPhone').value.trim(),
+            next_of_kin_relationship: document.getElementById('nokRelationship').value.trim(),
+            next_of_kin_address: document.getElementById('nokAddress').value.trim(),
+            referral_code: document.getElementById('referralCode').value.trim(),
             interested_property_id: document.getElementById('property').value ? Number(document.getElementById('property').value) : null,
             password
           })

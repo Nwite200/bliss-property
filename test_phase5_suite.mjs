@@ -556,9 +556,9 @@ await test('virtual account is never fabricated and shows the exact pending mess
   const res = await request('/api/client/virtual-account', { headers: { Cookie: adaCookie } });
   assert(res.status === 200, 'expected 200');
   assert(res.data.is_active === false, 'must be inactive');
-  assert(res.data.provider === 'ALAT by Wema Bank', 'provider is ALAT by Wema Bank');
-  assert(res.data.status === 'Awaiting onboarding', `status expected Awaiting onboarding, got ${res.data.status}`);
-  assert(res.data.notice === 'Your dedicated payment account will be available once our Wema Bank payment integration is activated. Please contact our finance team for payment assistance.', 'exact message');
+  assert(res.data.provider === 'ALATPay by Wema Bank', 'provider is ALATPay by Wema Bank');
+  assert(['Awaiting credentials', 'Awaiting business ID'].includes(res.data.status), `status expected a pending ALATPay state, got ${res.data.status}`);
+  assert(String(res.data.notice || '').includes('ALATPay'), 'notice must explain the pending ALATPay configuration');
   assert(!res.data.account_number, 'no fake account number');
 });
 

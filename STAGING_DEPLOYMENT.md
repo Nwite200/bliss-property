@@ -28,7 +28,7 @@ These are separate from the production resources. Staging is not connected to `b
 
 ## 2. Migration status
 
-All nine migrations were applied to `bliss-legacy-staging-db` only:
+All ten migrations were applied to `bliss-legacy-staging-db` only:
 
 - `0001_auth_org.sql`
 - `0002_properties.sql`
@@ -39,6 +39,7 @@ All nine migrations were applied to `bliss-legacy-staging-db` only:
 - `0007_phase6_staff_dashboards.sql`
 - `0008_phase7_commissions_reports.sql`
 - `0009_client_properties.sql`
+- `0010_referrals_onboarding_alatpay.sql`
 
 `wrangler d1 migrations list bliss-legacy-staging-db --remote` reports no pending migrations.
 
@@ -51,8 +52,8 @@ All nine migrations were applied to `bliss-legacy-staging-db` only:
 | Phase 5 | 62 | 0 | 0 |
 | Phase 6 | 21 | 0 | 0 |
 | Phase 7 | 26 | 0 | 0 |
-| Phase 8 | 19 | 0 | 0 |
-| **Total** | **128** | **0** | **0** |
+| Phase 8 | 21 | 0 | 0 |
+| **Total** | **130** | **0** | **0** |
 
 Also passed: `node --check` for the Worker, all external JS and all test suites; inline HTML script checks; `git diff --check`.
 
@@ -138,9 +139,30 @@ Until that dashboard step is completed, Git pushes will not automatically trigge
 - PWA icons are generated from the official `assets/images/bliss-legacy-logo.png` file.
 - No ODATANO asset or brand string exists in the repository. The intro therefore uses the actual Bliss Legacy logo; `LOGO_SRC` in `assets/js/intro-config.js` is the single swap point if a real ODATANO file is supplied.
 
-## 8. Deployment version
+## 8. ALATPay and referrals
 
-Current staging deployment version ID: `6989e126-06f9-4442-8549-57fedcb49530`
+### ALATPay
+
+- Server-side secret configured as Worker secret `ALATPAY_SECRET_KEY`.
+- Staging business ID configured as Worker secret `ALATPAY_BUSINESS_ID` and in provider metadata.
+- Base URL: `https://apibox.alatpay.ng`.
+- Virtual account endpoint: `POST /bank-transfer/api/v1/bankTransfer/virtualAccount`.
+- Client endpoint: `POST /api/client/virtual-account`; staff-assisted endpoint: `POST /api/finance/clients/:id/virtual-account`.
+- Webhook: `POST /api/webhooks/alatpay`, verified by re-querying ALATPay with the secret key.
+- A live staging virtual account was successfully issued for ₦1,000 and stored; the account number is masked in logs/final reporting.
+- The ALATPay dashboard must have its callback URL set to `https://bliss-property.easterntechexpo.workers.dev/api/webhooks/alatpay`.
+
+### Referrals
+
+- Every staff user has a unique `referral_code`; existing users were backfilled by migration `0010`.
+- `/api/me` returns `referral_code` and `referral_link`.
+- Signup supports `?ref=CODE`; valid codes attribute the client to the referrer and branch.
+- New client onboarding stores alternate phone and next-of-kin name, phone, relationship and address.
+- Referred clients are visible to the referrer through the role-scoped client queries.
+
+## 9. Deployment version
+
+Current staging deployment version ID: `32958c88-5943-4606-b9ae-3977b30608eb`
 
 ---
 

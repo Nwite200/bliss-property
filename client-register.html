@@ -37,11 +37,16 @@
         <form id="clientForm" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
           <div style="grid-column:1/-1"><label class="field-label">Full name <span class="req">*</span></label><input id="full_name" type="text" required></div>
           <div style="grid-column:1/-1"><label class="field-label">Phone number <span class="req">*</span></label><input id="phone_number" type="tel" required></div>
+          <div style="grid-column:1/-1"><label class="field-label">Alternate phone number</label><input id="alternate_phone" type="tel"></div>
           <div style="grid-column:1/-1"><label class="field-label">Email address</label><input id="email_address" type="email"></div>
           <div style="grid-column:1/-1"><label class="field-label">Residential address</label><input id="residential_address" type="text"></div>
           <div style="grid-column:1/-1"><label class="field-label">State</label><input id="state" type="text"></div>
           <div style="grid-column:1/-1"><label class="field-label">City</label><input id="city" type="text"></div>
-          <div style="grid-column:1/-1"><label class="field-label">Next of kin</label><input id="next_of_kin" type="text"></div>
+          <div><label class="field-label">Next of kin name</label><input id="next_of_kin_name" type="text"></div>
+          <div><label class="field-label">Next of kin phone</label><input id="next_of_kin_phone" type="tel"></div>
+          <div><label class="field-label">Next of kin relationship</label><input id="next_of_kin_relationship" type="text" placeholder="e.g. Spouse, sibling"></div>
+          <div><label class="field-label">Next of kin address</label><input id="next_of_kin_address" type="text"></div>
+          <div style="grid-column:1/-1"><label class="field-label">Referral code (optional)</label><input id="referral_code" type="text" placeholder="Staff referral code"></div>
           <div style="grid-column:1/-1"><label class="field-label">Preferred channel</label><select id="preferred_channel"><option>WhatsApp</option><option>Email</option><option>Phone</option><option>WhatsApp + Email</option></select></div>
           <div style="grid-column:1/-1"><label class="field-label">Sale type</label><select id="sale_type"><option>New Sale</option><option>Resale</option><option>Referral</option><option>Other</option></select></div>
           <div style="grid-column:1/-1"><label class="field-label">Interested property</label><input id="interested_property_id" type="text" placeholder="Property reference or ID"></div>

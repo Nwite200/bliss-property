@@ -152,7 +152,8 @@ Client detail returns:
 | GET | `/api/client/property` | Primary property detail |
 | GET | `/api/client/payments` | Own non-demo payment history |
 | GET | `/api/client/installments` | Own installment schedules |
-| GET | `/api/client/virtual-account` | Wema/ALAT status (pending until integration) |
+| GET | `/api/client/virtual-account` | ALATPay account status / readiness |
+| POST | `/api/client/virtual-account` | Generate a dedicated ALATPay bank-transfer account |
 | GET | `/api/client/receipts` | Own receipts |
 | GET | `/api/client/receipts/:id/download` | Own receipt PDF |
 | GET | `/api/finance/receipts/:id/download` | MD/FO/BM staff receipt PDF |
@@ -161,6 +162,31 @@ Client detail returns:
 | POST | `/api/client/notifications/read-all` | Mark all read |
 
 Client endpoints are always scoped to the authenticated client. Cross-client access returns `403`.
+
+### ALATPay integration
+
+- Base URL: `https://apibox.alatpay.ng`
+- Auth header for server requests: `Ocp-Apim-Subscription-Key: <ALATPAY_SECRET_KEY>`
+- Worker secret: `ALATPAY_SECRET_KEY`
+- Worker secret: `ALATPAY_BUSINESS_ID`
+- Virtual-account endpoint: `POST /bank-transfer/api/v1/bankTransfer/virtualAccount`
+- Webhook: `POST /api/webhooks/alatpay`
+- Staff-assisted provisioning: `POST /api/finance/clients/:id/virtual-account` (MD/FO/BM)
+
+The webhook re-queries ALATPay with the secret key before crediting any payment. It does not trust an unverified callback payload.
+
+### Referral fields
+
+Client onboarding accepts:
+
+- `alternate_phone`
+- `next_of_kin_name`
+- `next_of_kin_phone`
+- `next_of_kin_relationship`
+- `next_of_kin_address`
+- `referral_code`
+
+`/api/me` returns `referral_code` and `referral_link` for staff. `?ref=CODE` on `signup.html` pre-fills the referral code.
 
 ---
 

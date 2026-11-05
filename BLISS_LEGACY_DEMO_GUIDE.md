@@ -296,4 +296,4 @@ PWA files:
   - Finance: `/api/staff` 403, `/api/leads` 403.
   - Client: all staff/finance endpoints 403; own dashboard 200.
   - Branch Manager: own-branch access 200; cross-branch checks remain enforced.
-- Full suite: **128 passed, 0 failed, 0 skipped**.
+- Full suite: **130 passed, 0 failed, 0 skipped**.
