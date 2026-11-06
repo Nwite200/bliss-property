@@ -104,6 +104,92 @@ async function load() {
     document.getElementById("paymentPlan").innerHTML = '<div class="empty-state">No payment plan has been configured for this client.</div>';
   }
 
+  // Payment account mode and password reset controls
+  let me = {};
+  try { const meRes = await fetchJson("/me"); if (meRes.ok) me = meRes.data || {}; } catch {}
+  const actualRole = me.actual_role || me.role || "";
+  const paymentAccount = data.payment_account || { mode: "none" };
+  const paMode = document.getElementById("paymentAccountMode");
+  const paDetails = document.getElementById("paymentAccountDetails");
+  if (paMode) {
+    paMode.innerHTML = paymentAccount.mode === "static"
+      ? '<span class="badge badge-green">Static wallet</span>'
+      : paymentAccount.mode === "dynamic"
+        ? `<span class="badge ${paymentAccount.status === "expired" ? "badge-amber" : "badge-green"}">Dynamic account${paymentAccount.status === "expired" ? " · expired" : ""}</span>`
+        : '<span class="badge badge-gray">No account yet</span>';
+    paDetails.innerHTML = paymentAccount.account_number ? `
+      <div><strong>${esc(paymentAccount.bank_name || "Wema Bank")}</strong> · ${esc(paymentAccount.account_name || "")}</div>
+      <div style="font-family:monospace;font-size:18px;font-weight:800;color:var(--green-dark)">${esc(paymentAccount.account_number)}</div>
+      ${paymentAccount.mode === "dynamic" ? `<div>Amount: <strong>${money(paymentAccount.amount_ngn)}</strong> · Expires: ${paymentAccount.expires_at ? new Date(paymentAccount.expires_at).toLocaleString() : "no expiry supplied"}</div>` : '<div>Permanent account for any amount.</div>'}
+    ` : `<div>No static wallet or dynamic account yet. The client can pay without a BVN by generating a one-off account from My Virtual Account.</div>`;
+  }
+
+  const resetBtn = document.getElementById("resetClientBtn");
+  const canReset = ["Super Admin", "Managing Director", "Branch Manager", "Customer Care"].includes(actualRole);
+  if (resetBtn) {
+    resetBtn.style.display = canReset ? "" : "none";
+    resetBtn.onclick = async () => {
+      const result = document.getElementById("resetPasswordResult");
+      const ok = window.confirm(`Reset the password for ${c.full_name} (${c.client_reference})? Confirm their identity from the record first. The temporary password will be shown only once.`);
+      if (!ok) return;
+      resetBtn.disabled = true;
+      resetBtn.textContent = "Resetting…";
+      try {
+        const res = await fetchJson(`/clients/${id}/reset-password`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ send_sms: document.getElementById("resetSendSms").checked })
+        });
+        if (!res.ok) {
+          result.style.display = "";
+          result.textContent = res.data.error || "Unable to reset the password.";
+          return;
+        }
+        result.style.display = "";
+        result.innerHTML = `
+          <div style="font-weight:800;margin-bottom:6px">Temporary password (shown once)</div>
+          <div style="font-family:monospace;font-size:20px;font-weight:800;letter-spacing:1px;background:#fff;border:1px solid #E6C76A;border-radius:6px;padding:10px;word-break:break-all">${esc(res.data.temporary_password)}</div>
+          <div style="margin-top:8px">Give this to the client now. They must change it at first login. It cannot be recovered later.</div>
+          <div style="margin-top:6px">SMS: ${res.data.sms_sent ? "sent" : "not sent"} (${esc(res.data.sms_reason || "")}).</div>`;
+      } catch {
+        result.style.display = "";
+        result.textContent = "Network error. The password may not have been reset.";
+      } finally {
+        resetBtn.disabled = false;
+        resetBtn.textContent = "Generate temporary password";
+      }
+    };
+  }
+  const resetHistory = document.getElementById("resetHistoryList");
+  if (resetHistory) {
+    const history = Array.isArray(data.password_reset_history) ? data.password_reset_history : [];
+    resetHistory.innerHTML = history.length ? history.map(h => {
+      const meta = h.metadata || {};
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+        <div>${new Date(h.created_at).toLocaleString()} · <strong>${esc(h.action.replace("client.password_reset.", ""))}</strong></div>
+        <div style="font-size:11px">${esc(h.actor_name || "System")}${meta.actor_role ? ` (${esc(meta.actor_role)})` : ""}${meta.sms_sent ? " · SMS sent" : ""}${meta.ip ? ` · ${esc(meta.ip)}` : ""}</div>
+      </div>`;
+    }).join("") : "No client password resets recorded.";
+  }
+  const phoneCard = document.getElementById("phoneChangeCard");
+  if (phoneCard) {
+    const canChangePhone = ["Super Admin", "Managing Director", "Customer Care"].includes(actualRole);
+    phoneCard.style.display = canChangePhone ? "" : "none";
+    const changeBtn = document.getElementById("changePhoneBtn");
+    if (changeBtn) changeBtn.onclick = async () => {
+      const msg = document.getElementById("phoneChangeMsg");
+      const phone = document.getElementById("newClientPhone").value.trim();
+      if (!phone) { msg.textContent = "Enter a new phone number."; return; }
+      changeBtn.disabled = true;
+      const res = await fetchJson(`/clients/${id}/phone`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone_number: phone, reason: document.getElementById("phoneChangeReason").value.trim() })
+      });
+      changeBtn.disabled = false;
+      msg.textContent = res.ok ? "Phone number changed and audited." : (res.data.error || "Unable to change the phone number.");
+      if (res.ok) setTimeout(() => location.reload(), 700);
+    };
+  }
+
   document.getElementById("statusSelect").value = c.status;
   document.getElementById("saveStatus").onclick = async () => {
     const result = await fetchJson("/clients/" + id + "/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: document.getElementById("statusSelect").value }) });

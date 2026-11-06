@@ -189,14 +189,63 @@
                 </div>
                 <div>
                   <span style="font-size:11px;color:var(--muted);text-transform:uppercase">Expires</span>
-                  <div style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px">${data.is_static ? 'Permanent account' : (data.expires_at ? new Date(data.expires_at).toLocaleString() : 'Single payment')}</div>
+                  <div id="vaExpires" style="font-size:16px;font-weight:700;color:var(--ink);margin-top:4px" data-expires="${data.expires_at || ''}" data-static="${data.is_static ? '1' : '0'}">${data.is_static ? 'Permanent account' : (data.expires_at ? new Date(data.expires_at).toLocaleString() : 'No expiry provided')}</div>
+                  ${data.is_static ? '' : '<div id="vaCountdown" style="font-size:12px;color:#B45309;margin-top:4px"></div>'}
                 </div>
               </div>
               <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:12px;font-size:12px;color:#2E7D32">
-                ✓ ${data.is_static ? 'This permanent account can receive any amount and any number of payments.' : 'Payments transferred to this dedicated virtual account are verified and receipted automatically.'}
+                ✓ ${data.is_static ? 'This permanent account can receive any amount and any number of payments.' : 'Transfer exactly the amount shown before the account expires. Payments are verified and receipted automatically.'}
               </div>
+              ${data.is_static ? '' : `
+              <div style="margin-top:14px;display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+                <div style="flex:1;min-width:180px">
+                  <label class="field-label" for="renewAmount">New amount (₦)</label>
+                  <input class="field-input" id="renewAmount" type="number" min="100" step="100" value="${data.amount_ngn || data.outstanding_ngn || ''}">
+                </div>
+                <button class="btn btn-outline" id="renewVaBtn">Get a new account</button>
+              </div>
+              <div id="renewVaMsg" style="font-size:12px;margin-top:8px"></div>`}
+              ${data.static_offer ? `<div style="margin-top:16px;background:#F7F9F7;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;color:var(--muted);line-height:1.6"><strong style="color:var(--ink)">Prefer one permanent account number?</strong> ${esc(data.static_offer_text || 'You can add a static wallet later with your BVN. The BVN is used only by ALATPay and is never stored by Bliss Legacy.')}</div>` : ''}
             </div>
           `;
+          const renewBtn = document.getElementById('renewVaBtn');
+          if (renewBtn) {
+            renewBtn.addEventListener('click', async () => {
+              const msg = document.getElementById('renewVaMsg');
+              const amount = Number(document.getElementById('renewAmount').value);
+              if (!Number.isFinite(amount) || amount < 100) { msg.textContent = 'Enter at least ₦100.'; return; }
+              renewBtn.disabled = true;
+              renewBtn.textContent = 'Generating…';
+              try {
+                const create = await fetch('/api/client/virtual-account', {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ amount })
+                });
+                const created = await create.json();
+                if (!create.ok) { msg.textContent = created.error || 'Unable to generate a new account.'; renewBtn.disabled = false; renewBtn.textContent = 'Get a new account'; return; }
+                window.location.reload();
+              } catch {
+                msg.textContent = 'Unable to generate a new account. Please try again.';
+                renewBtn.disabled = false;
+                renewBtn.textContent = 'Get a new account';
+              }
+            });
+          }
+          const expiresEl = document.getElementById('vaExpires');
+          const countdownEl = document.getElementById('vaCountdown');
+          if (expiresEl && countdownEl && expiresEl.dataset.static !== '1' && expiresEl.dataset.expires) {
+            const deadline = new Date(expiresEl.dataset.expires).getTime();
+            const tick = () => {
+              const left = deadline - Date.now();
+              if (!Number.isFinite(deadline)) { countdownEl.textContent = ''; return; }
+              if (left <= 0) { countdownEl.textContent = 'This account has expired. Generate a new account.'; countdownEl.style.color = '#C0392B'; return; }
+              const mins = Math.floor(left / 60000);
+              const secs = Math.floor((left % 60000) / 1000);
+              countdownEl.textContent = `Expires in ${mins}m ${String(secs).padStart(2, '0')}s`;
+            };
+            tick();
+            setInterval(tick, 1000);
+          }
         } else if (data.static_wallet && data.static_wallet.status === 'otp_pending') {
           box.innerHTML = `
             <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:24px;margin-top:16px">
@@ -242,30 +291,35 @@
         } else if (data.can_activate_static || data.can_generate) {
           box.innerHTML = `
             <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:24px;margin-top:16px">
-              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Create your permanent dedicated bank account. It can receive any amount and any number of payments.</p>
-              <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
-                <div style="flex:1;min-width:180px">
-                  <label class="field-label" for="walletBvn">BVN (11 digits)</label>
-                  <input class="field-input" id="walletBvn" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="Enter your BVN">
-                </div>
-                <button class="btn btn-green" id="activateWalletBtn">Create my dedicated account</button>
-              </div>
-              <div id="walletMsg" style="font-size:12px;margin-top:10px"></div>
-              <p style="font-size:11px;color:var(--muted);margin-top:12px">Your BVN is sent directly to ALATPay to create the account and is never stored by Bliss Legacy.${data.bvn_last4 ? ` BVN on file ends ${esc(data.bvn_last4)}.` : ''}</p>
-            </div>
-            ${Number(data.outstanding_ngn || 0) > 0 ? `
-            <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:24px;margin-top:16px">
-              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Need to pay right now? Generate a one-off payment account for a specific amount while your permanent account is being set up.</p>
+              <h3 style="font-size:16px;margin:0 0 6px">Pay by one-off bank transfer</h3>
+              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">No BVN is needed. Generate an account for the exact amount you want to pay. The account is temporary; generate a new one when it expires.</p>
+              ${data.dynamic_account ? `<div style="background:#FFF7E6;border:1px solid #F5D48A;border-radius:8px;padding:10px 12px;font-size:12px;color:#7A4A00;margin-bottom:12px">Previous account ${esc(data.dynamic_account.account_number || '')} is ${esc(data.dynamic_account.status || 'expired')}${data.dynamic_account.expires_at ? ` (expired ${new Date(data.dynamic_account.expires_at).toLocaleString()})` : ''}. Generate a new account below.</div>` : ''}
               <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
                 <div style="flex:1;min-width:180px">
                   <label class="field-label" for="vaAmount">Amount (₦)</label>
                   <input class="field-input" id="vaAmount" type="number" min="100" step="100" value="${data.outstanding_ngn || ''}" placeholder="Amount">
                 </div>
-                <button class="btn btn-outline" id="generateVaBtn">Generate one-off account</button>
+                <button class="btn btn-green" id="generateVaBtn">Generate payment account</button>
               </div>
               <div id="vaMsg" style="font-size:12px;margin-top:10px"></div>
-              <p style="font-size:11px;color:var(--muted);margin-top:12px">Outstanding balance: <strong>${Bliss.money(data.outstanding_ngn || 0)}</strong>.</p>
-            </div>` : ''}
+              <p style="font-size:11px;color:var(--muted);margin-top:12px">Outstanding balance: <strong>${Bliss.money(data.outstanding_ngn || 0)}</strong>. You can pay any amount from ₦100 up to the outstanding balance.</p>
+            </div>
+            <div style="background:#FFFFFF;border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px;margin-top:16px">
+              <strong style="color:var(--ink);font-size:14px;display:block;margin-bottom:4px">Optional: one permanent account number</strong>
+              <p style="font-size:12px;color:var(--muted);line-height:1.6;margin:0 0 10px">If you prefer not to generate an account for each payment, you can add a static wallet. It needs your BVN. ALATPay uses the BVN only to verify your identity; Bliss Legacy never stores it.</p>
+              <details>
+                <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--green-dark)">Add a static wallet (optional)</summary>
+                <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-top:12px">
+                  <div style="flex:1;min-width:180px">
+                    <label class="field-label" for="walletBvn">BVN (10 or 11 digits)</label>
+                    <input class="field-input" id="walletBvn" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="Enter your BVN">
+                  </div>
+                  <button class="btn btn-outline" id="activateWalletBtn">Create static wallet</button>
+                </div>
+                <div id="walletMsg" style="font-size:12px;margin-top:10px"></div>
+                ${data.bvn_last4 ? `<p style="font-size:11px;color:var(--muted);margin-top:8px">BVN on file ends ${esc(data.bvn_last4)}.</p>` : ''}
+              </details>
+            </div>
           `;
           document.getElementById('activateWalletBtn').addEventListener('click', async () => {
             const msg = document.getElementById('walletMsg');

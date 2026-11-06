@@ -145,8 +145,9 @@
 
     <form id="clientLoginForm">
       <div class="login-form-group">
-        <label for="clientIdentifier">Email Address or Client Reference *</label>
-        <input type="text" id="clientIdentifier" placeholder="e.g. BLC-MW2ER37J or name@example.com" required autocomplete="username">
+        <label for="clientIdentifier">Phone Number, Email, or Client Reference *</label>
+        <input type="text" id="clientIdentifier" placeholder="e.g. 0803 123 4567, name@example.com or BLC-..." required autocomplete="username">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Clients without email can sign in with their phone number.</div>
       </div>
 
       <div class="login-form-group">
@@ -169,13 +170,30 @@
 
       <div class="login-msg-box" id="loginMsg"></div>
     </form>
+
+    <div style="margin-top:22px;padding:14px 16px;background:#F7F9F7;border:1px solid var(--line);border-radius:10px;font-size:12px;color:var(--muted);line-height:1.6">
+      <strong style="color:var(--ink)">Can't log in?</strong> Contact your branch customer care or call the office:
+      <div id="branchCareList" style="margin-top:8px;display:flex;flex-direction:column;gap:4px">Loading branch contacts…</div>
+      <div style="margin-top:8px"><a href="forgot-password.html" style="color:var(--green-dark);font-weight:700">Reset your password</a></div>
+    </div>
   </div>
 
   <div class="back-home-wrap">
     <a href="index.html" class="back-home-link">← Return to Bliss Legacy Homepage</a>
   </div>
 
+  <script src="assets/js/site-config.js"></script>
   <script>
+    document.addEventListener('DOMContentLoaded', async () => {
+      try { if (window.BLISS_CONFIG_READY) await window.BLISS_CONFIG_READY; } catch {}
+      const list = document.getElementById('branchCareList');
+      const branches = (window.BLIS_CONFIG && Array.isArray(window.BLIS_CONFIG.branches)) ? window.BLIS_CONFIG.branches : [];
+      if (list) {
+        list.innerHTML = branches.length
+          ? branches.map(b => `<div>${b.name}${b.phone ? ` — <a href="tel:${String(b.phone).replace(/[^0-9+]/g, '')}" style="color:var(--green-dark);font-weight:700">${b.phone}</a>` : ''}</div>`).join('')
+          : `<div>${(window.BLIS_CONFIG && window.BLIS_CONFIG.phone) || 'Please contact customer care.'}</div>`;
+      }
+    });
     document.getElementById('clientLoginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const msg = document.getElementById('loginMsg');
@@ -202,7 +220,11 @@
         }
 
         if (data.user && data.user.role === 'Client') {
-          window.location.href = '/client-dashboard.html';
+          if (data.user.must_change_password) {
+            window.location.href = '/client-profile.html?force=1';
+          } else {
+            window.location.href = '/client-dashboard.html';
+          }
         } else if (data.user && data.user.role === 'Finance Officer') {
           window.location.href = '/finance-dashboard.html';
         } else {

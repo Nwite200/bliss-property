@@ -145,7 +145,7 @@ async function getSessionUser(env, request) {
   const sid = cookies[SESSION_COOKIE];
   if (!sid) return null;
   const row = await env.DB.prepare(
-    "SELECT s.id AS sid, s.expires_at, u.id, u.email, u.full_name, u.role_id, u.branch_id, u.is_active, u.referral_code, u.commission_access, u.property_plans_access, u.sms_access, u.care_scope, r.name AS role_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.id=?"
+    "SELECT s.id AS sid, s.expires_at, u.id, u.email, u.phone_e164, u.phone_verified_at, u.phone_changed_at, u.must_reset_password, u.full_name, u.role_id, u.branch_id, u.is_active, u.referral_code, u.commission_access, u.property_plans_access, u.sms_access, u.care_scope, r.name AS role_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.id=?"
   ).bind(sid).first();
   if (!row) return null;
   if (parseDbDate(row.expires_at) < new Date()) {
@@ -624,8 +624,31 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
     transactionId || null, orderId, expiresAt, Number(amountKobo),
     JSON.stringify({ response: data, request: payload }).slice(0, 5000), actorId || null, settings.mode
   ).run();
+
+  // Dynamic accounts need a pending payment row so the webhook can match the
+  // transfer to the right client, property, amount and payment mode. Older
+  // pending dynamic accounts are retired when a replacement is requested.
+  await env.DB.prepare(`
+    UPDATE payments SET status='expired'
+    WHERE client_id=? AND provider='alatpay' AND payment_mode=? AND status='pending'
+      AND method='ALATPay Dynamic Account'
+  `).bind(client.id, settings.mode).run();
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO payments
+      (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo,
+       is_demo, provider, provider_reference, provider_account_number, payment_mode)
+    VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Dynamic Account', 'pending', ?, 0, 'alatpay', ?, ?, ?)
+  `).bind(
+    client.id, client.interested_property_id || null, orderId, fromKobo(Number(amountKobo)),
+    Number(amountKobo), transactionId ? String(transactionId) : null, String(accountNumber), settings.mode
+  ).run();
+  const dynamicPayment = await env.DB.prepare(
+    "SELECT id FROM payments WHERE transaction_ref=? LIMIT 1"
+  ).bind(orderId).first();
+
   await audit(env, actorId || null, "provider.virtual_account.create", "client", String(client.id), {
-    provider: "alatpay", order_id: orderId, transaction_id: transactionId, amount_kobo: Number(amountKobo)
+    provider: "alatpay", order_id: orderId, transaction_id: transactionId, amount_kobo: Number(amountKobo),
+    payment_id: dynamicPayment ? dynamicPayment.id : null, account_type: "dynamic"
   }, client.assigned_branch_id);
   return {
     provider: "ALATPay by Wema Bank",
@@ -648,6 +671,10 @@ async function finalizeAlatpayCredit(env, payment, remoteData, mode, reference) 
   if (payment.status !== "pending") return { skipped: true, reason: "not_pending" };
   const amountKobo = remoteData?.Amount !== undefined ? toKobo(remoteData.Amount)
     : (remoteData?.amount !== undefined ? toKobo(remoteData.amount) : Number(payment.amount_kobo || 0));
+  const isStaticPayment = String(payment.method || "").toLowerCase().includes("static wallet");
+  if (!isStaticPayment && Number(payment.amount_kobo || toKobo(payment.amount)) !== amountKobo) {
+    return { skipped: true, reason: "amount_mismatch" };
+  }
   const transactionId = remoteData?.Id || remoteData?.id || payment.provider_reference || payment.transaction_ref;
   const accountNumber = remoteData?.NgnVirtualBankAccountNumber || remoteData?.ngnVirtualBankAccountNumber || payment.provider_account_number || null;
   const now = new Date().toISOString();
@@ -724,6 +751,25 @@ async function reconcileAlatpayPayments(env) {
           `).bind(client.id, client.interested_property_id || null, String(orderId), fromKobo(toKobo(remote.Amount ?? remote.amount)),
             toKobo(remote.Amount ?? remote.amount), String(transactionId), String(accountNumber), mode).run();
           payment = await env.DB.prepare("SELECT * FROM payments WHERE id=?").bind(inserted.meta.last_row_id).first();
+        }
+      }
+    }
+    if (!payment) {
+      const va = await env.DB.prepare(
+        "SELECT * FROM virtual_accounts WHERE order_id=? OR transaction_id=? OR provider_reference=? ORDER BY id DESC LIMIT 1"
+      ).bind(String(orderId), String(transactionId), String(transactionId)).first();
+      if (va) {
+        const client = await env.DB.prepare("SELECT id, interested_property_id FROM clients WHERE id=? AND is_deleted=0").bind(va.client_id).first();
+        if (client) {
+          const inserted = await env.DB.prepare(`
+            INSERT OR IGNORE INTO payments (client_id, property_id, transaction_ref, amount, currency, method, status, amount_kobo,
+              is_demo, provider, provider_reference, provider_account_number, payment_mode)
+            VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Dynamic Account', 'pending', ?, 0, 'alatpay', ?, ?, ?)
+          `).bind(client.id, client.interested_property_id || null, String(orderId), fromKobo(toKobo(remote.Amount ?? remote.amount)),
+            toKobo(remote.Amount ?? remote.amount), String(transactionId), va.account_number ? String(va.account_number) : null, mode).run();
+          payment = await env.DB.prepare(
+            "SELECT * FROM payments WHERE transaction_ref=? ORDER BY id DESC LIMIT 1"
+          ).bind(String(orderId)).first();
         }
       }
     }
@@ -1126,6 +1172,62 @@ function normalizeNigerianPhone(value) {
 
 function isValidLeadPhone(value) {
   return Boolean(normalizeNigerianPhone(value));
+}
+
+function phoneLookupKey(value) {
+  const normalized = normalizeNigerianPhone(value);
+  return normalized ? normalized.replace(/\D/g, "").slice(-10) : null;
+}
+
+async function findClientByPhone(env, value, excludeId) {
+  const key = phoneLookupKey(value);
+  if (!key) return null;
+  const sql = `
+    SELECT id, client_reference, full_name, phone_number, user_id, assigned_branch_id
+    FROM clients
+    WHERE is_deleted=0${excludeId ? " AND id<>?" : ""}
+      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(phone_number),' ',''),'-',''),'(',''),')',''),'+',''),'.','') LIKE ?
+    ORDER BY id DESC`;
+  const stmt = env.DB.prepare(sql);
+  const { results } = excludeId
+    ? await stmt.bind(excludeId, `%${key}`).all()
+    : await stmt.bind(`%${key}`).all();
+  return (results || []).find(row => phoneLookupKey(row.phone_number) === key) || null;
+}
+
+function syntheticClientEmail() {
+  return `client-${crypto.randomUUID()}@no-email.blisslegacy.local`;
+}
+
+function generateTemporaryPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(14));
+  let out = "";
+  for (const byte of bytes) out += alphabet[byte % alphabet.length];
+  return `B!${out}`;
+}
+
+function canResetClientPassword(actor, client) {
+  const actual = actor.actual_role_name || actor.role_name;
+  if (["Super Admin", "Managing Director"].includes(actual)) return true;
+  if (actual === "Branch Manager") {
+    return Number(actor.branch_id) === Number(client.assigned_branch_id);
+  }
+  if (actual === "Customer Care") {
+    if (String(actor.care_scope || "branch").toLowerCase() === "national") return true;
+    return Number(actor.branch_id) === Number(client.assigned_branch_id);
+  }
+  return false;
+}
+
+function canChangeClientPhone(actor, client) {
+  const actual = actor.actual_role_name || actor.role_name;
+  if (["Super Admin", "Managing Director"].includes(actual)) return true;
+  if (actual === "Customer Care") {
+    if (String(actor.care_scope || "branch").toLowerCase() === "national") return true;
+    return Number(actor.branch_id) === Number(client.assigned_branch_id);
+  }
+  return false;
 }
 
 function normalizeTemperature(value, fallback = null) {
@@ -4081,6 +4183,15 @@ async function getSmsSettings(env) {
   };
 }
 
+async function smsDeliveryReady(env) {
+  const settings = await getSmsSettings(env);
+  if (!settings.enabled) return false;
+  if (settings.provider === "mock") return String(env.ENVIRONMENT || "").toLowerCase() !== "production";
+  if (settings.provider === "termii") return Boolean(env.TERMII_API_KEY);
+  if (settings.provider === "africastalking") return Boolean(env.AFRICASTALKING_API_KEY && env.AFRICASTALKING_USERNAME);
+  return false;
+}
+
 async function setSmsSetting(env, key, value, actorId) {
   await env.DB.prepare(`
     INSERT INTO sms_settings (setting_key, setting_value, updated_by, updated_at)
@@ -4510,6 +4621,12 @@ async function verifyClientVerificationOtp(env, clientId, code, actorId) {
     UPDATE clients SET verification_status='verified', verification_channel=?, verified_at=datetime('now'), updated_at=datetime('now')
     WHERE id=?
   `).bind(otp.channel, clientId).run();
+  if (otp.channel === "sms") {
+    await env.DB.prepare(`
+      UPDATE users SET phone_verified_at=datetime('now'), updated_at=datetime('now')
+      WHERE id=(SELECT user_id FROM clients WHERE id=?)
+    `).bind(clientId).run().catch(() => {});
+  }
   await audit(env, actorId || null, "client.verification.verified", "client", String(clientId), {
     channel: otp.channel, otp_id: otp.id
   }, null);
@@ -4785,6 +4902,20 @@ async function handleFetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // Clients holding a temporary password may only load their profile and
+    // change the password. Every other client API stays blocked until then.
+    if (path.startsWith("/api/client/") &&
+        !path.startsWith("/api/client/password-reset/") &&
+        !(path === "/api/client/profile" && request.method === "GET")) {
+      const passwordGateUser = await getSessionUser(env, request);
+      if (passwordGateUser && passwordGateUser.role_name === "Client" && Number(passwordGateUser.must_reset_password) === 1) {
+        return json({
+          error: "You must change your temporary password before using the portal.",
+          code: "PASSWORD_CHANGE_REQUIRED"
+        }, 403);
+      }
+    }
+
     // ---- Health check ----
     if (path === "/api/health") return json({ ok: true });
 
@@ -4951,11 +5082,12 @@ async function handleFetch(request, env) {
         next_of_kin_address, referral_code, residential_address, state, city, branch_id,
         identity_type, identity_number, bvn, terms_accepted
       } = body || {};
-      if (!full_name || !email || !phone_number || !password) {
-        return json({ error: "Full name, email, phone number and password are required" }, 400);
+      if (!full_name || !phone_number || !password) {
+        return json({ error: "Full name, phone number and password are required" }, 400);
       }
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) {
-        return json({ error: "A valid email address is required" }, 400);
+      const emailProvided = Boolean(email && String(email).trim());
+      if (emailProvided && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) {
+        return json({ error: "Enter a valid email address or leave it blank" }, 400);
       }
       if (!/^[+0-9()\s-]{7,25}$/.test(String(phone_number).trim())) {
         return json({ error: "A valid phone number is required" }, 400);
@@ -5005,17 +5137,19 @@ async function handleFetch(request, env) {
       if (!validPassword(password)) {
         return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
       }
-      const normalizedEmail = String(email).trim().toLowerCase();
+      const normalizedEmail = emailProvided ? String(email).trim().toLowerCase() : null;
       const normalizedPhone = signupPhone;
       const signupIp = clientIp(request);
       if (await recentAuditCount(env, "signup.attempt", `ip:${signupIp}`, 60) >= 5) {
         return json({ error: "Too many registration attempts. Please try again later." }, 429);
       }
-      if (await recentAuditCount(env, "signup.attempt", `email:${normalizedEmail}`, 1440) >= 3) {
+      if (normalizedEmail && await recentAuditCount(env, "signup.attempt", `email:${normalizedEmail}`, 1440) >= 3) {
         return json({ error: "Too many registration attempts for this email. Please try again later." }, 429);
       }
-      await audit(env, null, "signup.attempt", "signup", `ip:${signupIp}`, { email: normalizedEmail });
-      await audit(env, null, "signup.attempt", "signup", `email:${normalizedEmail}`, { ip: signupIp });
+      await audit(env, null, "signup.attempt", "signup", `ip:${signupIp}`, { email: normalizedEmail, phone: normalizedPhone });
+      if (normalizedEmail) {
+        await audit(env, null, "signup.attempt", "signup", `email:${normalizedEmail}`, { ip: signupIp });
+      }
       const activeTerms = await env.DB.prepare(`
         SELECT id, version_no, title FROM terms_versions WHERE is_active=1 ORDER BY version_no DESC LIMIT 1
       `).first();
@@ -5023,12 +5157,21 @@ async function handleFetch(request, env) {
       if (!isTruthy(terms_accepted)) {
         return json({ error: "You must read and accept the Terms and Conditions before creating an account" }, 400);
       }
-      const existingUser = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=?").bind(normalizedEmail).first();
+      const existingUser = normalizedEmail
+        ? await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=?").bind(normalizedEmail).first()
+        : null;
       if (existingUser) return json({ error: "An account with this email already exists" }, 409);
-      const existingClient = await env.DB.prepare(
-        "SELECT id FROM clients WHERE (LOWER(email_address)=? OR phone_number=?) AND is_deleted=0 LIMIT 1"
-      ).bind(normalizedEmail, signupPhone).first();
-      if (existingClient) return json({ error: "A client record with this email or phone already exists" }, 409);
+      const existingPhoneUser = await env.DB.prepare("SELECT id FROM users WHERE phone_e164=?").bind(normalizedPhone).first();
+      const existingPhoneClient = await findClientByPhone(env, normalizedPhone);
+      if (existingPhoneUser || existingPhoneClient) {
+        return json({
+          error: "This phone number is already registered. Each phone number can only be used by one client account. If family members share this phone, contact customer care to arrange separate accounts."
+        }, 409);
+      }
+      const existingClient = normalizedEmail
+        ? await env.DB.prepare("SELECT id FROM clients WHERE LOWER(email_address)=? AND is_deleted=0 LIMIT 1").bind(normalizedEmail).first()
+        : null;
+      if (existingClient) return json({ error: "A client record with this email already exists" }, 409);
 
       const system = await env.DB.prepare(`
         SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
@@ -5060,10 +5203,11 @@ async function handleFetch(request, env) {
       const clientRole = await env.DB.prepare("SELECT id FROM roles WHERE name='Client'").first();
       if (!clientRole) return json({ error: "Client role is not configured" }, 503);
       const hash = await hashPassword(password);
+      const loginEmail = normalizedEmail || syntheticClientEmail();
       const userRes = await env.DB.prepare(`
-        INSERT INTO users (email, password_hash, full_name, role_id, branch_id, is_active)
-        VALUES (?, ?, ?, ?, ?, 1)
-      `).bind(normalizedEmail, hash, String(full_name).trim(), clientRole.id, resolvedBranch).run();
+        INSERT INTO users (email, phone_e164, password_hash, full_name, role_id, branch_id, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+      `).bind(loginEmail, normalizedPhone, hash, String(full_name).trim(), clientRole.id, resolvedBranch).run();
       const userId = userRes.meta.last_row_id;
       const clientRef = "BLC-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
       const nextOfKinLegacy = [next_of_kin_name, next_of_kin_relationship ? `(${next_of_kin_relationship})` : ""]
@@ -5120,7 +5264,7 @@ async function handleFetch(request, env) {
         VALUES (?, NULL, 'Prospect', ?)
       `).bind(clientId, userId).run();
       await audit(env, userId, "client.self_register", "client", String(clientId), {
-        client_reference: clientRef, email: normalizedEmail, branch_id: resolvedBranch,
+        client_reference: clientRef, email: normalizedEmail, phone: normalizedPhone, branch_id: resolvedBranch,
         branch_selected_by_client: Boolean(requestedBranch),
         referral_code: attribution.referralCodeUsed, referred_by_staff_id: attribution.referredByStaffId,
         identity_type: resolvedIdentityType, identity_last4: identityLast4,
@@ -5184,9 +5328,10 @@ async function handleFetch(request, env) {
         }
       } else {
         virtualAccount = {
-          ok: false,
-          status: "bvn_required",
-          message: "Add your BVN in My Virtual Account to activate your dedicated bank account."
+          ok: true,
+          status: "dynamic_available",
+          payment_method: "dynamic",
+          message: "No BVN is needed to pay. Open My Virtual Account to generate a one-off bank-transfer account for your amount."
         };
       }
 
@@ -5197,6 +5342,8 @@ async function handleFetch(request, env) {
         client_id: clientId,
         client_reference: clientRef,
         kyc_status: "pending",
+        phone: normalizedPhone,
+        must_change_password: false,
         verification,
         virtual_account: virtualAccount,
         terms: { accepted: true, version_id: activeTerms.id, version_no: activeTerms.version_no, title: activeTerms.title },
@@ -5210,51 +5357,59 @@ async function handleFetch(request, env) {
     if (path === "/api/login" && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const body = await request.json();
-      const { email, password } = body || {};
-      if (!email || !password) return json({ error: "Identifier and password required" }, 400);
+      const { email, phone, password } = body || {};
+      const identifierRaw = String(phone || email || "").trim();
+      if (!identifierRaw || !password) return json({ error: "Phone number, email or client reference and password required" }, 400);
 
-      const ident = email.trim().toLowerCase();
+      const ident = identifierRaw.toLowerCase();
+      const phoneIdent = normalizeNigerianPhone(identifierRaw);
+      const throttleKey = phoneIdent ? `phone:${phoneIdent}` : ident;
 
       // Basic brute-force throttling backed by the immutable audit log.
       const recentFailures = await env.DB.prepare(
         "SELECT COUNT(*) AS c FROM audit_logs WHERE action='login.failure' AND target_id=? AND created_at >= datetime('now','-15 minutes')"
-      ).bind(ident).first();
+      ).bind(throttleKey).first();
       if (recentFailures && recentFailures.c >= 10) {
-        await audit(env, null, "login.throttled", "user", ident, { reason: "too_many_failures" });
+        await audit(env, null, "login.throttled", "user", throttleKey, { reason: "too_many_failures" });
         return json({ error: "Too many failed attempts. Please try again later." }, 429);
       }
 
-      // Look up user by email directly OR by client reference / phone
-      let user = await env.DB.prepare(
-        "SELECT u.id, u.email, u.password_hash, u.is_active, u.is_test, u.test_expires_at, u.access_valid_until, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE LOWER(u.email)=?"
-      ).bind(ident).first();
-
-      if (!user) {
-        // Try resolving client reference or phone number
-        const clientMatch = await env.DB.prepare(
-          "SELECT user_id, email_address FROM clients WHERE (LOWER(client_reference)=? OR phone_number=?) AND is_deleted=0"
-        ).bind(ident, ident).first();
-        if (clientMatch) {
-          if (clientMatch.user_id) {
-            user = await env.DB.prepare(
-              "SELECT u.id, u.email, u.password_hash, u.is_active, u.is_test, u.test_expires_at, u.access_valid_until, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?"
-            ).bind(clientMatch.user_id).first();
-          } else if (clientMatch.email_address) {
-            user = await env.DB.prepare(
-              "SELECT u.id, u.email, u.password_hash, u.is_active, u.is_test, u.test_expires_at, u.access_valid_until, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE LOWER(u.email)=?"
-            ).bind(clientMatch.email_address.toLowerCase()).first();
+      const userSelect = "SELECT u.id, u.email, u.phone_e164, u.must_reset_password, u.password_hash, u.is_active, u.is_test, u.test_expires_at, u.access_valid_until, u.full_name, u.branch_id, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id";
+      // Look up user by email directly OR by normalised phone.
+      let user = await env.DB.prepare(`${userSelect} WHERE LOWER(u.email)=?`).bind(ident).first();
+      if (!user && phoneIdent) {
+        user = await env.DB.prepare(`${userSelect} WHERE u.phone_e164=?`).bind(phoneIdent).first();
+        if (!user) {
+          const phoneClient = await findClientByPhone(env, phoneIdent);
+          if (phoneClient && phoneClient.user_id) {
+            user = await env.DB.prepare(`${userSelect} WHERE u.id=?`).bind(phoneClient.user_id).first();
           }
         }
       }
 
       if (!user) {
-        await audit(env, null, "login.failure", "user", ident, { reason: "not_found" });
+        // Try resolving client reference or legacy phone formats.
+        let clientMatch = await env.DB.prepare(
+          "SELECT user_id, email_address FROM clients WHERE LOWER(client_reference)=? AND is_deleted=0"
+        ).bind(ident).first();
+        if (!clientMatch && phoneIdent) clientMatch = await findClientByPhone(env, phoneIdent);
+        if (clientMatch) {
+          if (clientMatch.user_id) {
+            user = await env.DB.prepare(`${userSelect} WHERE u.id=?`).bind(clientMatch.user_id).first();
+          } else if (clientMatch.email_address) {
+            user = await env.DB.prepare(`${userSelect} WHERE LOWER(u.email)=?`).bind(clientMatch.email_address.toLowerCase()).first();
+          }
+        }
+      }
+
+      if (!user) {
+        await audit(env, null, "login.failure", "user", throttleKey, { reason: "not_found" });
         return json({ error: "Invalid credentials" }, 401);
       }
 
       const ok = await verifyPassword(password, user.password_hash);
       if (!ok) {
-        await audit(env, user.id, "login.failure", "user", ident, { reason: "bad_password" });
+        await audit(env, user.id, "login.failure", "user", throttleKey, { reason: "bad_password" });
         return json({ error: "Invalid credentials" }, 401);
       }
 
@@ -5286,11 +5441,17 @@ async function handleFetch(request, env) {
       // If client, fetch client metadata
       let clientRef = null;
       let clientId = null;
+      let clientPhone = user.phone_e164 || null;
       if (user.role_name === "Client") {
         const c = await getClientForActor(env, { id: user.id, role_name: "Client", email: user.email });
         if (c) {
           clientRef = c.client_reference;
           clientId = c.id;
+          clientPhone = clientPhone || normalizeNigerianPhone(c.phone_number);
+          if (!user.phone_e164 && clientPhone) {
+            await env.DB.prepare("UPDATE users SET phone_e164=?, updated_at=datetime('now') WHERE id=? AND phone_e164 IS NULL")
+              .bind(clientPhone, user.id).run().catch(() => {});
+          }
         }
       }
 
@@ -5301,10 +5462,12 @@ async function handleFetch(request, env) {
           user: {
             id: user.id,
             email: user.email,
+            phone: clientPhone,
             full_name: user.full_name,
             role: user.role_name,
             client_reference: clientRef,
-            client_id: clientId
+            client_id: clientId,
+            must_change_password: Number(user.must_reset_password) === 1
           }
         },
         200,
@@ -5888,6 +6051,194 @@ async function handleFetch(request, env) {
     }
 
     // Password Reset Request
+    // =========================================================================
+    // CLIENT PHONE PASSWORD RESET (SMS code)
+    // =========================================================================
+    if (path === "/api/client/password-reset/availability" && request.method === "GET") {
+      const settings = await getSmsSettings(env);
+      const ready = settings.enabled && (
+        settings.provider === "mock"
+          ? String(env.ENVIRONMENT || "").toLowerCase() !== "production"
+          : (settings.provider === "termii" && Boolean(env.TERMII_API_KEY))
+            || (settings.provider === "africastalking" && Boolean(env.AFRICASTALKING_API_KEY && env.AFRICASTALKING_USERNAME))
+      );
+      const config = await getSiteConfig(env);
+      return json({
+        sms_enabled: Boolean(ready),
+        customer_care_phone: config.phone || "",
+        customer_care_email: config.email || ""
+      });
+    }
+
+    if (path === "/api/client/password-reset/request" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const phone = normalizeNigerianPhone(body.phone || body.phone_number);
+      const resetIp = clientIp(request);
+      const generic = {
+        ok: true,
+        sms_enabled: true,
+        message: "If this phone number is registered, you will receive reset instructions by SMS."
+      };
+      if (!phone) return json({ error: "Enter a valid Nigerian phone number" }, 400);
+      if (await recentAuditCount(env, "client.password_reset.request", `ip:${resetIp}`, 15) >= 5) {
+        return json({ error: "Too many reset requests. Please try again later." }, 429);
+      }
+      if (await recentAuditCount(env, "client.password_reset.request", `phone:${phone}`, 60) >= 3) {
+        return json({ error: "Too many reset requests for this phone. Please try again later." }, 429);
+      }
+      await audit(env, null, "client.password_reset.request", "phone", maskDestination("sms", phone), {
+        ip: resetIp, user_agent: String(request.headers.get("User-Agent") || "").slice(0, 300)
+      });
+
+      const settings = await getSmsSettings(env);
+      const smsReady = settings.enabled && (
+        settings.provider === "mock"
+          ? String(env.ENVIRONMENT || "").toLowerCase() !== "production"
+          : (settings.provider === "termii" && Boolean(env.TERMII_API_KEY))
+            || (settings.provider === "africastalking" && Boolean(env.AFRICASTALKING_API_KEY && env.AFRICASTALKING_USERNAME))
+      );
+      const config = await getSiteConfig(env);
+      if (!smsReady) {
+        await audit(env, null, "client.password_reset.blocked", "phone", maskDestination("sms", phone), { reason: "sms_disabled" });
+        return json({
+          ok: true,
+          sms_enabled: false,
+          message: `SMS reset is currently unavailable. Please contact customer care to reset your password${config.phone ? ` on ${config.phone}` : ""}.`
+        });
+      }
+
+      const user = await env.DB.prepare(
+        "SELECT u.id, u.full_name, u.phone_e164, u.phone_changed_at, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.phone_e164=? AND u.is_active=1 LIMIT 1"
+      ).bind(phone).first();
+      const client = user ? await env.DB.prepare(
+        "SELECT id, client_reference, assigned_branch_id FROM clients WHERE user_id=? AND is_deleted=0 LIMIT 1"
+      ).bind(user.id).first() : null;
+      if (!user || !client || user.role_name !== "Client") {
+        await audit(env, null, "client.password_reset.request", "phone", maskDestination("sms", phone), { reason: "not_registered" });
+        return json(generic);
+      }
+      if (user.phone_changed_at && (Date.now() - parseDbDate(user.phone_changed_at).getTime()) < 72 * 3600 * 1000) {
+        await audit(env, user.id, "client.password_reset.blocked", "client", String(client.id), { reason: "recent_phone_change" });
+        const noticeTemplate = await getSmsTemplate(env, "client_password_reset_notice");
+        await enqueueSms(env, {
+          clientId: client.id,
+          templateKey: "client_password_reset_notice",
+          phone,
+          body: renderSmsTemplate(
+            noticeTemplate ? noticeTemplate.body : "Customer care reset your Bliss Legacy password on {date}. If you did not request this, contact customer care immediately.",
+            { date: new Date().toISOString().slice(0, 10) }
+          ),
+          idempotencyKey: `client-reset-cooloff:${user.id}:${new Date().toISOString().slice(0, 10)}`
+        }).catch(() => {});
+        return json(generic);
+      }
+
+      await env.DB.prepare(
+        "UPDATE client_password_reset_codes SET consumed_at=datetime('now') WHERE user_id=? AND consumed_at IS NULL"
+      ).bind(user.id).run();
+      const code = generateOtpCode();
+      const salt = crypto.randomUUID();
+      const codeHash = await hashOtpCode(code, salt);
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const inserted = await env.DB.prepare(`
+        INSERT INTO client_password_reset_codes
+          (user_id, client_id, phone_e164, code_salt, code_hash, expires_at, requested_ip)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(user.id, client.id, phone, salt, codeHash, expiresAt, resetIp).run();
+      const codeId = inserted.meta.last_row_id;
+      const template = await getSmsTemplate(env, "client_password_reset_code");
+      const smsBody = renderSmsTemplate(
+        template ? template.body : "Your Bliss Legacy password reset code is {code}. It expires in 10 minutes. Do not share it.",
+        { code }
+      );
+      const queued = await enqueueSms(env, {
+        clientId: client.id,
+        templateKey: "client_password_reset_code",
+        phone,
+        body: smsBody,
+        idempotencyKey: `client-reset-code:${codeId}`
+      });
+      if (queued.skipped) {
+        await audit(env, user.id, "client.password_reset.delivery_failed", "client", String(client.id), {
+          reason: queued.reason || "sms_unavailable", code_id: codeId
+        });
+        return json({
+          ok: true,
+          sms_enabled: false,
+          message: `SMS reset is currently unavailable. Please contact customer care${config.phone ? ` on ${config.phone}` : ""}.`
+        });
+      }
+      await audit(env, user.id, "client.password_reset.code_sent", "client", String(client.id), {
+        code_id: codeId, phone: maskDestination("sms", phone)
+      });
+      return json(generic);
+    }
+
+    if (path === "/api/client/password-reset/verify" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const phone = normalizeNigerianPhone(body.phone || body.phone_number);
+      const code = String(body.code || "").replace(/\D/g, "");
+      const newPassword = String(body.new_password || body.password || "");
+      const resetIp = clientIp(request);
+      if (!phone || !/^\d{6}$/.test(code)) return json({ error: "Enter the 6-digit code sent to your phone" }, 400);
+      if (!validPassword(newPassword)) return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
+      const user = await env.DB.prepare(
+        "SELECT u.id, u.password_hash, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.phone_e164=? AND u.is_active=1 LIMIT 1"
+      ).bind(phone).first();
+      const client = user ? await env.DB.prepare(
+        "SELECT id, client_reference, assigned_branch_id FROM clients WHERE user_id=? AND is_deleted=0 LIMIT 1"
+      ).bind(user.id).first() : null;
+      if (!user || !client || user.role_name !== "Client") {
+        await audit(env, null, "client.password_reset.failed", "phone", maskDestination("sms", phone), { reason: "not_registered", ip: resetIp });
+        return json({ error: "Invalid or expired reset code" }, 400);
+      }
+      const reset = await env.DB.prepare(`
+        SELECT * FROM client_password_reset_codes
+        WHERE user_id=? AND phone_e164=? AND consumed_at IS NULL
+        ORDER BY id DESC LIMIT 1
+      `).bind(user.id, phone).first();
+      if (!reset || parseDbDate(reset.expires_at) < new Date() || Number(reset.attempts || 0) >= Number(reset.max_attempts || 3)) {
+        await audit(env, user.id, "client.password_reset.failed", "client", String(client.id), { reason: "expired_or_missing", ip: resetIp });
+        return json({ error: "Invalid or expired reset code" }, 400);
+      }
+      const candidate = await hashOtpCode(code, reset.code_salt);
+      if (!secureCompare(candidate, reset.code_hash)) {
+        const attempts = Number(reset.attempts || 0) + 1;
+        await env.DB.prepare(
+          "UPDATE client_password_reset_codes SET attempts=?, consumed_at=CASE WHEN ?>=max_attempts THEN datetime('now') ELSE consumed_at END WHERE id=?"
+        ).bind(attempts, attempts, reset.id).run();
+        await audit(env, user.id, "client.password_reset.failed", "client", String(client.id), {
+          reason: "bad_code", attempts, ip: resetIp
+        });
+        return json({ error: "Invalid or expired reset code" }, 400);
+      }
+      const hash = await hashPassword(newPassword);
+      await env.DB.prepare(
+        "UPDATE client_password_reset_codes SET consumed_at=datetime('now') WHERE id=?"
+      ).bind(reset.id).run();
+      await env.DB.prepare(
+        "UPDATE users SET password_hash=?, must_reset_password=0, updated_at=datetime('now') WHERE id=?"
+      ).bind(hash, user.id).run();
+      await env.DB.prepare("DELETE FROM sessions WHERE user_id=?").bind(user.id).run();
+      await audit(env, user.id, "client.password_reset.completed", "client", String(client.id), {
+        channel: "sms", code_id: reset.id, ip: resetIp
+      });
+      if (await smsDeliveryReady(env)) {
+        const template = await getSmsTemplate(env, "client_password_reset_completed");
+        await enqueueSms(env, {
+          clientId: client.id,
+          templateKey: "client_password_reset_completed",
+          phone,
+          body: renderSmsTemplate(
+            template ? template.body : "Your Bliss Legacy password was changed successfully. If you did not do this, contact customer care immediately.",
+            {}
+          ),
+          idempotencyKey: `client-reset-completed:${reset.id}`
+        }).catch(() => {});
+      }
+      return json({ ok: true, message: "Password changed. Sign in with your new password." });
+    }
+
     if (path === "/api/password-reset-request" && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const body = await request.json();
@@ -5942,11 +6293,11 @@ async function handleFetch(request, env) {
       const ok = await verifyPassword(current_password, user.password_hash);
       if (!ok) return json({ error: "Current password incorrect" }, 401);
       const hash = await hashPassword(new_password);
-      await env.DB.prepare("UPDATE users SET password_hash=? WHERE id=?").bind(hash, actor.id).run();
+      await env.DB.prepare("UPDATE users SET password_hash=?, must_reset_password=0, updated_at=datetime('now') WHERE id=?").bind(hash, actor.id).run();
       // Invalidate every other session, keeping the current one active.
       const sid = parseCookies(request)[SESSION_COOKIE];
       await env.DB.prepare("DELETE FROM sessions WHERE user_id=? AND id<>?").bind(actor.id, sid).run();
-      await audit(env, actor.id, "password.change", "user", String(actor.id), null);
+      await audit(env, actor.id, "password.change", "user", String(actor.id), { forced_change_cleared: true });
       return json({ ok: true });
     }
 
@@ -6872,6 +7223,7 @@ async function handleFetch(request, env) {
     function clientScope(actor) {
       const role = actor.role_name;
       if (role === "Managing Director" || role === "Finance Officer") return { clause: "", binds: [] };
+      if (role === "Customer Care") return careScopeSql(actor, "c");
       if (role === "Branch Manager") return { clause: "c.assigned_branch_id = ?", binds: [actor.branch_id] };
       if (role === "Team Lead") return { clause: "(c.team_lead_id = ? OR c.original_marketer_id = ? OR c.created_by = ? OR c.referred_by_staff_id = ?)", binds: [actor.id, actor.id, actor.id, actor.id] };
       if (role === "Marketer") {
@@ -6893,6 +7245,10 @@ async function handleFetch(request, env) {
     function canManageClient(actor, client) {
       const role = actor.role_name;
       if (role === "Managing Director") return true;
+      if (role === "Customer Care") {
+        if (String(actor.care_scope || "branch").toLowerCase() === "national") return true;
+        return Number(client.assigned_branch_id) === Number(actor.branch_id);
+      }
       if (role === "Branch Manager") return client.assigned_branch_id === actor.branch_id;
       if (role === "Team Lead") {
         return client.team_lead_id === actor.id || client.original_marketer_id === actor.id ||
@@ -7019,9 +7375,10 @@ async function handleFetch(request, env) {
         normalizedAgreedPrice = price;
       }
 
-      const dup = await env.DB.prepare("SELECT id FROM clients WHERE phone_number = ? AND assigned_branch_id = ? AND is_deleted = 0 LIMIT 1")
-        .bind(normalizedPhone, resolvedBranchId).first();
-      if (dup) return json({ error: "A client with this phone number already exists in this branch" }, 409);
+      const dup = await findClientByPhone(env, normalizedPhone);
+      if (dup) return json({ error: "A client with this phone number already exists. Each phone number can only be used by one client account." }, 409);
+      const dupLogin = await env.DB.prepare("SELECT id FROM users WHERE phone_e164=?").bind(normalizedPhone).first();
+      if (dupLogin) return json({ error: "This phone number is already linked to a login account." }, 409);
 
       const referrer = referral_code ? await resolveReferralStaff(env, referral_code) : actor;
       if (referral_code && !referrer) return json({ error: "Invalid referral code" }, 400);
@@ -7281,11 +7638,54 @@ async function handleFetch(request, env) {
           ...computeScheduleDefaulting(paymentPlanRow, planItems, Number(paidRow ? paidRow.paid_kobo : 0))
         };
       }
+      const paymentMode = getPaymentMode(env);
+      const staticWallet = await getClientStaticWallet(env, client.id, paymentMode);
+      let dynamicAccount = await env.DB.prepare(
+        "SELECT * FROM virtual_accounts WHERE client_id=? AND provider IN ('alatpay','wema_alat') ORDER BY id DESC LIMIT 1"
+      ).bind(client.id).first();
+      if (dynamicAccount && dynamicAccount.account_status === "active" && dynamicAccount.expires_at && parseDbDate(dynamicAccount.expires_at) < new Date()) {
+        dynamicAccount = { ...dynamicAccount, account_status: "expired" };
+      }
+      const paymentAccount = staticWallet && staticWallet.status === "active"
+        ? {
+          mode: "static",
+          label: "Static wallet",
+          bank_name: staticWallet.bank_name || "Wema Bank",
+          account_number: staticWallet.account_number,
+          account_name: clientVirtualAccountName(client),
+          status: "active"
+        }
+        : dynamicAccount
+          ? {
+            mode: "dynamic",
+            label: "Dynamic account",
+            bank_name: dynamicAccount.bank_name || "Wema Bank",
+            account_number: dynamicAccount.account_number,
+            account_name: clientVirtualAccountName(client),
+            amount_ngn: fromKobo(Number(dynamicAccount.amount_kobo || 0)),
+            amount_kobo: Number(dynamicAccount.amount_kobo || 0),
+            expires_at: dynamicAccount.expires_at || null,
+            status: dynamicAccount.account_status === "expired" ? "expired" : "active"
+          }
+          : { mode: "none", label: "No payment account yet", status: "not_created", static_offer: true };
+      const { results: passwordResetHistory } = await env.DB.prepare(`
+        SELECT al.id, al.action, al.created_at, al.metadata, u.full_name AS actor_name
+        FROM audit_logs al LEFT JOIN users u ON u.id=al.actor_user_id
+        WHERE al.target_type='client' AND al.target_id=?
+          AND al.action IN ('client.password_reset.admin','client.password_reset.self','client.password_reset.completed')
+        ORDER BY al.id DESC LIMIT 20
+      `).bind(String(client.id)).all();
       return json({
         client,
         properties: portfolio.properties,
         financials: portfolio.financials,
         payment_plan: paymentPlan,
+        payment_account: paymentAccount,
+        password_reset_history: (passwordResetHistory || []).map(row => {
+          let metadata = null;
+          try { metadata = row.metadata ? JSON.parse(row.metadata) : null; } catch { metadata = null; }
+          return { ...row, metadata };
+        }),
         assignments,
         assignment_history: assignmentHistory,
         history: assignmentHistory,
@@ -7329,6 +7729,9 @@ async function handleFetch(request, env) {
       if (body.phone_number !== undefined) {
         const normalized = normalizeNigerianPhone(body.phone_number);
         if (!normalized) return json({ error: "A valid Nigerian phone number is required" }, 400);
+        if (normalized !== normalizeNigerianPhone(client.phone_number)) {
+          return json({ error: "Phone number changes require customer care or owner approval. Use the phone change action on the client record." }, 403);
+        }
         body.phone_number = normalized;
       }
       const fields = ["full_name", "phone_number", "alternate_phone", "email_address", "residential_address",
@@ -7370,6 +7773,147 @@ async function handleFetch(request, env) {
       }
       await audit(env, actor.id, "client.update", "client", id, { before, after }, client.assigned_branch_id);
       return json({ ok: true });
+    }
+
+    // ---- Client password reset (customer care / branch manager / MD / Super Admin) ----
+    const clientResetMatch = path.match(/^\/api\/clients\/(\d+)\/reset-password$/);
+    if (clientResetMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const client = await env.DB.prepare(`
+        SELECT c.id, c.client_reference, c.full_name, c.phone_number, c.email_address, c.assigned_branch_id,
+               c.user_id, u.email AS login_email, r.name AS login_role
+        FROM clients c LEFT JOIN users u ON u.id=c.user_id LEFT JOIN roles r ON r.id=u.role_id
+        WHERE c.id=? AND c.is_deleted=0
+      `).bind(clientResetMatch[1]).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+      if (!canResetClientPassword(actor, client)) {
+        await audit(env, actor.id, "client.password_reset.denied", "client", String(client.id), {
+          reason: "role_or_branch", role: actor.actual_role_name || actor.role_name
+        }, client.assigned_branch_id);
+        return json({ error: "You do not have permission to reset this client's password" }, 403);
+      }
+      if (!client.user_id || client.login_role !== "Client") {
+        return json({ error: "This record is not a client login account. Staff and owner accounts cannot be reset here." }, 403);
+      }
+      const recent = await env.DB.prepare(`
+        SELECT COUNT(*) AS c FROM audit_logs
+        WHERE action='client.password_reset.admin' AND target_type='client' AND target_id=?
+          AND created_at >= datetime('now','-1 day')
+      `).bind(String(client.id)).first();
+      if (Number(recent ? recent.c : 0) >= 3) {
+        await audit(env, actor.id, "client.password_reset.denied", "client", String(client.id), {
+          reason: "daily_limit", role: actor.actual_role_name || actor.role_name
+        }, client.assigned_branch_id);
+        return json({ error: "This client has reached the limit of 3 password resets in 24 hours." }, 429);
+      }
+      const body = await request.json().catch(() => ({}));
+      const temporaryPassword = generateTemporaryPassword();
+      const hash = await hashPassword(temporaryPassword);
+      await env.DB.prepare(
+        "UPDATE users SET password_hash=?, must_reset_password=1, updated_at=datetime('now') WHERE id=?"
+      ).bind(hash, client.user_id).run();
+      await env.DB.prepare("DELETE FROM sessions WHERE user_id=?").bind(client.user_id).run();
+      const ip = clientIp(request);
+      const userAgent = String(request.headers.get("User-Agent") || "").slice(0, 300);
+      const smsAvailable = await smsDeliveryReady(env);
+      const wantsSms = Boolean(body.send_sms);
+      let smsSent = false;
+      let smsReason = smsAvailable ? (wantsSms ? "sent_temp_password" : "sent_notice") : "sms_disabled";
+      if (smsAvailable) {
+        const phone = normalizeNigerianPhone(client.phone_number);
+        if (!phone) {
+          smsReason = "invalid_phone";
+        } else {
+          const templateKey = wantsSms ? "client_password_reset_temp" : "client_password_reset_notice";
+          const template = await getSmsTemplate(env, templateKey);
+          const bodyText = renderSmsTemplate(
+            template
+              ? template.body
+              : (wantsSms
+                ? "Your temporary Bliss Legacy password is {temp_password}. Sign in and change it immediately. If you did not request this, contact customer care."
+                : "Customer care reset your Bliss Legacy password on {date}. If you did not request this, contact customer care immediately."),
+            { temp_password: temporaryPassword, date: new Date().toISOString().slice(0, 10) }
+          );
+          const queued = await enqueueSms(env, {
+            clientId: client.id,
+            templateKey,
+            phone,
+            body: bodyText,
+            idempotencyKey: `client-admin-reset:${client.id}:${Date.now()}`
+          });
+          smsSent = !queued.skipped;
+          if (!smsSent) smsReason = queued.reason || "sms_failed";
+        }
+      }
+      await audit(env, actor.id, "client.password_reset.admin", "client", String(client.id), {
+        client_reference: client.client_reference,
+        actor_role: actor.actual_role_name || actor.role_name,
+        care_scope: actor.care_scope || null,
+        ip, user_agent: userAgent,
+        send_sms_requested: wantsSms,
+        sms_sent: smsSent,
+        sms_reason: smsReason,
+        must_change_password: true
+      }, client.assigned_branch_id);
+      return json({
+        ok: true,
+        client_id: client.id,
+        temporary_password: temporaryPassword,
+        must_change_password: true,
+        sms_available: smsAvailable,
+        sms_sent: smsSent,
+        sms_reason: smsReason,
+        message: "Temporary password generated. Show it to the client once; it will not be shown again."
+      });
+    }
+
+    // ---- Client phone change (customer care / owner only) ----
+    const clientPhoneMatch = path.match(/^\/api\/clients\/(\d+)\/phone$/);
+    if (clientPhoneMatch && (request.method === "PUT" || request.method === "POST")) {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const client = await env.DB.prepare(
+        "SELECT id, client_reference, full_name, phone_number, assigned_branch_id, user_id FROM clients WHERE id=? AND is_deleted=0"
+      ).bind(clientPhoneMatch[1]).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+      if (!canChangeClientPhone(actor, client)) {
+        await audit(env, actor.id, "client.phone_change.denied", "client", String(client.id), {
+          reason: "role_or_branch", role: actor.actual_role_name || actor.role_name
+        }, client.assigned_branch_id);
+        return json({ error: "Only customer care or the owner can change a client phone number" }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const nextPhone = normalizeNigerianPhone(body.phone_number);
+      if (!nextPhone) return json({ error: "Enter a valid Nigerian phone number" }, 400);
+      if (nextPhone === normalizeNigerianPhone(client.phone_number)) {
+        return json({ ok: true, phone_number: nextPhone, unchanged: true });
+      }
+      const duplicateClient = await findClientByPhone(env, nextPhone, client.id);
+      if (duplicateClient) return json({ error: "This phone number is already linked to another client account" }, 409);
+      const duplicateUser = await env.DB.prepare(
+        "SELECT id FROM users WHERE phone_e164=? AND id<>COALESCE(?,0) LIMIT 1"
+      ).bind(nextPhone, client.user_id || null).first();
+      if (duplicateUser) return json({ error: "This phone number is already linked to another login account" }, 409);
+      await env.DB.prepare(
+        "UPDATE clients SET phone_number=?, verification_status='unverified', verification_channel='sms', verification_sent_at=NULL, verified_at=NULL, updated_at=datetime('now') WHERE id=?"
+      ).bind(nextPhone, client.id).run();
+      if (client.user_id) {
+        await env.DB.prepare(
+          "UPDATE users SET phone_e164=?, phone_changed_at=datetime('now'), phone_verified_at=NULL, updated_at=datetime('now') WHERE id=?"
+        ).bind(nextPhone, client.user_id).run();
+      }
+      await audit(env, actor.id, "client.phone_change", "client", String(client.id), {
+        before: client.phone_number ? maskDestination("sms", normalizeNigerianPhone(client.phone_number) || client.phone_number) : null,
+        after: maskDestination("sms", nextPhone),
+        reason: String(body.reason || "").slice(0, 500),
+        actor_role: actor.actual_role_name || actor.role_name,
+        ip: clientIp(request),
+        user_agent: String(request.headers.get("User-Agent") || "").slice(0, 300)
+      }, client.assigned_branch_id);
+      return json({ ok: true, phone_number: nextPhone, phone_changed_at: new Date().toISOString() });
     }
 
     // ---- Client identity / KYC review (staff) ----
@@ -7737,7 +8281,10 @@ async function handleFetch(request, env) {
           kyc_reviewed_at: client.kyc_reviewed_at,
           kyc_notes: client.kyc_notes,
           status: client.status,
-          branch_name: client.branch_name
+          branch_name: client.branch_name,
+          must_change_password: Number(actor.must_reset_password) === 1,
+          phone_verified: Boolean(actor.phone_verified_at),
+          phone_e164: actor.phone_e164 || normalizeNigerianPhone(client.phone_number)
         }
       });
     }
@@ -7766,16 +8313,21 @@ async function handleFetch(request, env) {
         if (field === "full_name" && !value) return json({ error: "Full name cannot be empty" }, 400);
         if (field === "phone_number") {
           if (!value || !/^[+0-9()\s-]{7,25}$/.test(value)) return json({ error: "Invalid phone number" }, 400);
+          if (normalizeNigerianPhone(value) !== normalizeNigerianPhone(client.phone_number)) {
+            return json({ error: "Phone number changes require customer care approval. Please contact your branch customer care." }, 403);
+          }
         }
         if (["alternate_phone", "next_of_kin_phone"].includes(field) && value && !/^[+0-9()\s-]{7,25}$/.test(value)) {
           return json({ error: `Invalid ${field.replace(/_/g, " ")}` }, 400);
         }
         if (field === "email_address") {
-          if (!value || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return json({ error: "Invalid email address" }, 400);
-          value = value.toLowerCase();
-          const otherUser = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=? AND id<>?").bind(value, actor.id).first();
-          const otherClient = await env.DB.prepare("SELECT id FROM clients WHERE LOWER(email_address)=? AND id<>? AND is_deleted=0").bind(value, client.id).first();
-          if (otherUser || otherClient) return json({ error: "Email address is already in use" }, 409);
+          if (value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return json({ error: "Invalid email address" }, 400);
+          if (value) {
+            value = value.toLowerCase();
+            const otherUser = await env.DB.prepare("SELECT id FROM users WHERE LOWER(email)=? AND id<>?").bind(value, actor.id).first();
+            const otherClient = await env.DB.prepare("SELECT id FROM clients WHERE LOWER(email_address)=? AND id<>? AND is_deleted=0").bind(value, client.id).first();
+            if (otherUser || otherClient) return json({ error: "Email address is already in use" }, 409);
+          }
         }
 
         before[field] = client[field];
@@ -7822,7 +8374,10 @@ async function handleFetch(request, env) {
         const uSets = [];
         const uVals = [];
         if (after.full_name) { uSets.push("full_name = ?"); uVals.push(after.full_name); }
-        if (after.email_address) { uSets.push("email = ?"); uVals.push(after.email_address); }
+        if (after.email_address !== undefined) {
+          uSets.push("email = ?");
+          uVals.push(after.email_address || syntheticClientEmail());
+        }
         if (uSets.length) {
           uVals.push(actor.id);
           await env.DB.prepare(`UPDATE users SET ${uSets.join(", ")}, updated_at=datetime('now') WHERE id = ?`).bind(...uVals).run();
@@ -8031,6 +8586,7 @@ async function handleFetch(request, env) {
         return json({
           is_active: true,
           is_static: true,
+          payment_method: "static",
           payment_mode: settings.mode,
           provider: settings.providerName,
           provider_status: settings.status,
@@ -8045,6 +8601,7 @@ async function handleFetch(request, env) {
           outstanding_kobo: outstandingKobo,
           outstanding_ngn: fromKobo(outstandingKobo),
           client_reference: client.client_reference,
+          static_offer: false,
           notice: "This is your permanent ALATPay account number. It can be used for any amount and any number of payments."
         });
       }
@@ -8060,6 +8617,8 @@ async function handleFetch(request, env) {
       if (va && va.account_number && va.account_status === "active") {
         return json({
           is_active: true,
+          is_static: false,
+          payment_method: "dynamic",
           provider: settings.providerName,
           provider_status: settings.status,
           status: settings.status,
@@ -8074,15 +8633,31 @@ async function handleFetch(request, env) {
           expires_at: va.expires_at,
           outstanding_kobo: outstandingKobo,
           outstanding_ngn: fromKobo(outstandingKobo),
-          client_reference: client.client_reference
+          client_reference: client.client_reference,
+          static_offer: settings.ready,
+          static_offer_text: "Want one permanent account number instead of generating a new account for each payment? You can add a static wallet later with your BVN. The BVN is used only by ALATPay to verify your identity and is never stored by Bliss Legacy.",
+          notice: "Transfer exactly the amount shown to this one-off account before it expires. Generate a new account if it expires."
         });
       }
 
       return json({
         is_active: false,
+        is_static: false,
         can_generate: settings.ready,
         can_activate_static: settings.ready,
         payment_mode: settings.mode,
+        payment_method: "dynamic",
+        dynamic_account: va && va.account_number ? {
+          status: va.account_status || "expired",
+          account_number: va.account_number,
+          account_name: clientVirtualAccountName(client),
+          bank_name: va.bank_name || "Wema Bank",
+          amount_kobo: Number(va.amount_kobo || 0),
+          amount_ngn: fromKobo(Number(va.amount_kobo || 0)),
+          expires_at: va.expires_at || null,
+          order_id: va.order_id || null,
+          expired: va.account_status === "expired" || Boolean(va.expires_at && parseDbDate(va.expires_at) < new Date())
+        } : null,
         static_wallet: staticWallet ? {
           status: staticWallet.status,
           account_number: staticWallet.account_number,
@@ -8091,6 +8666,8 @@ async function handleFetch(request, env) {
           wallet_reference: staticWallet.wallet_reference
         } : null,
         static_wallet_status: staticWallet ? staticWallet.status : "not_created",
+        static_offer: settings.ready,
+        static_offer_text: "Want one permanent account number instead of generating a new account for each payment? You can add a static wallet later with your BVN. The BVN is used only by ALATPay to verify your identity and is never stored by Bliss Legacy.",
         bvn_last4: client.bvn_last4 || null,
         outstanding_kobo: outstandingKobo,
         outstanding_ngn: fromKobo(outstandingKobo),
@@ -8098,10 +8675,10 @@ async function handleFetch(request, env) {
         provider_status: settings.status,
         status: settings.status,
         notice: settings.ready
-          ? "Activate your permanent dedicated ALATPay account to receive any amount at any time."
+          ? "No BVN is needed. Generate a one-off bank-transfer account for the amount you want to pay. The account expires, so generate a new one when needed."
           : "Your dedicated account will be activated once ALATPay is fully configured. Please contact the finance team.",
         message: settings.ready
-          ? "Activate your permanent dedicated ALATPay account to receive any amount at any time."
+          ? "No BVN is needed. Generate a one-off bank-transfer account for the amount you want to pay."
           : "Your dedicated account will be activated once ALATPay is fully configured. Please contact the finance team.",
         client_reference: client.client_reference
       });
@@ -9448,7 +10025,7 @@ async function handleFetch(request, env) {
         await recordEvent("unmatched", reference, null);
         return json({ ok: true, status: "logged", matched: false }, 202);
       }
-      const isStatic = Boolean(payment.provider_account_number || staticWallet);
+      const isStatic = Boolean(staticWallet) || String(payment.method || "").toLowerCase().includes("static wallet");
       if (payment.provider_account_number && remoteAccount && String(payment.provider_account_number) !== String(remoteAccount)) {
         await recordEvent("account_mismatch", reference, payment.id, {
           expected_account: payment.provider_account_number, remote_account: remoteAccount

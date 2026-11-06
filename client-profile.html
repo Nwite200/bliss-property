@@ -125,6 +125,10 @@
       <h1 style="font-size:26px;font-weight:800;margin-bottom:8px">Client Profile & Account Security</h1>
       <p style="font-size:14px;color:var(--muted);margin-bottom:28px">View and update your personal contact details, residential address, next of kin, and manage your account password.</p>
 
+      <div id="forcePasswordBanner" style="display:none;background:#FFF7E6;border:1px solid #F5D48A;color:#7A4A00;border-radius:10px;padding:14px 16px;margin-bottom:18px;font-size:13px;line-height:1.6">
+        <strong>You must change your temporary password before using the rest of the portal.</strong> Use the Change Account Password section below.
+      </div>
+
       <!-- Permitted Profile Information Form -->
       <div class="profile-card">
         <h2 class="card-title">Personal Contact Information</h2>
@@ -137,14 +141,15 @@
               <input type="text" id="profName" required>
             </div>
             <div class="form-group">
-              <label for="profPhone">Phone Number *</label>
-              <input type="tel" id="profPhone" required>
+              <label for="profPhone">Phone Number (login)</label>
+              <input type="tel" id="profPhone" readonly style="background:#F3F5F3">
+              <div class="small muted" style="margin-top:4px">To change your login phone, contact your branch customer care. Changes are approved and audited.</div>
             </div>
           </div>
 
           <div class="form-group">
-            <label for="profEmail">Email Address *</label>
-            <input type="email" id="profEmail" required>
+            <label for="profEmail">Email Address (optional)</label>
+            <input type="email" id="profEmail" placeholder="Leave blank if you do not use email">
           </div>
 
           <div class="form-group">
@@ -227,6 +232,11 @@
           <span id="passMsg" style="font-size:13px;font-weight:600"></span>
         </form>
       </div>
+      <div class="profile-card">
+        <h2 class="card-title">Can't sign in?</h2>
+        <p class="card-desc">Contact your branch customer care for help. They can reset your password after confirming your identity.</p>
+        <div id="branchCareBox" class="small muted" style="line-height:1.7">Loading branch contact…</div>
+      </div>
     </main>
   </div>
 
@@ -251,6 +261,27 @@
         const kyc = p.kyc_status || 'pending';
         const kycLabel = kyc === 'verified' ? 'verified' : (kyc === 'rejected' ? 'rejected — please update your details' : 'pending review');
         document.getElementById('profKycStatus').textContent = `Identity review: ${kycLabel}${p.identity_number_masked ? ` · ${p.identity_number_masked}` : ''}`;
+
+        const forced = new URLSearchParams(window.location.search).get('force') === '1' || p.must_change_password === true;
+        if (forced) {
+          window.__blissForcedPassword = true;
+          document.getElementById('forcePasswordBanner').style.display = '';
+          const profileCard = document.getElementById('profileForm') ? document.getElementById('profileForm').closest('.profile-card') : null;
+          if (profileCard) profileCard.style.display = 'none';
+          const passwordCard = document.getElementById('passwordForm') ? document.getElementById('passwordForm').closest('.profile-card') : null;
+          if (passwordCard) setTimeout(() => passwordCard.scrollIntoView({ behavior: 'smooth', block: 'start' }), 200);
+        }
+        try {
+          if (window.BLISS_CONFIG_READY) await window.BLISS_CONFIG_READY;
+          const branches = (window.BLIS_CONFIG && Array.isArray(window.BLIS_CONFIG.branches)) ? window.BLIS_CONFIG.branches : [];
+          const branch = branches.find(b => String(b.name || '').toLowerCase().includes(String(p.branch_name || '').toLowerCase())) || branches[0];
+          const box = document.getElementById('branchCareBox');
+          if (box) {
+            box.innerHTML = branch
+              ? `Your branch: <strong>${branch.name}</strong>${branch.phone ? ` · <a href="tel:${String(branch.phone).replace(/[^0-9+]/g, '')}" style="color:var(--green-dark);font-weight:700">${branch.phone}</a>` : ''}`
+              : 'Please contact the head office customer care line.';
+          }
+        } catch {}
       } catch (err) {
         window.location.href = '/client-login.html';
       }
@@ -321,6 +352,9 @@
           msg.style.color = '#00B522';
           msg.textContent = '✓ Password changed successfully.';
           document.getElementById('passwordForm').reset();
+          if (window.__blissForcedPassword) {
+            setTimeout(() => { window.location.href = '/client-dashboard.html'; }, 800);
+          }
         } else {
           const err = await res.json();
           msg.style.color = '#C0392B';

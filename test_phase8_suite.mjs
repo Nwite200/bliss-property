@@ -45,6 +45,13 @@ function hashPw(password) {
   const dk = pbkdf2Sync(password, salt, 100000, 32, 'sha256');
   return `pbkdf2$100000$${salt.toString('base64')}$${dk.toString('base64')}`;
 }
+function normalizePhoneForTest(value) {
+  const raw = String(value === undefined || value === null ? '' : value).replace(/\D/g, '');
+  if (raw.startsWith('0') && raw.length === 11) return '+234' + raw.slice(1);
+  if (raw.startsWith('234') && raw.length === 13) return '+' + raw;
+  if (/^[789]\d{9}$/.test(raw)) return '+234' + raw;
+  return null;
+}
 function roleId(name) { return db.prepare('SELECT id FROM roles WHERE name=?').get(name).id; }
 function branchId(name) { return db.prepare('SELECT id FROM branches WHERE name=?').get(name).id; }
 function upsertUser(email, fullName, roleName, branch) {
@@ -356,7 +363,7 @@ await test('client onboarding stores alternate phone, next of kin and valid staf
   assert(client.next_of_kin_relationship === 'Sibling' && client.next_of_kin_address === '3 Next of Kin Street', 'next-of-kin relationship/address missing');
   assert(client.referral_code_used === 'BL-P8-MD' && client.referred_by_staff_id === mdId, 'staff referral attribution missing');
   assert(client.identity_type === null && client.bvn_last4 === null, 'identity and BVN must remain optional at signup');
-  assert(signup.data.virtual_account && signup.data.virtual_account.status === 'bvn_required', 'signup without BVN should mark the virtual account as BVN-required');
+  assert(signup.data.virtual_account && signup.data.virtual_account.status === 'dynamic_available', 'signup without BVN should offer the dynamic account path');
   assert(client.assigned_branch_id === ikeja, 'signup should use the branch selected by the client');
   const referredAssignment = db.prepare("SELECT relationship_manager_id FROM client_assignments WHERE client_id=? AND is_primary=1").get(client.id);
   assert(referredAssignment && referredAssignment.relationship_manager_id === mdId, 'referred client was not automatically assigned to the referring staff member');
@@ -1846,6 +1853,498 @@ await test('referral commission applies two-stage and flat rules, caps at 35,000
   assert(configView.status === 200 && configView.data.entries.some(row => row.client_id === eightMonthClient), 'configuration-required referral account missing from dashboard');
 });
 
+console.log('\n--- 13. Phone-first onboarding, dynamic accounts and client password recovery ---');
+
+let phoneSeq = 7000000;
+function nextTestPhone() {
+  phoneSeq += 1;
+  return '0809' + String(phoneSeq).padStart(7, '0');
+}
+
+function createLoginClient({ ref, name, phone, branch, marketerId, teamLeadId, price = 500000, propertyId = propPublished }) {
+  const email = `${ref.toLowerCase()}@example.com`;
+  const uid = Number(db.prepare(`INSERT INTO users (email, phone_e164, password_hash, full_name, role_id, branch_id, is_active)
+    VALUES (?, ?, ?, ?, ?, ?, 1)`)
+    .run(email, phone, hashPw('password123'), name, roleId('Client'), branch).lastInsertRowid);
+  const cid = Number(db.prepare(`INSERT INTO clients
+    (client_reference, full_name, phone_number, email_address, status, sale_type, assigned_branch_id,
+     created_by, original_marketer_id, team_lead_id, agreed_purchase_price, interested_property_id, user_id)
+    VALUES (?, ?, ?, ?, 'Active Buyer', 'New Sale', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(ref, name, phone, email, branch, marketerId, marketerId, teamLeadId, price, propertyId, uid).lastInsertRowid);
+  db.prepare(`INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by, is_primary)
+    VALUES (?, ?, ?, ?, ?, 1)`).run(cid, marketerId, branch, teamLeadId, marketerId);
+  return { cid, uid, phone, email };
+}
+
+async function signupPhoneClient(name, phone, branch = ikeja, ip = '198.51.100.210') {
+  return request('/api/signup', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip },
+    body: {
+      full_name: name, phone_number: phone,
+      residential_address: '24 Phone First Street', state: 'Lagos', city: 'Ikeja',
+      branch_id: branch, password: 'password123', terms_accepted: true
+    }
+  });
+}
+
+await test('client signs up and logs in by phone without email or BVN', async () => {
+  const phone = nextTestPhone();
+  const signup = await signupPhoneClient('Phase 24 Phone Only Client', phone, ikeja, '198.51.100.211');
+  assert(signup.status === 200, `phone-only signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
+  assert(signup.data.phone && signup.data.phone.startsWith('+234'), 'signup did not return the normalised phone');
+  const user = db.prepare('SELECT * FROM users WHERE phone_e164=?').get(normalizePhoneForTest(phone));
+  assert(user && /@no-email\.blisslegacy\.local$/.test(user.email), 'phone-only user must get an internal placeholder email');
+  const client = db.prepare('SELECT * FROM clients WHERE user_id=?').get(user.id);
+  assert(client && client.email_address === null, 'phone-only client must not have a real email');
+  assert(client.bvn_last4 === null, 'phone-only signup must not store a BVN');
+  const loginPhone = await request('/api/login', { method: 'POST', body: { email: phone, password: 'password123' } });
+  assert(loginPhone.status === 200, `phone login expected 200, got ${loginPhone.status}`);
+  assert(loginPhone.data.user && loginPhone.data.user.client_id === client.id, 'phone login did not resolve the client');
+  const loginEmail = await request('/api/login', { method: 'POST', body: { email: 'client.p8@example.com', password: 'password123' } });
+  assert(loginEmail.status === 200, 'existing client email login must keep working');
+});
+
+await test('shared phone is rejected for a second client account', async () => {
+  const phone = nextTestPhone();
+  const first = await signupPhoneClient('Phase 24 Shared Phone One', phone, ikeja, '198.51.100.212');
+  assert(first.status === 200, 'first shared-phone signup should succeed');
+  const second = await signupPhoneClient('Phase 24 Shared Phone Two', phone, ajah, '198.51.100.213');
+  assert(second.status === 409, `second account on the same phone must be rejected, got ${second.status}`);
+  assert(/already registered|only be used by one/i.test(second.data.error || ''), 'shared-phone error must explain the rule');
+  const staffDup = await request('/api/clients', {
+    method: 'POST', headers: { Cookie: mdCookie },
+    body: { full_name: 'Phase 24 Shared Staff Dup', phone_number: phone, assigned_branch_id: ikeja }
+  });
+  assert(staffDup.status === 409, 'staff-created client with the same phone must be rejected');
+});
+
+await test('dynamic account without BVN credits once with commission, hierarchy revenue and receipt', async () => {
+  const originalFetch = globalThis.fetch;
+  let remote = { orderId: null, txId: null, amountKobo: 0, account: null, seq: 0 };
+  const mockJson = data => new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url.includes('/bank-transfer/api/v1/bankTransfer/virtualAccount')) {
+      remote.seq += 1;
+      remote.txId = `p24-tx-${remote.seq}`;
+      remote.account = `09990000${String(remote.seq).padStart(2, '0')}`;
+      return mockJson({ status: true, data: {
+        virtualBankAccountNumber: remote.account, bankName: 'Wema Bank',
+        transactionId: remote.txId, expiredAt: new Date(Date.now() + 30 * 60000).toISOString()
+      } });
+    }
+    if (url.includes('/alatpaytransaction/api/v1/transactions/')) {
+      const txId = decodeURIComponent(url.split('/').pop());
+      return mockJson({ status: true, data: {
+        Id: txId, OrderId: remote.orderId, Amount: remote.amountKobo / 100,
+        Currency: 'NGN', Status: 'completed', NgnVirtualBankAccountNumber: remote.account
+      } });
+    }
+    return originalFetch(input, init);
+  };
+  const dynamicEnv = makeEnv({
+    PAYMENT_MODE: 'test', ALATPAY_TEST_SECRET_KEY: 'test-secret',
+    ALATPAY_TEST_BUSINESS_ID: 'test-business', ALATPAY_TEST_WEBHOOK_SECRET: 'test-webhook',
+    ALATPAY_TEST_BASE_URL: 'https://alatpay.test'
+  });
+  try {
+    const client = createLoginClient({
+      ref: 'BLC-P24-DYNAMIC', name: 'Phase 24 Dynamic Client', phone: nextTestPhone(),
+      branch: ikeja, marketerId: mkt1Id, teamLeadId: tlId, price: 500000
+    });
+    const plan = await request('/api/commission-plans', {
+      method: 'POST', headers: { Cookie: mdCookie }, body: {
+        name: 'Phase 24 Dynamic Commission', calculation_basis: 'verified_collections',
+        commissionable_mode: 'full', approval_required: false, separation_of_duties: false,
+        rules: [
+          { role_name: 'Marketer', rate_percent: 10 },
+          { role_name: 'Team Lead', rate_percent: 2 },
+          { role_name: 'Branch Manager', rate_percent: 1 }
+        ]
+      }
+    });
+    assert(plan.status === 200, `dynamic commission plan expected 200, got ${plan.status}: ${JSON.stringify(plan.data)}`);
+    const cookie = await login(client.email);
+    const create = await request('/api/client/virtual-account', {
+      method: 'POST', headers: { Cookie: cookie }, body: { amount: 100000 }, env: dynamicEnv
+    });
+    assert(create.status === 200, `dynamic account creation expected 200, got ${create.status}: ${JSON.stringify(create.data)}`);
+    const va = db.prepare('SELECT * FROM virtual_accounts WHERE client_id=? ORDER BY id DESC LIMIT 1').get(client.cid);
+    assert(va && va.account_number && va.order_id, 'dynamic virtual account was not stored');
+    remote.orderId = va.order_id;
+    remote.txId = va.transaction_id;
+    remote.amountKobo = Number(va.amount_kobo);
+    remote.account = va.account_number;
+    const pending = db.prepare("SELECT * FROM payments WHERE client_id=? AND method='ALATPay Dynamic Account' ORDER BY id DESC LIMIT 1").get(client.cid);
+    assert(pending && pending.status === 'pending' && pending.amount_kobo === 10000000, 'dynamic account must create a pending payment for the right amount');
+    assert(pending.client_id === client.cid, 'dynamic pending payment is linked to the wrong client');
+
+    const payload = { Value: { Data: {
+      Id: remote.txId, OrderId: remote.orderId, Amount: remote.amountKobo / 100,
+      Currency: 'NGN', Status: 'completed', NgnVirtualBankAccountNumber: remote.account
+    } } };
+    const raw = JSON.stringify(payload);
+    const signature = createHmac('sha256', 'test-webhook').update(raw).digest('base64');
+    const first = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': signature }, body: payload, env: dynamicEnv
+    });
+    assert(first.status === 200 && first.data.status === 'verified', `dynamic webhook expected verified, got ${first.status}: ${JSON.stringify(first.data)}`);
+    const credited = db.prepare('SELECT * FROM payments WHERE id=?').get(pending.id);
+    assert(credited.status === 'verified', 'dynamic payment was not credited');
+    assert(credited.revenue_staff_id === mkt1Id, 'dynamic payment hierarchy attribution is wrong');
+    assert(credited.revenue_branch_id === ikeja, 'dynamic payment branch attribution is wrong');
+    assert(db.prepare('SELECT COUNT(*) AS c FROM receipts WHERE payment_id=?').get(pending.id).c === 1, 'dynamic payment must create exactly one receipt');
+    const entries = db.prepare('SELECT COUNT(*) AS c FROM commission_entries WHERE payment_id=? AND plan_id=?').get(pending.id, plan.data.id).c;
+    assert(entries === 3, `dynamic payment must create 3 commission entries, got ${entries}`);
+    const duplicate = await request('/api/webhooks/alatpay/test', {
+      method: 'POST', headers: { 'x-signature': signature }, body: payload, env: dynamicEnv
+    });
+    assert(duplicate.data.already_processed === true, 'duplicate dynamic webhook must be idempotent');
+    assert(db.prepare('SELECT COUNT(*) AS c FROM receipts WHERE payment_id=?').get(pending.id).c === 1, 'duplicate dynamic webhook added a receipt');
+    assert(db.prepare('SELECT COUNT(*) AS c FROM commission_entries WHERE payment_id=? AND plan_id=?').get(pending.id, plan.data.id).c === 3, 'duplicate dynamic webhook added commission');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+await test('expired dynamic account is replaced and the old pending payment is retired', async () => {
+  const originalFetch = globalThis.fetch;
+  let seq = 0;
+  const mockJson = data => new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url.includes('/bank-transfer/api/v1/bankTransfer/virtualAccount')) {
+      seq += 1;
+      return mockJson({ status: true, data: {
+        virtualBankAccountNumber: `09991000${String(seq).padStart(2, '0')}`,
+        bankName: 'Wema Bank', transactionId: `p24-exp-${seq}`,
+        expiredAt: new Date(Date.now() + 30 * 60000).toISOString()
+      } });
+    }
+    return originalFetch(input, init);
+  };
+  const dynamicEnv = makeEnv({
+    PAYMENT_MODE: 'test', ALATPAY_TEST_SECRET_KEY: 'test-secret',
+    ALATPAY_TEST_BUSINESS_ID: 'test-business', ALATPAY_TEST_WEBHOOK_SECRET: 'test-webhook',
+    ALATPAY_TEST_BASE_URL: 'https://alatpay.test'
+  });
+  try {
+    const client = createLoginClient({
+      ref: 'BLC-P24-EXPIRY', name: 'Phase 24 Expiry Client', phone: nextTestPhone(),
+      branch: ikeja, marketerId: mkt1Id, teamLeadId: tlId, price: 500000
+    });
+    const cookie = await login(client.email);
+    const first = await request('/api/client/virtual-account', {
+      method: 'POST', headers: { Cookie: cookie }, body: { amount: 50000 }, env: dynamicEnv
+    });
+    assert(first.status === 200, 'first dynamic account creation failed');
+    const firstVa = db.prepare('SELECT * FROM virtual_accounts WHERE client_id=? ORDER BY id DESC LIMIT 1').get(client.cid);
+    db.prepare("UPDATE virtual_accounts SET expires_at='2020-01-01T00:00:00.000Z' WHERE id=?").run(firstVa.id);
+    const state = await request('/api/client/virtual-account', { headers: { Cookie: cookie }, env: dynamicEnv });
+    assert(state.status === 200 && state.data.is_active === false, 'expired dynamic account must not be shown as active');
+    assert(state.data.dynamic_account && state.data.dynamic_account.expired === true, 'expired dynamic account state missing');
+    const second = await request('/api/client/virtual-account', {
+      method: 'POST', headers: { Cookie: cookie }, body: { amount: 25000 }, env: dynamicEnv
+    });
+    assert(second.status === 200, 'replacement dynamic account creation failed');
+    const firstPayment = db.prepare("SELECT * FROM payments WHERE client_id=? AND transaction_ref=? ORDER BY id DESC LIMIT 1").get(client.cid, firstVa.order_id);
+    assert(firstPayment && firstPayment.status === 'expired', 'old pending dynamic payment must be retired');
+    const secondPayment = db.prepare("SELECT * FROM payments WHERE client_id=? AND status='pending' ORDER BY id DESC LIMIT 1").get(client.cid);
+    assert(secondPayment && secondPayment.amount_kobo === 2500000, 'replacement pending payment has the wrong amount');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+console.log('\n--- 14. Client SMS password recovery and admin-assisted resets ---');
+
+const smsEnv = makeEnv({ SMS_PROVIDER: 'mock', ENVIRONMENT: 'test' });
+function setSmsEnabled(on) {
+  db.prepare(`INSERT INTO sms_settings (setting_key, setting_value) VALUES ('sms_enabled', ?)
+    ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value`).run(on ? '1' : '0');
+}
+function clearResetArtifacts() {
+  db.prepare('DELETE FROM client_password_reset_codes').run();
+  db.prepare("DELETE FROM sms_messages WHERE template_key LIKE 'client_password_reset%'").run();
+  db.prepare("DELETE FROM audit_logs WHERE action LIKE 'client.password_reset%'").run();
+}
+function latestResetCode() {
+  const row = db.prepare("SELECT body FROM sms_messages WHERE template_key='client_password_reset_code' ORDER BY id DESC LIMIT 1").get();
+  const match = row && String(row.body).match(/\b(\d{6})\b/);
+  return match ? match[1] : null;
+}
+
+await test('SMS reset code is hashed, single-use, expires and is limited to 3 attempts', async () => {
+  setSmsEnabled(true);
+  clearResetArtifacts();
+  const phone = nextTestPhone();
+  const signup = await signupPhoneClient('Phase 24 Recovery Client', phone, ikeja, '198.51.100.221');
+  assert(signup.status === 200, 'recovery client signup failed');
+  const requestReset = await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.222' }, body: { phone }, env: smsEnv
+  });
+  assert(requestReset.status === 200 && requestReset.data.sms_enabled === true, 'reset request should send via mock SMS');
+  const code = latestResetCode();
+  assert(/^\d{6}$/.test(code || ''), 'reset SMS did not contain a 6-digit code');
+  const stored = db.prepare('SELECT * FROM client_password_reset_codes ORDER BY id DESC LIMIT 1').get();
+  assert(stored.code_hash && stored.code_hash !== code && stored.code_hash.length === 64, 'reset code must be stored hashed, not plaintext');
+  assert(stored.code_salt, 'reset code salt missing');
+
+  const change = await request('/api/client/password-reset/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.222' },
+    body: { phone, code, new_password: 'newpass123' }, env: smsEnv
+  });
+  assert(change.status === 200, `reset verification expected 200, got ${change.status}: ${JSON.stringify(change.data)}`);
+  const reused = await request('/api/client/password-reset/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.222' },
+    body: { phone, code, new_password: 'anotherpass123' }, env: smsEnv
+  });
+  assert(reused.status === 400, 'a reset code must be single-use');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM sms_messages WHERE template_key='client_password_reset_completed'").get().c === 1, 'confirmation SMS missing');
+
+  clearResetArtifacts();
+  await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.223' }, body: { phone }, env: smsEnv
+  });
+  const expiredCode = latestResetCode();
+  db.prepare("UPDATE client_password_reset_codes SET expires_at='2020-01-01T00:00:00.000Z' WHERE consumed_at IS NULL").run();
+  const expired = await request('/api/client/password-reset/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.223' },
+    body: { phone, code: expiredCode, new_password: 'expiredpass123' }, env: smsEnv
+  });
+  assert(expired.status === 400, 'expired reset code must be rejected');
+
+  clearResetArtifacts();
+  await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.224' }, body: { phone }, env: smsEnv
+  });
+  const limitedCode = latestResetCode();
+  for (let i = 0; i < 3; i++) {
+    await request('/api/client/password-reset/verify', {
+      method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.224' },
+      body: { phone, code: '000000', new_password: 'wrongpass123' }, env: smsEnv
+    });
+  }
+  const afterAttempts = await request('/api/client/password-reset/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.224' },
+    body: { phone, code: limitedCode, new_password: 'shouldnotwork123' }, env: smsEnv
+  });
+  assert(afterAttempts.status === 400, 'correct code must not work after 3 failed attempts');
+  assert(db.prepare('SELECT attempts, consumed_at FROM client_password_reset_codes ORDER BY id DESC LIMIT 1').get().consumed_at, 'code must be consumed after attempt limit');
+});
+
+await test('SMS reset does not reveal registration, invalidates sessions and is rate limited', async () => {
+  setSmsEnabled(true);
+  clearResetArtifacts();
+  const unknown = await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.231' },
+    body: { phone: nextTestPhone() }, env: smsEnv
+  });
+  assert(unknown.status === 200 && /If this phone number is registered/i.test(unknown.data.message || ''), 'unknown phone must get the same generic response');
+  const unknownCode = latestResetCode();
+  assert(!unknownCode, 'unknown phone must not receive a code');
+
+  const phone = nextTestPhone();
+  const signup = await signupPhoneClient('Phase 24 Session Client', phone, ikeja, '198.51.100.232');
+  assert(signup.status === 200, 'session client signup failed');
+  const oldCookie = (signup.headers.get('set-cookie') || '').split(';')[0];
+  await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.233' }, body: { phone }, env: smsEnv
+  });
+  const code = latestResetCode();
+  const changed = await request('/api/client/password-reset/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.233' },
+    body: { phone, code, new_password: 'sessionnew123' }, env: smsEnv
+  });
+  assert(changed.status === 200, 'session reset failed');
+  const oldSession = await request('/api/client/profile', { headers: { Cookie: oldCookie } });
+  assert(oldSession.status === 401 || oldSession.status === 403, 'reset must invalidate existing sessions');
+  const newLogin = await request('/api/login', { method: 'POST', body: { email: phone, password: 'sessionnew123' } });
+  assert(newLogin.status === 200, 'new password must work after reset');
+
+  db.prepare("DELETE FROM audit_logs WHERE action='client.password_reset.request'").run();
+  for (let i = 0; i < 3; i++) {
+    db.prepare("INSERT INTO audit_logs (action, target_type, target_id, metadata) VALUES ('client.password_reset.request','phone',?, '{}')")
+      .run('phone:+234' + phone.slice(1));
+  }
+  const phoneLimited = await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.234' }, body: { phone }, env: smsEnv
+  });
+  assert(phoneLimited.status === 429, 'phone reset request limit must be enforced');
+  db.prepare("DELETE FROM audit_logs WHERE action='client.password_reset.request'").run();
+  for (let i = 0; i < 5; i++) {
+    db.prepare("INSERT INTO audit_logs (action, target_type, target_id, metadata) VALUES ('client.password_reset.request','ip',?, '{}')")
+      .run('ip:198.51.100.235');
+  }
+  const ipLimited = await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.235' }, body: { phone }, env: smsEnv
+  });
+  assert(ipLimited.status === 429, 'IP reset request limit must be enforced');
+});
+
+await test('SMS-off reset points the client to customer care', async () => {
+  setSmsEnabled(false);
+  clearResetArtifacts();
+  const res = await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.241' },
+    body: { phone: nextTestPhone() }, env: smsEnv
+  });
+  assert(res.status === 200 && res.data.sms_enabled === false, 'SMS-off response must say SMS is unavailable');
+  assert(/contact customer care/i.test(res.data.message || ''), 'SMS-off response must point to customer care');
+});
+
+await test('admin reset respects roles, branch scope, daily limit and forces a password change', async () => {
+  setSmsEnabled(true);
+  clearResetArtifacts();
+  const ikejaClient = createLoginClient({
+    ref: 'BLC-P24-RESET-IKEJA', name: 'Phase 24 Reset Ikeja', phone: nextTestPhone(),
+    branch: ikeja, marketerId: mkt1Id, teamLeadId: tlId, price: 500000
+  });
+  const ajahClient = createLoginClient({
+    ref: 'BLC-P24-RESET-AJAH', name: 'Phase 24 Reset Ajah', phone: nextTestPhone(),
+    branch: ajah, marketerId: mkt3Id, teamLeadId: null, price: 500000
+  });
+  const careReset = await request(`/api/clients/${ikejaClient.cid}/reset-password`, {
+    method: 'POST', headers: { Cookie: careBranchCookie }, body: {}, env: smsEnv
+  });
+  assert(careReset.status === 200 && careReset.data.temporary_password, 'branch customer care must reset an own-branch client');
+  const temp = careReset.data.temporary_password;
+  const tempLogin = await request('/api/login', { method: 'POST', body: { email: ikejaClient.phone, password: temp } });
+  assert(tempLogin.status === 200 && tempLogin.data.user.must_change_password === true, 'temporary password must force a password change');
+  const tempCookie = (tempLogin.headers.get('set-cookie') || '').split(';')[0];
+  const blocked = await request('/api/client/dashboard', { headers: { Cookie: tempCookie } });
+  assert(blocked.status === 403 && blocked.data.code === 'PASSWORD_CHANGE_REQUIRED', 'client APIs must stay blocked until the password changes');
+  const changed = await request('/api/change-password', {
+    method: 'POST', headers: { Cookie: tempCookie },
+    body: { current_password: temp, new_password: 'changedpass123' }
+  });
+  assert(changed.status === 200, 'forced password change failed');
+  const unblocked = await request('/api/client/dashboard', { headers: { Cookie: tempCookie } });
+  assert(unblocked.status === 200, 'client APIs must unblock after the password changes');
+  const history = await request(`/api/clients/${ikejaClient.cid}`, { headers: { Cookie: mdCookie } });
+  assert(history.status === 200 && history.data.password_reset_history.some(row => row.action === 'client.password_reset.admin'), 'reset history missing from client record');
+  const audit = db.prepare("SELECT * FROM audit_logs WHERE action='client.password_reset.admin' AND target_type='client' AND target_id=?").all(String(ikejaClient.cid));
+  assert(audit.length >= 1, 'admin reset was not audited');
+  assert(!audit.some(row => String(row.metadata || '').includes(temp)), 'temporary password leaked into the audit log');
+  assert(!db.prepare('SELECT COUNT(*) AS c FROM client_password_reset_codes WHERE code_hash=?').get(temp).c, 'temporary password was stored as a reset code');
+
+  const crossBranch = await request(`/api/clients/${ajahClient.cid}/reset-password`, {
+    method: 'POST', headers: { Cookie: careBranchCookie }, body: {}, env: smsEnv
+  });
+  assert(crossBranch.status === 403, 'branch customer care must not reset another branch');
+  const national = await request(`/api/clients/${ajahClient.cid}/reset-password`, {
+    method: 'POST', headers: { Cookie: careNationalCookie }, body: {}, env: smsEnv
+  });
+  assert(national.status === 200, 'national customer care must reset any branch');
+  const bm2Reset = await request(`/api/clients/${ajahClient.cid}/reset-password`, {
+    method: 'POST', headers: { Cookie: bm2Cookie }, body: {}, env: smsEnv
+  });
+  assert(bm2Reset.status === 200, 'Ajah branch manager must reset an Ajah client');
+
+  for (const cookie of [mkt1Cookie, finCookie, haCookie]) {
+    const denied = await request(`/api/clients/${ikejaClient.cid}/reset-password`, {
+      method: 'POST', headers: { Cookie: cookie }, body: {}, env: smsEnv
+    });
+    assert(denied.status === 403, 'forbidden role must not reset a client password');
+  }
+
+  const staffLinked = Number(db.prepare(`INSERT INTO clients
+    (client_reference, full_name, phone_number, status, sale_type, assigned_branch_id, created_by, original_marketer_id, user_id)
+    VALUES ('BLC-P24-STAFFLINK','Phase 24 Staff Link', ?, 'Prospect', 'New Sale', ?, ?, ?, ?)`)
+    .run(nextTestPhone(), ikeja, mdId, mdId, mdId).lastInsertRowid);
+  const staffReset = await request(`/api/clients/${staffLinked}/reset-password`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}, env: smsEnv
+  });
+  assert(staffReset.status === 403, 'staff/owner login accounts must not be reset through the client route');
+
+  const limitClient = createLoginClient({
+    ref: 'BLC-P24-RESET-LIMIT', name: 'Phase 24 Reset Limit', phone: nextTestPhone(),
+    branch: ikeja, marketerId: mkt1Id, teamLeadId: tlId, price: 500000
+  });
+  for (let i = 0; i < 3; i++) {
+    const ok = await request(`/api/clients/${limitClient.cid}/reset-password`, {
+      method: 'POST', headers: { Cookie: careBranchCookie }, body: {}, env: smsEnv
+    });
+    assert(ok.status === 200, `reset ${i + 1} should succeed`);
+  }
+  const limited = await request(`/api/clients/${limitClient.cid}/reset-password`, {
+    method: 'POST', headers: { Cookie: careBranchCookie }, body: {}, env: smsEnv
+  });
+  assert(limited.status === 429, 'daily admin reset limit must be enforced');
+});
+
+await test('phone changes are approved, audited, blocked in normal profile updates and cool off SMS reset', async () => {
+  setSmsEnabled(true);
+  clearResetArtifacts();
+  const client = createLoginClient({
+    ref: 'BLC-P24-PHONE', name: 'Phase 24 Phone Change', phone: nextTestPhone(),
+    branch: ikeja, marketerId: mkt1Id, teamLeadId: tlId, price: 500000
+  });
+  const newPhone = nextTestPhone();
+  const changed = await request(`/api/clients/${client.cid}/phone`, {
+    method: 'PUT', headers: { Cookie: careBranchCookie },
+    body: { phone_number: newPhone, reason: 'Client replaced SIM' }
+  });
+  assert(changed.status === 200, `approved phone change expected 200, got ${changed.status}: ${JSON.stringify(changed.data)}`);
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(client.uid);
+  assert(user.phone_e164 === normalizePhoneForTest(newPhone), 'users.phone_e164 was not updated');
+  assert(user.phone_changed_at, 'phone change timestamp missing');
+  const phoneAudit = db.prepare("SELECT * FROM audit_logs WHERE action='client.phone_change' AND target_id=?").get(String(client.cid));
+  assert(phoneAudit, 'phone change was not audited');
+
+  const clientCookie = await login(client.email);
+  const directClient = await request('/api/client/profile', {
+    method: 'PUT', headers: { Cookie: clientCookie }, body: { phone_number: nextTestPhone() }
+  });
+  assert(directClient.status === 403, 'clients must not change their own login phone');
+  const directStaff = await request(`/api/clients/${client.cid}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { phone_number: nextTestPhone() }
+  });
+  assert(directStaff.status === 403, 'staff profile update must not bypass phone approval');
+  const marketerAttempt = await request(`/api/clients/${client.cid}/phone`, {
+    method: 'PUT', headers: { Cookie: mkt1Cookie }, body: { phone_number: nextTestPhone() }
+  });
+  assert(marketerAttempt.status === 403, 'marketers must not change client phones');
+  const ajahClient = createLoginClient({
+    ref: 'BLC-P24-PHONE-AJAH', name: 'Phase 24 Phone Ajah', phone: nextTestPhone(),
+    branch: ajah, marketerId: mkt3Id, teamLeadId: null, price: 500000
+  });
+  const crossBranch = await request(`/api/clients/${ajahClient.cid}/phone`, {
+    method: 'PUT', headers: { Cookie: careBranchCookie }, body: { phone_number: nextTestPhone() }
+  });
+  assert(crossBranch.status === 403, 'branch customer care must not change another branch phone');
+
+  const beforeCodes = db.prepare('SELECT COUNT(*) AS c FROM client_password_reset_codes').get().c;
+  const cooling = await request('/api/client/password-reset/request', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.251' },
+    body: { phone: newPhone }, env: smsEnv
+  });
+  assert(cooling.status === 200 && /If this phone number is registered/i.test(cooling.data.message || ''), 'recent phone change must not reveal registration');
+  assert(db.prepare('SELECT COUNT(*) AS c FROM client_password_reset_codes').get().c === beforeCodes, 'cooling-off must not create a reset code');
+});
+
+await test('BVN is never stored in full or written to logs during signup', async () => {
+  const bvn = '12345678901';
+  const phone = nextTestPhone();
+  const signup = await request('/api/signup', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '198.51.100.261' },
+    body: {
+      full_name: 'Phase 24 BVN Privacy', phone_number: phone, email: `bvn.privacy.${Date.now()}@example.com`,
+      bvn, residential_address: '24 BVN Street', state: 'Lagos', city: 'Ikeja',
+      branch_id: ikeja, password: 'password123', terms_accepted: true
+    }
+  });
+  assert(signup.status === 200, `BVN signup expected 200, got ${signup.status}: ${JSON.stringify(signup.data)}`);
+  const client = db.prepare('SELECT * FROM clients WHERE client_reference=?').get(signup.data.client_reference);
+  assert(client && client.bvn_last4 === bvn.slice(-4), 'only the BVN last four should be stored');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE metadata LIKE ?").get(`%${bvn}%`).c === 0, 'full BVN leaked into audit logs');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM sms_messages WHERE body LIKE ?").get(`%${bvn}%`).c === 0, 'full BVN leaked into SMS content');
+  const columns = db.prepare("SELECT name FROM pragma_table_info('clients')").all().map(row => row.name);
+  assert(!columns.some(name => /(^|_)bvn$/.test(name) && name !== 'bvn_last4'), 'clients table has a full BVN column');
+});
+
+setSmsEnabled(false);
+
 console.log('\n--- 13. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
@@ -1853,12 +2352,12 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 22, `expected 22 migrations, found ${files.length}`);
+  assert(files.length === 24, `expected 24 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }
   const tables = clean.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
-  assert(tables.length >= 43, `expected at least 43 tables, found ${tables.length}`);
+  assert(tables.length >= 44, `expected at least 44 tables, found ${tables.length}`);
   const integrity = clean.prepare('PRAGMA integrity_check').get();
   assert(Object.values(integrity)[0] === 'ok', 'clean migration database integrity check failed');
   const fk = clean.prepare('PRAGMA foreign_key_check').all();

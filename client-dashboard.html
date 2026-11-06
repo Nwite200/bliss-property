@@ -582,7 +582,8 @@
       try {
         const res = await fetch('/api/client/dashboard');
         if (res.status === 401 || res.status === 403) {
-          window.location.href = '/client-login.html';
+          const gate = await res.clone().json().catch(() => ({}));
+          window.location.href = gate.code === 'PASSWORD_CHANGE_REQUIRED' ? '/client-profile.html?force=1' : '/client-login.html';
           return;
         }
         const data = await res.json();

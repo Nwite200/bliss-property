@@ -95,6 +95,37 @@
         <div class="small muted" id="kycMessage" style="margin-top:8px"></div>
       </div>
 
+      <div class="card" style="max-width:800px;margin-top:18px" id="paymentAccountCard">
+        <div class="card-head"><h3>Payment account</h3><span id="paymentAccountMode"></span></div>
+        <p class="small muted">How this client pays. No BVN is required for dynamic accounts. A static wallet is optional.</p>
+        <div id="paymentAccountDetails" class="small" style="line-height:1.7">Loading payment account…</div>
+      </div>
+
+      <div class="card" style="max-width:800px;margin-top:18px" id="passwordResetCard">
+        <div class="card-head"><h3>Client password reset</h3><span class="small muted">Customer care / owner</span></div>
+        <p class="small muted">Confirm the client's identity using the name, property, last payment and registered phone shown on this page before resetting. The temporary password is shown once and must be changed at first login.</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin:10px 0">
+          <input type="checkbox" id="resetSendSms"> Send the temporary password by SMS if SMS is on
+        </label>
+        <button class="btn btn-outline" type="button" id="resetClientBtn">Generate temporary password</button>
+        <div id="resetPasswordResult" style="display:none;margin-top:14px;background:#FFF7E6;border:1px solid #F5D48A;border-radius:8px;padding:12px;font-size:13px;color:#7A4A00"></div>
+        <div style="margin-top:16px">
+          <strong style="font-size:13px">Reset history</strong>
+          <div id="resetHistoryList" class="small muted" style="margin-top:8px">Loading…</div>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:800px;margin-top:18px" id="phoneChangeCard">
+        <div class="card-head"><h3>Change registered phone</h3><span class="small muted">Customer care / owner only</span></div>
+        <p class="small muted">Phone changes are audited. After a change, SMS password reset is paused for 72 hours.</p>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="newClientPhone">New phone number</label><input class="field-input" id="newClientPhone" type="tel" placeholder="08012345678"></div>
+          <div class="field-group"><label class="field-label" for="phoneChangeReason">Reason</label><input class="field-input" id="phoneChangeReason" type="text" placeholder="Why is the phone changing?"></div>
+          <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-outline" type="button" id="changePhoneBtn">Change phone</button></div>
+        </div>
+        <div id="phoneChangeMsg" class="small" style="margin-top:8px"></div>
+      </div>
+
       <div class="card" style="max-width:800px;margin-top:18px" id="staticWalletCard">
         <div class="card-head"><h3>ALATPay static wallet</h3><span id="staticWalletStatus"></span></div>
         <p class="small muted">Permanent account number for this client. Creating or validating a wallet requires the client's BVN/OTP. BVN and OTP are sent to ALATPay and are never stored by this portal.</p>

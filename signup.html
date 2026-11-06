@@ -71,12 +71,13 @@
           <input id="fullName" type="text" autocomplete="name" required>
         </div>
         <div>
-          <label for="email">Email address *</label>
-          <input id="email" type="email" autocomplete="email" required>
+          <label for="email">Email address (optional)</label>
+          <input id="email" type="email" autocomplete="email" placeholder="Leave blank if you do not use email">
         </div>
         <div>
           <label for="phone">Phone number *</label>
           <input id="phone" type="tel" autocomplete="tel" placeholder="08012345678" required>
+          <div class="small muted" style="margin-top:4px">Your phone number is your login. One phone number can only be used by one client account.</div>
         </div>
         <div>
           <label for="alternatePhone">Alternate phone number</label>
@@ -121,9 +122,14 @@
           <input id="identityNumber" type="text" autocomplete="off" placeholder="Enter the number exactly as issued">
         </div>
         <div class="full">
-          <label for="bvn">BVN for your dedicated virtual account (optional)</label>
-          <input id="bvn" type="password" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="11-digit BVN">
-          <div class="route-note" style="font-size:11px;margin-top:5px">Your BVN is used once to create your permanent ALATPay account and is never stored. You can add it later from My Virtual Account.</div>
+          <div class="route-note" style="font-size:11px">
+            <strong>No BVN is required to register or pay.</strong> You will receive a one-off bank-transfer account for each payment. A permanent static wallet with your BVN is optional and can be added later.
+          </div>
+        </div>
+        <div class="full">
+          <label for="bvn">BVN for a permanent static wallet (optional)</label>
+          <input id="bvn" type="password" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="Leave blank to pay by one-off account">
+          <div class="route-note" style="font-size:11px;margin-top:5px">Only needed if you choose a permanent account later. ALATPay uses the BVN to verify your identity. Bliss Legacy never stores it.</div>
         </div>
         <div class="full">
           <label for="property">Interested property</label>
