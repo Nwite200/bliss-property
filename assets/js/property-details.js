@@ -3,6 +3,16 @@ const params = new URLSearchParams(window.location.search);
 const id = params.get("id");
 
 function money(n) { return "₦" + Number(n).toLocaleString("en-NG"); }
+function derivePlanCount(type, durationMonths) {
+  const duration = Number(durationMonths || 0);
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  if (type === "daily") return Math.round(duration * 30);
+  if (type === "weekly") return Math.round((duration * 30) / 7);
+  if (type === "bi_monthly") return Math.round(duration * 2);
+  if (type === "monthly") return Math.round(duration);
+  if (type === "part_payment") return Math.round(duration);
+  return 0;
+}
 function esc(value) {
   return String(value == null ? "" : value)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -152,15 +162,35 @@ async function load() {
     document.getElementById("paymentPlanForm").addEventListener("submit", async event => {
       event.preventDefault();
       const planType = document.getElementById("ppType").value;
+      let total = Number(document.getElementById("ppTotal").value);
+      let deposit = Number(document.getElementById("ppDeposit").value || 0);
+      let installment = Number(document.getElementById("ppInstallment").value || 0);
+      let count = document.getElementById("ppCount").value ? Number(document.getElementById("ppCount").value) : null;
+      const duration = document.getElementById("ppDuration").value ? Number(document.getElementById("ppDuration").value) : null;
+      if (!Number.isFinite(total) || total <= 0) { alert("Enter a plan total price."); return; }
+      if (planType === "outright") {
+        deposit = 0;
+        installment = 0;
+        count = null;
+      } else {
+        if (!count && duration) count = derivePlanCount(planType, duration);
+        if (!count || count < 1) { alert("Enter the number of instalments or a duration."); return; }
+        if (!Number.isFinite(installment) || installment <= 0) { alert("Enter a positive instalment amount."); return; }
+        const difference = Math.round((total - deposit - installment * count) * 100) / 100;
+        if (Math.abs(difference) >= 0.01) {
+          alert(`The numbers do not add up: deposit + instalment × count is ${money(difference)} away from the total.`);
+          return;
+        }
+      }
       const payload = {
         plans: [{
           plan_type: planType,
           is_enabled: document.getElementById("ppEnabled").value === "1",
-          total_price: Number(document.getElementById("ppTotal").value),
-          deposit: Number(document.getElementById("ppDeposit").value || 0),
-          installment: Number(document.getElementById("ppInstallment").value || 0),
-          duration_months: document.getElementById("ppDuration").value ? Number(document.getElementById("ppDuration").value) : null,
-          number_of_installments: document.getElementById("ppCount").value ? Number(document.getElementById("ppCount").value) : null,
+          total_price: total,
+          deposit,
+          installment,
+          duration_months: duration,
+          number_of_installments: count,
           first_payment_rule: document.getElementById("ppFirstRule").value.trim() || null,
           notes: document.getElementById("ppNotes").value.trim() || null
         }]
@@ -262,6 +292,10 @@ async function load() {
     location.reload();
   };
   document.getElementById("publishBtn").onclick = async () => {
+    if (!propertyPlans.some(plan => Number(plan.is_enabled) === 1)) {
+      alert("Add and enable at least one payment plan before publishing.");
+      return;
+    }
     const res = await fetchJson(`/properties/${id}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ is_published: true })

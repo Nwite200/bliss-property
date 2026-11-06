@@ -555,9 +555,8 @@ await test('property listing permissions, approval workflow, plan validation and
     method: 'PUT', headers: { Cookie: mdCookie },
     body: { plans: [{ plan_type: 'part_payment', total_price: 1000000, deposit: 100000, installment: 200000, number_of_installments: 4 }] }
   });
-  assert(differencePlan.status === 200, 'difference plan save failed');
-  const differenceSaved = differencePlan.data.plans.find(plan => plan.plan_type === 'part_payment');
-  assert(Number(differenceSaved.balance_difference_kobo) === 10000000, `expected a 100,000 NGN balance difference, got ${differenceSaved.balance_difference_kobo}`);
+  assert(differencePlan.status === 400, `a plan whose numbers do not add up must be rejected, got ${differencePlan.status}`);
+  assert(String(differencePlan.data.error || '').includes('must add up'), `expected an add-up validation error, got ${JSON.stringify(differencePlan.data)}`);
 
   const testProperty = await createProperty(mdCookie, {
     ...baseProperty, title: 'Phase 19 Internal Test Property', sale_price: 1000,
@@ -1238,7 +1237,7 @@ await test('properties expose only enabled plans and onboarding locks the chosen
 
   const edit = await request(`/api/properties/${propertyId}/payment-plans`, {
     method: 'PUT', headers: { Cookie: mdCookie }, body: { plans: [
-      { plan_type: 'weekly', is_enabled: true, total_price: 30000000, deposit: 1000000, installment: 1000000, number_of_installments: 20 }
+      { plan_type: 'weekly', is_enabled: true, total_price: 30000000, deposit: 1000000, installment: 1450000, number_of_installments: 20 }
     ] }
   });
   assert(edit.status === 200, 'property plan edit expected 200');

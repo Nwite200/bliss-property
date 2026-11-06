@@ -63,7 +63,23 @@
             <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:8px"><input type="checkbox" id="is_demo"> Demo property</label>
             <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:6px"><input type="checkbox" id="is_internal_test"> Internal test property (staff/test clients only)</label>
           </div>
-          <div class="route-note" style="font-size:11px">Properties are created as drafts. Add at least one enabled payment plan on the property page, then publish or submit for approval.</div>
+          <div id="plansSection" style="border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto">
+            <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+              <div>
+                <strong style="font-size:13px">Payment plans</strong>
+                <p style="font-size:11px;color:var(--muted);margin:4px 0 0">Enable at least one plan before publishing. For part payment and easy-buy plans, deposit + instalment × count must equal the plan total.</p>
+              </div>
+              <button class="btn btn-outline btn-sm" type="button" id="syncPlanTotalsBtn">Use sale price</button>
+            </div>
+            <div class="table-responsive" style="margin-top:10px">
+              <table class="table" style="min-width:860px">
+                <thead><tr><th>Plan</th><th>Enabled</th><th>Total price (₦)</th><th>Deposit (₦)</th><th>Instalment (₦)</th><th>Instalments</th><th>Duration (months)</th><th>Balance</th></tr></thead>
+                <tbody id="planEditorBody"></tbody>
+              </table>
+            </div>
+            <div id="planEditorMsg" style="font-size:12px;margin-top:8px"></div>
+          </div>
+          <div class="route-note" style="font-size:11px">Properties are created as drafts. Add at least one enabled payment plan here or on the property page, then publish or submit for approval.</div>
           <button class="btn btn-green" type="submit">Create Property</button>
           <div id="formMsg" style="color:#c0392b;font-size:13px"></div>
         </form>

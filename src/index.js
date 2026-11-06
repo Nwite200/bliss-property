@@ -3239,6 +3239,18 @@ function planIntervalDays(planType, frequencyDays) {
   return Math.max(1, Number(frequencyDays || 30));
 }
 
+function derivePlanInstallmentCount(planType, durationMonths) {
+  const type = normalizePlanType(planType);
+  const duration = Number(durationMonths || 0);
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  if (type === "daily") return Math.round(duration * 30);
+  if (type === "weekly") return Math.round((duration * 30) / 7);
+  if (type === "bi_monthly") return Math.round(duration * 2);
+  if (type === "monthly") return Math.round(duration);
+  if (type === "part_payment") return Math.round(duration);
+  return 0;
+}
+
 function buildPlanScheduleItems({ totalKobo, depositKobo, installmentKobo, planType, startDate, frequencyDays, numberOfInstallments }) {
   const type = normalizePlanType(planType);
   const start = dateOnly(startDate) || todayOnly();
@@ -6321,12 +6333,17 @@ async function handleFetch(request, env) {
         if (seen.has(planType)) return json({ error: `Duplicate plan type: ${planType}` }, 400);
         seen.add(planType);
         const totalKobo = raw.total_price_kobo !== undefined ? Number(raw.total_price_kobo) : toKobo(raw.total_price);
-        const depositKobo = raw.deposit_kobo !== undefined ? Number(raw.deposit_kobo) : toKobo(raw.deposit || 0);
+        let depositKobo = raw.deposit_kobo !== undefined ? Number(raw.deposit_kobo) : toKobo(raw.deposit || 0);
         let installmentKobo = raw.installment_kobo !== undefined ? Number(raw.installment_kobo) : toKobo(raw.installment || 0);
+        const planEnabled = raw.is_enabled === undefined ? true : isTruthy(raw.is_enabled);
         const durationMonths = raw.duration_months === undefined || raw.duration_months === null || raw.duration_months === ""
           ? null : Number(raw.duration_months);
-        const number = raw.number_of_installments === undefined || raw.number_of_installments === null || raw.number_of_installments === ""
+        let number = raw.number_of_installments === undefined || raw.number_of_installments === null || raw.number_of_installments === ""
           ? null : Number(raw.number_of_installments);
+        if (planType !== "outright" && number === null && durationMonths) {
+          const derived = derivePlanInstallmentCount(planType, durationMonths);
+          if (derived > 0) number = derived;
+        }
         const firstPaymentRule = raw.first_payment_rule ? String(raw.first_payment_rule).trim().slice(0, 500) : null;
         if (!Number.isInteger(totalKobo) || totalKobo <= 0) return json({ error: "Plan total price must be positive" }, 400);
         if (!Number.isInteger(depositKobo) || depositKobo < 0 || depositKobo > totalKobo) return json({ error: "Plan deposit is invalid" }, 400);
@@ -6337,16 +6354,25 @@ async function handleFetch(request, env) {
           return json({ error: "Plan number of instalments must be between 1 and 1000" }, 400);
         }
         if (planType === "outright") {
+          depositKobo = 0;
           installmentKobo = totalKobo;
-        } else if ((!Number.isFinite(installmentKobo) || installmentKobo < 0) && !number) {
-          return json({ error: "Non-outright plans need an instalment amount or number of instalments" }, 400);
+        } else {
+          if (planEnabled && number === null) {
+            return json({ error: "Enabled plans need a number of instalments or a duration" }, 400);
+          }
+          if (!Number.isFinite(installmentKobo) || installmentKobo <= 0) {
+            return json({ error: "Non-outright plans need a positive instalment amount" }, 400);
+          }
         }
         let balanceDifferenceKobo = 0;
-        if (number && planType !== "outright") {
+        if (planType !== "outright" && number) {
           const expectedKobo = depositKobo + (installmentKobo * number);
           balanceDifferenceKobo = totalKobo - expectedKobo;
-        } else if (number && planType === "outright") {
-          balanceDifferenceKobo = totalKobo - depositKobo - installmentKobo;
+          if (planEnabled && balanceDifferenceKobo !== 0) {
+            return json({
+              error: `Plan numbers must add up: deposit + instalment × ${number} must equal the total. Off by ${formatNGN(Math.abs(balanceDifferenceKobo))}.`
+            }, 400);
+          }
         }
         await env.DB.prepare(`
           INSERT INTO property_payment_plans
@@ -6363,7 +6389,7 @@ async function handleFetch(request, env) {
             updated_by=excluded.updated_by, updated_at=datetime('now')
         `).bind(
           propertyId, planType, totalKobo, depositKobo, installmentKobo,
-          durationMonths, number, raw.is_enabled === undefined ? 1 : (isTruthy(raw.is_enabled) ? 1 : 0),
+          durationMonths, number, planEnabled ? 1 : 0,
           raw.notes || null, firstPaymentRule, balanceDifferenceKobo, actor.id, actor.id
         ).run();
       }
