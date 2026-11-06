@@ -51,3 +51,60 @@ PAYMENT_MODE = "test"
 
 [observability]
 enabled = true
+
+# =============================================================================
+# Production environment (company account 1473f1b95ef866edf0b286046e9e81f3)
+# Bindings are listed explicitly because Wrangler environments do not inherit.
+# CACHE is intentionally omitted: src/index.js never reads env.CACHE, and the
+# requested CACHE_PRODUCTION id 5e35ae0d4ffb48fcb3cff84698c35985 does not exist
+# in this account.
+# =============================================================================
+[env.production]
+name = "bliss-legacy-limited"
+account_id = "1473f1b95ef866edf0b286046e9e81f3"
+workers_dev = true
+preview_urls = false
+
+[env.production.assets]
+directory = "./"
+binding = "ASSETS"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "bliss-legacy-production-db"
+database_id = "91e013cd-6b82-45a7-b1f4-93c8f1b39af2"
+migrations_dir = "migrations"
+
+[[env.production.r2_buckets]]
+binding = "FILES"
+bucket_name = "bliss-legacy-production-files"
+
+[[env.production.queues.producers]]
+binding = "TASKS"
+queue = "bliss-legacy-production-tasks"
+
+[[env.production.queues.consumers]]
+queue = "bliss-legacy-production-tasks"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+
+[[env.production.durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+[[env.production.migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]
+
+[env.production.triggers]
+crons = ["0 6 * * *"]
+
+[env.production.vars]
+ENVIRONMENT = "production"
+DEMO_MODE_ENABLED = "0"
+DEFAULT_GRACE_DAYS = "0"
+PAYMENT_MODE = "test"
+
+[env.production.observability]
+enabled = true
