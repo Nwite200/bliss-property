@@ -1,8 +1,21 @@
 # Controlled Live Payment Test — Readiness and Go/No-Go Plan
 
-**Status:** STAGING ONLY. No production database, Worker, domain, payment mode or secret was changed.
+**Status:** PRODUCTION WORKER DEPLOYED; DOMAIN ATTACH AND LIVE PAYMENTS BLOCKED BY EXTERNAL ACCESS.
 **Prepared:** 2026-11-06
-**Branch:** `staging`
+**Branch:** `main`
+
+## Execution update — 2026-11-06
+
+- Production Worker deployed: `https://bliss-property-production.easterntechexpo.workers.dev`
+- Production D1 migrated through `0022`.
+- Pre-migration production export completed.
+- Demo property marked demo/unpublished; demo staff/client/payment data hidden or deactivated.
+- Real production owner account created. The generated credential is stored only in a local, untracked file outside the repository.
+- Production branch list contains Ikeja, Ajah, Asaba, Ihama, Obakhavba and Head Office, and is served to the signup branch picker.
+- Production Worker is in `PAYMENT_MODE=live` with live ALATPay secret, business ID and webhook secret configured.
+- **ALATPay live API returned HTTP 401 on a read-only business transaction query.** Live payment provisioning is therefore not yet verified.
+- `blisspayment.com.ng` is not present in the Cloudflare account used by this deployment. The existing domain still serves an older site. It cannot be attached until the zone is moved/added to this account and the token has the required zone permission.
+- SMS remains disabled. No real SMS was sent.
 
 ---
 
