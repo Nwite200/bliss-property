@@ -7,6 +7,8 @@ preview_urls = false
 [assets]
 directory = "./"
 binding = "ASSETS"
+# Staging only: ensure the Worker runs so it can add X-Robots-Tag to HTML.
+run_worker_first = true
 
 [[d1_databases]]
 binding = "DB"
