@@ -1241,6 +1241,16 @@ button, input, select, textarea {
   margin-top: auto;
   border-top: 1px solid var(--line);
   padding-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.branch-phone {
+  color: var(--ink);
+  text-decoration: none;
 }
 
 .branch-action {
@@ -1676,6 +1686,14 @@ button, input, select, textarea {
 .contact-val {
   color: #D3DED5;
   font-weight: 500;
+}
+
+a.contact-val {
+  text-decoration: none;
+}
+
+a.contact-val:hover {
+  text-decoration: underline;
 }
 
 .footer-social-strip {

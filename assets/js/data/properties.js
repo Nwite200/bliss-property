@@ -4,11 +4,11 @@
 window.BLIS_BRANCHES = [
   {
     name: "Head Office",
-    city: "Lagos",
-    state: "Lagos State",
+    city: "Benin City",
+    state: "Edo State",
     type: "Corporate Headquarters",
-    address: "Central Business District, Lagos",
-    phone: "+234 800 000 0000",
+    address: "102, Ihama Road, GRA, Benin City, close to Living Faith Church (Winners Church)",
+    phone: "0805 289 9920",
     isHeadOffice: true
   },
   {
@@ -16,8 +16,8 @@ window.BLIS_BRANCHES = [
     city: "Ikeja",
     state: "Lagos State",
     type: "Mainland Branch",
-    address: "Commercial Avenue, Ikeja, Lagos",
-    phone: "+234 800 000 0001",
+    address: "Plot 40, Adegbola Street, Anifowose, close to the Local Government",
+    phone: "0805 289 9920",
     isHeadOffice: false
   },
   {
@@ -25,8 +25,8 @@ window.BLIS_BRANCHES = [
     city: "Ajah",
     state: "Lagos State",
     type: "Island & Lekki Corridor Branch",
-    address: "Lekki-Epe Expressway, Ajah, Lagos",
-    phone: "+234 800 000 0002",
+    address: "Fladek Plaza, opposite Pump and Sell Bus Stop, Ado Road, Ajah",
+    phone: "0805 289 9920",
     isHeadOffice: false
   },
   {
@@ -34,8 +34,8 @@ window.BLIS_BRANCHES = [
     city: "Asaba",
     state: "Delta State",
     type: "Delta State Regional Office",
-    address: "Nnebisi Road, Asaba, Delta State",
-    phone: "+234 800 000 0003",
+    address: "Plot 2, Ikukaiwe Street, close to Christian Association of Nigeria (CAN) Building",
+    phone: "0807 389 1911",
     isHeadOffice: false
   },
   {
@@ -43,17 +43,17 @@ window.BLIS_BRANCHES = [
     city: "Benin City",
     state: "Edo State",
     type: "GRA Branch",
-    address: "Ihama Road, GRA, Benin City, Edo State",
-    phone: "+234 800 000 0004",
+    address: "102, Ihama Road, GRA, Benin City, close to Living Faith Church (Winners Church)",
+    phone: "0807 389 3946",
     isHeadOffice: false
   },
   {
-    name: "Obakhavba",
+    name: "Obakhavbaye",
     city: "Benin City",
     state: "Edo State",
     type: "Commercial Office",
-    address: "Obakhavba Axis, Benin City, Edo State",
-    phone: "+234 800 000 0005",
+    address: "13, Obakhavbaye Street, off Oba Market Road, Benin City",
+    phone: "0805 289 9920",
     isHeadOffice: false
   }
 ];

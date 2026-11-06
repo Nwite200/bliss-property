@@ -91,6 +91,10 @@ Bliss.renderHeader = function(activePage) {
 Bliss.renderFooter = function() {
   const c = Bliss.config();
   const currentYear = new Date().getFullYear();
+  const waDigits = String(c.whatsappNumber || "").replace(/\D/g, "");
+  const waDisplay = waDigits.startsWith("234") && waDigits.length === 13
+    ? `0${waDigits.slice(3, 6)} ${waDigits.slice(6, 9)} ${waDigits.slice(9)}`
+    : c.whatsappNumber;
 
   return `
   <footer class="site-footer">
@@ -123,12 +127,12 @@ Bliss.renderFooter = function() {
         <div class="footer-col">
           <h4 class="footer-heading">Our Branches</h4>
           <ul class="footer-links-list">
-            <li><a href="index.html#branches">Head Office (Lagos)</a></li>
+            <li><a href="index.html#branches">Head Office (Benin City)</a></li>
             <li><a href="index.html#branches">Ikeja Branch (Lagos)</a></li>
             <li><a href="index.html#branches">Ajah Branch (Lagos)</a></li>
             <li><a href="index.html#branches">Asaba Branch (Delta)</a></li>
             <li><a href="index.html#branches">Ihama Branch (Benin City)</a></li>
-            <li><a href="index.html#branches">Obakhavba Branch (Benin City)</a></li>
+            <li><a href="index.html#branches">Obakhavbaye Branch (Benin City)</a></li>
           </ul>
         </div>
 
@@ -137,11 +141,15 @@ Bliss.renderFooter = function() {
           <div class="footer-contact-items">
             <div class="footer-contact-item">
               <span class="contact-lbl">Phone Support:</span>
-              <span class="contact-val">${c.phone || 'Phone not configured'}</span>
+              <a class="contact-val" href="${c.phone ? 'tel:' + String(c.phone).replace(/[^0-9+]/g, '') : '#contact'}">${c.phone || 'Phone not configured'}</a>
+            </div>
+            <div class="footer-contact-item">
+              <span class="contact-lbl">WhatsApp:</span>
+              <a class="contact-val" href="${Bliss.whatsappLink() || '#contact'}" target="_blank" rel="noopener">${waDisplay || 'WhatsApp not configured'}</a>
             </div>
             <div class="footer-contact-item">
               <span class="contact-lbl">Email Address:</span>
-              <span class="contact-val">${c.email || 'Email not configured'}</span>
+              <a class="contact-val" href="${c.email ? 'mailto:' + c.email : '#contact'}">${c.email || 'Email not configured'}</a>
             </div>
             <div class="footer-contact-item">
               <span class="contact-lbl">Headquarters:</span>

@@ -587,7 +587,7 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
     orderId,
     description: "Bliss Legacy property payment",
     customer: {
-      email: client.email_address || env.ALATPAY_DEFAULT_EMAIL || "info@blisslegacylimited.com",
+      email: client.email_address || env.ALATPAY_DEFAULT_EMAIL || "hrblisslegacy@gmail.com",
       phone: client.phone_number || "",
       firstName,
       lastName,

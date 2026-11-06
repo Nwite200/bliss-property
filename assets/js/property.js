@@ -222,7 +222,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             <div class="form-group">
               <label for="enqPhone">Phone / WhatsApp Number *</label>
-              <input type="tel" id="enqPhone" placeholder="+234 800 000 0000" required>
+              <input type="tel" id="enqPhone" placeholder="e.g. 0803 123 4567" required>
             </div>
 
             <div class="form-group">

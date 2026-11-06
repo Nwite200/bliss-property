@@ -13,9 +13,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   const phoneEl = document.getElementById('contactPhone');
   const emailEl = document.getElementById('contactEmail');
   const addrEl = document.getElementById('contactAddress');
+  const waEl = document.getElementById('contactWhatsapp');
   if (phoneEl) phoneEl.textContent = c.phone || 'Contact phone not configured';
   if (emailEl) emailEl.textContent = c.email || 'Contact email not configured';
   if (addrEl) addrEl.textContent = c.address || 'Head office address not configured';
+  if (waEl) {
+    const waDigits = String(c.whatsappNumber || '').replace(/\D/g, '');
+    waEl.textContent = waDigits.startsWith('234') && waDigits.length === 13
+      ? `0${waDigits.slice(3, 6)} ${waDigits.slice(6, 9)} ${waDigits.slice(9)}`
+      : (c.whatsappNumber || 'WhatsApp contact not configured');
+  }
 
   // Dedicated WhatsApp action button in Contact section
   const waBtn = document.getElementById('waBtn');
@@ -41,6 +48,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         <p class="branch-location">${b.city}, ${b.state}</p>
         <p class="branch-address">${b.address}</p>
         <div class="branch-footer">
+          ${b.phone ? `<a class="branch-action branch-phone" href="tel:${String(b.phone).replace(/[^0-9+]/g, '')}">📞 ${b.phone}</a>` : ''}
           <a class="branch-action wa-link" href="#" data-message="Hello Bliss Legacy, I would like to visit or speak with an agent at the ${b.name} office.">Contact Office →</a>
         </div>
       </div>
