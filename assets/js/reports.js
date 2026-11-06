@@ -80,7 +80,8 @@
       to: el('reportTo').value || null,
       branch_id: el('reportBranch').value || null,
       team_id: el('reportTeam').value || null,
-      marketer_id: el('reportMarketer').value || null
+      marketer_id: el('reportMarketer').value || null,
+      include_test: Boolean(el('reportIncludeTest') && el('reportIncludeTest').checked)
     };
     try {
       const result = await S.fetchJson('/api/reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

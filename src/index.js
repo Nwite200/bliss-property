@@ -2079,6 +2079,7 @@ async function generateCommissionEntries(env, actor, body) {
 
   const clientClauses = [
     "c.is_deleted=0", "c.client_reference NOT LIKE 'DEMO-%'",
+    "COALESCE(c.is_internal_test,0)=0", "COALESCE(c.is_archived,0)=0",
     "c.agreed_purchase_price IS NOT NULL", "c.agreed_purchase_price > 0",
     "c.status NOT IN ('Cancelled','Inactive')"
   ];
@@ -3341,6 +3342,8 @@ function propertyPlanSnapshot(plan) {
     installment_kobo: Number(plan.installment_kobo || 0),
     duration_months: plan.duration_months === null || plan.duration_months === undefined ? null : Number(plan.duration_months),
     number_of_installments: plan.number_of_installments === null || plan.number_of_installments === undefined ? null : Number(plan.number_of_installments),
+    first_payment_rule: plan.first_payment_rule || null,
+    balance_difference_kobo: Number(plan.balance_difference_kobo || 0),
     locked_at: new Date().toISOString()
   };
 }
@@ -6098,6 +6101,7 @@ export default {
     // =========================================================================
     if (path === "/api/site-config" && request.method === "GET") {
       const config = await getSiteConfig(env);
+      const hideDemo = String(await getAppSetting(env, "hide_demo_properties", "1")) !== "0";
       return json({
         config: {
           companyName: config.company_name || "Bliss Legacy Limited",
@@ -6112,7 +6116,8 @@ export default {
             twitter: config.twitter || "",
             linkedin: config.linkedin || ""
           },
-          branches: Array.isArray(config.branches) ? config.branches : []
+          branches: Array.isArray(config.branches) ? config.branches : [],
+          showDemoProperties: !hideDemo
         }
       }, 200, { "Cache-Control": "public, max-age=60" });
     }
@@ -6794,11 +6799,31 @@ export default {
       }
       if (!key.startsWith("properties/")) return new Response("Not found", { status: 404 });
       const registered = await env.DB.prepare(`
-        SELECT pi.id, p.is_published, p.branch_id FROM property_images pi
+        SELECT pi.id, p.id AS property_id, p.is_published, p.branch_id, p.is_internal_test, p.is_archived, p.is_demo
+        FROM property_images pi
         JOIN properties p ON p.id=pi.property_id
         WHERE pi.r2_key=? LIMIT 1
       `).bind(key).first();
       if (!registered) return new Response("Not found", { status: 404 });
+      const hideDemo = String(await getAppSetting(env, "hide_demo_properties", "1")) !== "0";
+      const protectedImage = registered.is_internal_test || registered.is_archived || (hideDemo && registered.is_demo);
+      if (protectedImage) {
+        const actor = await getSessionUser(env, request);
+        if (!actor) return new Response("Not found", { status: 404 });
+        if (actor.role_name === "Client") {
+          const client = await getClientForActor(env, actor);
+          const access = client ? await env.DB.prepare(`
+            SELECT 1 AS ok FROM client_properties WHERE client_id=? AND property_id=?
+            UNION SELECT 1 WHERE ?=(SELECT interested_property_id FROM clients WHERE id=?)
+            LIMIT 1
+          `).bind(client.id, registered.property_id, registered.property_id, client.id).first() : null;
+          if (!access) return new Response("Not found", { status: 404 });
+        } else if (actor.role_name === "Branch Manager" && Number(registered.branch_id) !== Number(actor.branch_id)) {
+          return new Response("Not found", { status: 404 });
+        } else if (!STAFF_ROLES.includes(actor.role_name) && !["Customer Care", "Head Accountant", "Account Officer", "Telemarketer"].includes(actor.actual_role_name || actor.role_name)) {
+          return new Response("Not found", { status: 404 });
+        }
+      }
       if (!registered.is_published) {
         const actor = await getSessionUser(env, request);
         if (!actor || actor.role_name === "Client") return new Response("Not found", { status: 404 });
@@ -8625,6 +8650,9 @@ export default {
 
       const isDemo = url.searchParams.get("demo") === "1" ? 1 : 0;
       if (isDemo && !demoEnabled(env)) return json({ error: "Demo mode is disabled in this environment" }, 403);
+      const includeTest = url.searchParams.get("include_test") === "1";
+      const testFilter = includeTest ? "" : " AND COALESCE(p.is_internal_test,0)=0 AND COALESCE(p.is_archived,0)=0";
+      const clientTestFilter = includeTest ? "" : " AND COALESCE(c.is_internal_test,0)=0 AND COALESCE(c.is_archived,0)=0";
       let branchFilter = "";
       const branchBinds = [];
       if (actor.role_name === "Branch Manager") {
@@ -8637,7 +8665,7 @@ export default {
         SELECT COALESCE(SUM(p.amount_kobo), 0) AS total_kobo, COUNT(*) AS count
         FROM payments p
         JOIN clients c ON c.id=p.client_id
-        WHERE p.status='verified' AND p.is_demo=? AND p.currency='NGN' ${branchFilter}
+        WHERE p.status='verified' AND p.is_demo=? AND p.currency='NGN'${testFilter} ${branchFilter}
       `).bind(isDemo, ...branchBinds).first();
       const totalVerifiedKobo = totalVerifiedRow ? Number(totalVerifiedRow.total_kobo) : 0;
 
@@ -8647,7 +8675,7 @@ export default {
         SELECT COALESCE(SUM(p.amount_kobo), 0) AS today_kobo, COUNT(*) AS count
         FROM payments p
         JOIN clients c ON c.id=p.client_id
-        WHERE p.status='verified' AND p.is_demo=? AND p.currency='NGN' AND date(p.verified_at)=? ${branchFilter}
+        WHERE p.status='verified' AND p.is_demo=? AND p.currency='NGN'${testFilter} AND date(p.verified_at)=? ${branchFilter}
       `).bind(isDemo, today, ...branchBinds).first();
 
       // Monthly collections (current month)
@@ -8656,7 +8684,7 @@ export default {
         SELECT COALESCE(SUM(p.amount_kobo), 0) AS month_kobo, COUNT(*) AS count
         FROM payments p
         JOIN clients c ON c.id=p.client_id
-        WHERE p.status='verified' AND p.is_demo=? AND p.currency='NGN' AND strftime('%Y-%m', p.verified_at)=? ${branchFilter}
+        WHERE p.status='verified' AND p.is_demo=? AND p.currency='NGN'${testFilter} AND strftime('%Y-%m', p.verified_at)=? ${branchFilter}
       `).bind(isDemo, curMonth, ...branchBinds).first();
 
       // Pending payments
@@ -8664,7 +8692,7 @@ export default {
         SELECT COALESCE(SUM(p.amount_kobo), 0) AS pending_kobo, COUNT(*) AS count
         FROM payments p
         JOIN clients c ON c.id=p.client_id
-        WHERE p.status='pending' AND p.is_demo=? AND p.currency='NGN' ${branchFilter}
+        WHERE p.status='pending' AND p.is_demo=? AND p.currency='NGN'${testFilter} ${branchFilter}
       `).bind(isDemo, ...branchBinds).first();
 
       // Failed payments
@@ -8672,7 +8700,7 @@ export default {
         SELECT COALESCE(SUM(p.amount_kobo), 0) AS failed_kobo, COUNT(*) AS count
         FROM payments p
         JOIN clients c ON c.id=p.client_id
-        WHERE p.status='failed' AND p.is_demo=? AND p.currency='NGN' ${branchFilter}
+        WHERE p.status='failed' AND p.is_demo=? AND p.currency='NGN'${testFilter} ${branchFilter}
       `).bind(isDemo, ...branchBinds).first();
 
       // Refunds & reversals
@@ -8680,7 +8708,7 @@ export default {
         SELECT COALESCE(SUM(p.amount_kobo), 0) AS refunds_kobo, COUNT(*) AS count
         FROM payments p
         JOIN clients c ON c.id=p.client_id
-        WHERE p.status IN ('reversed', 'refunded') AND p.is_demo=? AND p.currency='NGN' ${branchFilter}
+        WHERE p.status IN ('reversed', 'refunded') AND p.is_demo=? AND p.currency='NGN'${testFilter} ${branchFilter}
       `).bind(isDemo, ...branchBinds).first();
 
       // Outstanding client balances. Demo and live contract totals are kept in
@@ -8691,7 +8719,7 @@ export default {
       const agreedSumRow = await env.DB.prepare(`
         SELECT COALESCE(SUM(agreed_purchase_price), 0) AS agreed_total
         FROM clients c
-        WHERE c.is_deleted=0 ${demoClientFilter} ${branchFilter}
+        WHERE c.is_deleted=0 ${demoClientFilter}${clientTestFilter} ${branchFilter}
       `).bind(...branchBinds).first();
       const totalAgreedKobo = toKobo(agreedSumRow ? agreedSumRow.agreed_total : 0);
       const outstandingBalancesKobo = Math.max(0, totalAgreedKobo - totalVerifiedKobo);
@@ -8766,6 +8794,9 @@ export default {
 
       let where = ["p.is_demo = ?"];
       const binds = [isDemo];
+      if (url.searchParams.get("include_test") !== "1") {
+        where.push("COALESCE(p.is_internal_test,0)=0", "COALESCE(p.is_archived,0)=0");
+      }
 
       // Role scoping
       if (actor.role_name === "Branch Manager") {

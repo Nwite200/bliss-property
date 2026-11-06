@@ -107,7 +107,9 @@ function upsert(email, name, role, branch) {
 }
 const mdId = upsert('browser.md@bliss.test', 'Browser MD', mdRole, ikeja);
 const marketerId = upsert('browser.marketer@bliss.test', 'Browser Marketer', marketerRole, ikeja);
-const teamLead = db.prepare("SELECT id FROM users WHERE email='tl.ikeja@bliss.com'").get();
+const teamLeadRole = roleId('Team Lead');
+const teamLead = db.prepare("SELECT id FROM users WHERE email='tl.ikeja@bliss.com'").get()
+  || { id: upsert('tl.ikeja@bliss.com', 'Ikeja Team Lead', teamLeadRole, ikeja) };
 const existingMarketer = db.prepare("SELECT id FROM users WHERE email='mkt.ikeja@bliss.com'").get();
 const property = db.prepare('SELECT id FROM properties ORDER BY id LIMIT 1').get();
 
