@@ -16,7 +16,7 @@ migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "FILES"
-bucket_name = "bliss-legacy-staging-files"
+bucket_name = "bliss-legacy-staging-file"
 
 [[kv_namespaces]]
 binding = "CACHE"
