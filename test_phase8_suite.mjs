@@ -1797,8 +1797,8 @@ await test('referral commission applies two-stage and flat rules, caps at 35,000
   assert(outrightAccount.structure === 'flat' && outrightAccount.total_commission_kobo === 5000000, 'outright referral commission should be 10% = 50,000 NGN');
 
   const eightAccount = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(eightMonthClient);
-  assert(eightAccount.structure === 'configuration_required' && eightAccount.total_commission_kobo === 0, '8-month plan must be flagged without commission');
-  assert(eightAccount.status === 'Configuration Required' && /8-month/i.test(eightAccount.flag_reason || ''), '8-month flag reason missing');
+  assert(eightAccount.structure === 'two_stage' && eightAccount.total_commission_kobo === 2000000, '8-month plan must use the two-stage rule');
+  assert(eightAccount.status === 'Earned', '8-month plan should be earned');
 
   const rules = await request('/api/referral-commissions/rules', { headers: { Cookie: mdCookie } });
   assert(rules.status === 200 && rules.data.rules.length === 4, 'referral commission rules endpoint missing seeded rules');
@@ -1853,7 +1853,7 @@ await test('referral commission applies two-stage and flat rules, caps at 35,000
   const careView = await request('/api/referral-commissions', { headers: { Cookie: careNationalCookie } });
   assert(careView.status === 403, 'customer care must not see referral commissions');
   const configView = await request('/api/referral-commissions?status=Configuration%20Required', { headers: { Cookie: mdCookie } });
-  assert(configView.status === 200 && configView.data.entries.some(row => row.client_id === eightMonthClient), 'configuration-required referral account missing from dashboard');
+  assert(configView.status === 200 && !configView.data.entries.some(row => row.client_id === eightMonthClient), '8-month plan should no longer be configuration-required');
 });
 
 console.log('\n--- 13. Phone-first onboarding, dynamic accounts and client password recovery ---');
@@ -2527,12 +2527,7 @@ await test('placeholder titles and 8-month plans cannot be published, and non-ow
   const eightMonthPublish = await request(`/api/properties/${propertyId}`, {
     method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
   });
-  assert(eightMonthPublish.status === 409 && /8-month/i.test(eightMonthPublish.data.error || ''), '8-month plan must block publishing');
-  db.prepare('UPDATE property_payment_plans SET duration_months=9, number_of_installments=9 WHERE id=?').run(planId);
-  const published = await request(`/api/properties/${propertyId}`, {
-    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
-  });
-  assert(published.status === 200, 'owner publish after fixing the 8-month plan failed');
+  assert(eightMonthPublish.status === 200, '8-month plan should publish under the configured two-stage rule');
   await request(`/api/properties/${propertyId}`, { method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: false } });
   const placeholderAgain = await request(`/api/properties/${propertyId}`, {
     method: 'PUT', headers: { Cookie: mdCookie }, body: { title: 'Starter listing - Guard Again (edit before publishing)' }
@@ -2637,12 +2632,24 @@ await test('plan duration is derived for 150 daily, 26 weekly and 12 monthly ins
   }
 });
 
-await test('8-month plans are flagged, duplicate recalculation is idempotent, and reversals post carry-forward', async () => {
+await test('7-month plans use 10%, 8 and 12 month plans use two-stage, duplicate recalculation is idempotent, and reversals post carry-forward', async () => {
+  const sevenId = p24CommissionClient('BLC-P24-SEVEN-MONTH', 7);
+  p24Payment(sevenId, 'BLC-P24-SEVEN-PAY', 10000000);
+  await p24Backfill();
+  const seven = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(sevenId);
+  assert(seven && seven.structure === 'flat' && seven.total_commission_kobo === 1000000, '7-month plan must use 10% = 10,000 NGN');
+
   const eightId = p24CommissionClient('BLC-P24-EIGHT-MONTH', 8);
   p24Payment(eightId, 'BLC-P24-EIGHT-PAY', 6000000);
   await p24Backfill();
   const eight = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(eightId);
-  assert(eight && eight.status === 'Configuration Required' && eight.total_commission_kobo === 0, '8-month plan must be flagged with zero commission');
+  assert(eight && eight.structure === 'two_stage' && eight.total_commission_kobo === 2000000, '8-month plan must use the two-stage rule');
+
+  const twelveId = p24CommissionClient('BLC-P24-TWELVE-MONTH', 12);
+  p24Payment(twelveId, 'BLC-P24-TWELVE-PAY', 12000000);
+  await p24Backfill();
+  const twelve = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(twelveId);
+  assert(twelve && twelve.structure === 'two_stage' && twelve.total_commission_kobo === 3500000, '12-month plan must use the two-stage rule');
 
   const duplicateId = p24CommissionClient('BLC-P24-DUPLICATE', 6);
   p24Payment(duplicateId, 'BLC-P24-DUP-PAY', 10000000);
@@ -2687,6 +2694,10 @@ await test('marketer responses hide rates and non-authorised roles cannot read o
   assert(marketerView.data.entries.every(row => !('rate_bps' in row) && !('rule_key' in row) && !('stage1_commission_kobo' in row) && !('marketer_id' in row)), 'marketer dashboard leaked rule/rate fields');
   const marketerRules = await request('/api/referral-commissions/rules', { headers: { Cookie: mkt1Cookie } });
   assert(marketerRules.status === 403, 'marketer must not read commission rules');
+  for (const cookie of [tlCookie, bm1Cookie, careBranchCookie, careNationalCookie]) {
+    const rulesView = await request('/api/referral-commissions/rules', { headers: { Cookie: cookie } });
+    assert(rulesView.status === 403, 'non-management role must not read referral commission rules');
+  }
   const plans = await request('/api/commission-plans', { headers: { Cookie: mdCookie } });
   assert(plans.status === 200 && plans.data.plans.some(plan => plan.plan_family === 'referral'), 'seeded referral plans missing');
   const referralPlan = plans.data.plans.find(plan => plan.plan_family === 'referral');
@@ -2708,6 +2719,122 @@ await test('marketer responses hide rates and non-authorised roles cannot read o
   assert(tamper.status === 400, 'referral plan must reject non-Marketer roles until the owner approves them');
 });
 
+await test('outright treatment can switch between flat 10% and the two-stage rule', async () => {
+  const plans = await request('/api/commission-plans', { headers: { Cookie: mdCookie } });
+  const outrightPlan = plans.data.plans.find(plan => plan.plan_family === 'referral' && Number(plan.outright_applies) === 1);
+  assert(outrightPlan, 'outright referral plan missing');
+  const baseBody = {
+    name: outrightPlan.name,
+    description: outrightPlan.description,
+    calculation_basis: outrightPlan.calculation_basis,
+    plan_family: 'referral',
+    sale_type: 'Referral',
+    min_duration_months: 0,
+    max_duration_months: 0,
+    outright_applies: true,
+    effective_from: new Date().toISOString().slice(0, 10),
+    approval_required: false,
+    separation_of_duties: false,
+    is_active: true,
+    commissionable_mode: 'full',
+    rules: outrightPlan.rules.filter(rule => rule.is_active).map(rule => ({
+      id: rule.id, role_name: 'Marketer', rate_percent: rule.rate_bps / 100,
+      sales_type: 'Referral', applies_to: 'outright', rule_type: rule.rule_type,
+      stage_amount: rule.stage_amount_kobo / 100, stage1_cap: rule.stage1_cap_kobo / 100,
+      stage2_cap: rule.stage2_cap_kobo / 100, max_cap: rule.max_cap_kobo / 100, is_active: true
+    }))
+  };
+
+  const flatClient = p24CommissionClient('BLC-P24-OUT-FLAT', 0, 'outright');
+  p24Payment(flatClient, 'BLC-P24-OUT-FLAT-PAY', 250000000);
+  await p24Backfill();
+  const flat = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(flatClient);
+  assert(flat.structure === 'flat' && flat.total_commission_kobo === 25000000, 'outright flat 2.5m must pay 250,000 NGN');
+
+  const toTwoStage = await request(`/api/commission-plans/${outrightPlan.id}`, {
+    method: 'PUT', headers: { Cookie: mdCookie },
+    body: { ...baseBody, effective_from: new Date(Date.now() + 86400000).toISOString().slice(0, 10), outright_treatment: 'two_stage', change_reason: 'Owner test: switch outright to two-stage' }
+  });
+  assert(toTwoStage.status === 200, `outright two-stage switch failed: ${toTwoStage.status} ${JSON.stringify(toTwoStage.data)}`);
+  const twoStageClient = p24CommissionClient('BLC-P24-OUT-TWO', 0, 'outright');
+  const twoStagePayment = p24Payment(twoStageClient, 'BLC-P24-OUT-TWO-PAY', 250000000);
+  db.prepare("UPDATE payments SET verified_at=datetime('now','+3 days') WHERE id=?").run(twoStagePayment);
+  await p24Backfill();
+  const twoStage = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(twoStageClient);
+  assert(twoStage.structure === 'two_stage' && twoStage.total_commission_kobo === 3500000, 'outright two-stage 2.5m must cap at 35,000 NGN');
+
+  const backToFlat = await request(`/api/commission-plans/${outrightPlan.id}`, {
+    method: 'PUT', headers: { Cookie: mdCookie },
+    body: { ...baseBody, effective_from: new Date(Date.now() + 4 * 86400000).toISOString().slice(0, 10), outright_treatment: 'flat', change_reason: 'Owner test: restore outright flat 10%' }
+  });
+  assert(backToFlat.status === 200, 'outright flat restore failed');
+});
+
+await test('exact 7-month plan uses 10%, and a rule version only applies from its effective date', async () => {
+  const plans = await request('/api/commission-plans', { headers: { Cookie: mdCookie } });
+  const longPlan = plans.data.plans.find(plan => plan.plan_family === 'referral' && Number(plan.min_duration_months) >= 8);
+  assert(longPlan, 'long-term referral plan missing');
+  const versionClient = p24CommissionClient('BLC-P24-VERSION', 12);
+  const firstPayment = p24Payment(versionClient, 'BLC-P24-VERSION-1', 6000000, 1);
+  await p24Backfill();
+  const before = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(versionClient);
+  assert(before.total_commission_kobo === 2000000, 'version test first payment should earn 20,000 NGN');
+  const firstEvent = db.prepare("SELECT * FROM referral_commission_events WHERE client_id=? AND payment_id=? AND event_type='accrual' ORDER BY id LIMIT 1").get(versionClient, firstPayment);
+  assert(firstEvent && firstEvent.amount_kobo === 2000000, 'version test first accrual event missing');
+
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const rules = longPlan.rules.filter(rule => rule.is_active).map(rule => ({
+    id: rule.id, role_name: 'Marketer', rate_percent: rule.rate_bps / 100,
+    sales_type: 'Referral', applies_to: rule.applies_to, rule_type: rule.rule_type,
+    stage_amount: rule.stage_amount_kobo / 100, stage1_cap: 25000,
+    stage2_cap: rule.stage2_cap_kobo / 100, max_cap: 40000, is_active: true
+  }));
+  const update = await request(`/api/commission-plans/${longPlan.id}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: {
+      name: longPlan.name, description: longPlan.description, calculation_basis: longPlan.calculation_basis,
+      plan_family: 'referral', sale_type: 'Referral', min_duration_months: longPlan.min_duration_months,
+      max_duration_months: longPlan.max_duration_months, outright_applies: false, outright_treatment: 'flat',
+      effective_from: tomorrow, approval_required: false, separation_of_duties: false, is_active: true,
+      commissionable_mode: 'full', rules, change_reason: 'Owner test: stage caps from tomorrow'
+    }
+  });
+  assert(update.status === 200, `versioned rule update failed: ${update.status} ${JSON.stringify(update.data)}`);
+  const secondPayment = p24Payment(versionClient, 'BLC-P24-VERSION-2', 6000000, 0);
+  db.prepare("UPDATE payments SET verified_at=datetime('now','+2 days') WHERE id=?").run(secondPayment);
+  await p24Backfill();
+  const after = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(versionClient);
+  assert(after.total_commission_kobo === 4000000, `new version should bring the total to 40,000 NGN, got ${after.total_commission_kobo}`);
+  const firstEventAfter = db.prepare("SELECT * FROM referral_commission_events WHERE payment_id=? AND event_type='accrual' ORDER BY id LIMIT 1").get(firstPayment);
+  assert(firstEventAfter && firstEventAfter.amount_kobo === 2000000, 'past accrual event was rewritten by a new rule version');
+  const secondEvent = db.prepare("SELECT * FROM referral_commission_events WHERE payment_id=? AND event_type='accrual' ORDER BY id DESC LIMIT 1").get(secondPayment);
+  assert(secondEvent && secondEvent.amount_kobo === 2000000, 'new version did not apply to the later payment');
+});
+
+await test('commission preview calculator and change-reason validation work', async () => {
+  const preview = await request('/api/commission-plans/preview', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {
+      name: 'Preview', calculation_basis: 'referral_cumulative_tiered', plan_family: 'referral', sale_type: 'Referral',
+      min_duration_months: 8, max_duration_months: null, outright_applies: false, outright_treatment: 'flat',
+      rules: [{ role_name: 'Marketer', sales_type: 'Referral', applies_to: 'long_term', rule_type: 'cumulative_tiered_cap', stage_amount: 60000, stage1_cap: 20000, stage2_cap: 15000, max_cap: 35000, is_active: true }],
+      payments: [30000, 30000, 40000, 20000]
+    }
+  });
+  assert(preview.status === 200, `preview failed: ${preview.status} ${JSON.stringify(preview.data)}`);
+  assert(preview.data.rows.map(row => row.commission_total_kobo).join(',') === '1000000,2000000,3000000,3500000', 'preview cumulative totals are wrong');
+  assert(preview.data.total_commission_kobo === 3500000, 'preview total is wrong');
+
+  const plans = await request('/api/commission-plans', { headers: { Cookie: mdCookie } });
+  const longPlan = plans.data.plans.find(plan => plan.plan_family === 'referral' && Number(plan.min_duration_months) >= 8);
+  const noReason = await request(`/api/commission-plans/${longPlan.id}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: {
+      name: longPlan.name, calculation_basis: longPlan.calculation_basis, plan_family: 'referral',
+      sale_type: 'Referral', min_duration_months: longPlan.min_duration_months,
+      max_duration_months: longPlan.max_duration_months, rules: longPlan.rules
+    }
+  });
+  assert(noReason.status === 400 && /change reason/i.test(noReason.data.error || ''), 'referral edit must require a change reason');
+});
+
 console.log('\n--- 13. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
@@ -2715,7 +2842,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 26, `expected 26 migrations, found ${files.length}`);
+  assert(files.length === 27, `expected 27 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

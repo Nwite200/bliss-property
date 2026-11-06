@@ -1483,7 +1483,6 @@ async function propertyHasEightMonthPlan(env, propertyId) {
     frequencyDays: planIntervalDays(plan.plan_type)
   }) === 8);
 }
-
 function normalizeTemperature(value, fallback = null) {
   const raw = String(value || "").trim().toLowerCase();
   if (raw === "hot") return "Hot";
@@ -1860,8 +1859,9 @@ async function getReferralCommissionRules(env) {
   const { results } = await env.DB.prepare(`
     SELECT p.id AS plan_id, p.name AS plan_name, p.calculation_basis, p.min_duration_months,
            p.max_duration_months, p.outright_applies, p.current_version_no, p.sale_type,
+           p.outright_treatment,
            r.id AS rule_id, r.role_name, r.rate_bps, r.fixed_amount_kobo, r.rule_type,
-           r.stage_amount_kobo, r.stage1_cap_kobo, r.stage2_cap_kobo, r.max_cap_kobo
+           r.stage_amount_kobo, r.stage1_cap_kobo, r.stage2_cap_kobo, r.max_cap_kobo, r.applies_to
     FROM commission_plans p
     JOIN commission_plan_rules r ON r.plan_id=p.id AND r.is_active=1
     WHERE p.is_active=1 AND p.plan_family='referral'
@@ -1880,20 +1880,30 @@ async function getReferralCommissionRules(env) {
         stage2_commission_cap_kobo: Number(row.stage2_cap_kobo || 0),
         max_commission_kobo: Number(row.max_cap_kobo || 0)
       };
-      if (row.calculation_basis === "referral_cumulative_tiered" || row.rule_type === "cumulative_tiered_cap") {
+      const appliesTo = row.applies_to || (
+        row.rule_type === "cumulative_tiered_cap" ? "long_term"
+          : (Number(row.outright_applies) === 1 && Number(row.max_duration_months) === 0 ? "outright" : "short_term")
+      );
+      if (appliesTo === "long_term" || row.rule_type === "cumulative_tiered_cap") {
         map.long_term = {
           ...base, rule_key: "long_term", structure: "two_stage",
           flat_rate_bps: 0
+        };
+      } else if (appliesTo === "outright") {
+        map.outright = {
+          ...base, rule_key: "outright", structure: row.outright_treatment === "two_stage" ? "two_stage" : "flat",
+          flat_rate_bps: Number(row.rate_bps || 0),
+          outright_treatment: row.outright_treatment || "flat"
         };
       } else {
         map.short_term = {
           ...base, rule_key: "short_term", structure: "flat",
           flat_rate_bps: Number(row.rate_bps || 0)
         };
-        if (Number(row.outright_applies) === 1) {
-          map.outright = { ...map.short_term, rule_key: "outright" };
-        }
       }
+    }
+    if (map.outright && map.outright.structure === "two_stage" && map.long_term) {
+      map.outright = { ...map.long_term, rule_key: "outright", outright_treatment: "two_stage" };
     }
     if (map.long_term || map.short_term || map.outright) return map;
   }
@@ -1906,7 +1916,135 @@ async function getReferralCommissionRules(env) {
   return map;
 }
 
-async function resolveReferralCommissionPlan(env, client) {
+async function getReferralRuleVersions(env) {
+  const { results } = await env.DB.prepare(`
+    SELECT v.*, p.plan_family, p.min_duration_months AS plan_min_duration_months,
+           p.max_duration_months AS plan_max_duration_months, p.outright_applies,
+           p.outright_treatment AS plan_outright_treatment
+    FROM commission_plan_versions v
+    JOIN commission_plans p ON p.id=v.plan_id
+    WHERE p.plan_family='referral'
+    ORDER BY v.version_no ASC, v.id ASC
+  `).all();
+  return (results || []).map(row => {
+    let rules = [];
+    try { rules = row.rules_json ? JSON.parse(row.rules_json) : []; } catch { rules = []; }
+    const parsedRules = (Array.isArray(rules) ? rules : []).map(rule => ({
+      ...rule,
+      plan_version_no: Number(row.version_no || 1),
+      flat_rate_bps: rule.flat_rate_bps !== undefined ? Number(rule.flat_rate_bps) : Number(rule.rate_bps || 0),
+      stage1_commission_cap_kobo: rule.stage1_commission_cap_kobo !== undefined
+        ? Number(rule.stage1_commission_cap_kobo) : Number(rule.stage1_cap_kobo || 0),
+      stage2_commission_cap_kobo: rule.stage2_commission_cap_kobo !== undefined
+        ? Number(rule.stage2_commission_cap_kobo) : Number(rule.stage2_cap_kobo || 0),
+      max_commission_kobo: rule.max_commission_kobo !== undefined
+        ? Number(rule.max_commission_kobo) : Number(rule.max_cap_kobo || 0)
+    }));
+    return { ...row, parsedRules };
+  });
+}
+
+function pickReferralRuleVersion(versions, sourceDate, appliesTo) {
+  if (!versions || !versions.length) return null;
+  const date = String(sourceDate || "").slice(0, 10);
+  const matching = versions.filter(version => {
+    if (version.plan_family !== "referral") return false;
+    const effective = String(version.effective_from || "").slice(0, 10);
+    if (effective && date && effective > date) return false;
+    return true;
+  });
+  const candidates = matching.length ? matching : versions;
+  const sorted = [...candidates].sort((a, b) => {
+    const aDate = String(a.effective_from || "").slice(0, 10);
+    const bDate = String(b.effective_from || "").slice(0, 10);
+    if (aDate !== bDate) return aDate < bDate ? 1 : -1;
+    return Number(b.version_no || 0) - Number(a.version_no || 0);
+  });
+  const ordered = matching.length
+    ? sorted
+    : [...versions].sort((a, b) => {
+      const aDate = String(a.effective_from || "").slice(0, 10);
+      const bDate = String(b.effective_from || "").slice(0, 10);
+      if (aDate !== bDate) return aDate < bDate ? -1 : 1;
+      return Number(a.version_no || 0) - Number(b.version_no || 0);
+    });
+  for (const version of ordered) {
+    const rule = (version.parsedRules || []).find(item => {
+      if (item.role_name !== "Marketer") return false;
+      const ruleApplies = item.applies_to || (
+        item.rule_type === "cumulative_tiered_cap" ? "long_term"
+          : (Number(version.outright_applies) === 1 && Number(version.plan_max_duration_months) === 0 ? "outright" : "short_term")
+      );
+      return ruleApplies === appliesTo;
+    });
+    if (rule) return { version, rule };
+  }
+  return null;
+}
+
+function calculateVersionedReferralTotal(versions, structure, planType, months, payments, fallbackRule) {
+  const appliesTo = structure === "two_stage" ? "long_term" : (planType === "outright" ? "outright" : "short_term");
+  let cumulativePaid = 0;
+  let recognized = 0;
+  let finalCalc = null;
+  let lastRule = fallbackRule;
+  let lastStructure = structure;
+  for (const payment of payments || []) {
+    cumulativePaid += Number(payment.amount_kobo || 0);
+    let paymentStructure = structure;
+    let rule = fallbackRule;
+    if (planType === "outright") {
+      const outrightVersion = pickReferralRuleVersion(versions, payment.verified_at, "outright");
+      const longVersion = pickReferralRuleVersion(versions, payment.verified_at, "long_term");
+      const treatment = outrightVersion && outrightVersion.version
+        ? (outrightVersion.version.outright_treatment || outrightVersion.version.plan_outright_treatment || "flat")
+        : "flat";
+      paymentStructure = treatment === "two_stage" ? "two_stage" : "flat";
+      rule = paymentStructure === "two_stage"
+        ? (longVersion && longVersion.rule ? longVersion.rule : fallbackRule)
+        : (outrightVersion && outrightVersion.rule ? outrightVersion.rule : fallbackRule);
+    } else {
+      const selected = pickReferralRuleVersion(versions, payment.verified_at, appliesTo);
+      rule = selected && selected.rule ? selected.rule : fallbackRule;
+    }
+    if (rule) lastRule = rule;
+    lastStructure = paymentStructure;
+    const calc = calculateReferralCommissionKobo(paymentStructure, rule, cumulativePaid);
+    const max = Math.max(0, Number(rule && rule.max_commission_kobo !== undefined ? rule.max_commission_kobo : 0));
+    const capped = max > 0 ? Math.min(max, calc.totalKobo) : calc.totalKobo;
+    const delta = Math.max(0, capped - recognized);
+    recognized += delta;
+    finalCalc = calc;
+  }
+  const applicableVersions = (versions || []).filter(version =>
+    (version.parsedRules || []).some(item => {
+      if (item.role_name !== "Marketer") return false;
+      const ruleApplies = item.applies_to || (
+        item.rule_type === "cumulative_tiered_cap" ? "long_term"
+          : (Number(version.outright_applies) === 1 && Number(version.plan_max_duration_months) === 0 ? "outright" : "short_term")
+      );
+      return ruleApplies === appliesTo;
+    })
+  );
+  const hardMax = Math.max(
+    Number(fallbackRule && fallbackRule.max_commission_kobo || 0),
+    ...(applicableVersions.map(version => {
+      const rule = (version.parsedRules || []).find(item => item.role_name === "Marketer" &&
+        (item.applies_to === appliesTo || (item.rule_type === "cumulative_tiered_cap" && appliesTo === "long_term")));
+      return Number(rule && rule.max_cap_kobo || 0);
+    }))
+  );
+  const total = hardMax > 0 ? Math.min(recognized, hardMax) : recognized;
+  return {
+    ...(finalCalc || calculateReferralCommissionKobo(lastStructure, fallbackRule, cumulativePaid)),
+    totalKobo: total,
+    recognizedKobo: recognized,
+    lastRule,
+    lastStructure
+  };
+}
+
+async function resolveReferralCommissionPlan(env, client, rules = {}) {
   const schedule = await env.DB.prepare(`
     SELECT s.*,
       (SELECT COUNT(*) FROM payment_schedule_items i WHERE i.schedule_id=s.id) AS item_count,
@@ -1964,7 +2102,16 @@ async function resolveReferralCommissionPlan(env, client) {
     };
   }
   if (planType === "outright") {
-    return { ...base, structure: "flat", ruleKey: "outright", flagReason: null, label: referralStructureLabel("flat", "outright", 0) };
+    const outrightRule = rules.outright || null;
+    const structure = outrightRule && outrightRule.structure === "two_stage" ? "two_stage" : "flat";
+    return {
+      ...base,
+      structure,
+      ruleKey: "outright",
+      rule: outrightRule,
+      flagReason: outrightRule ? null : "Outright referral commission is not configured",
+      label: referralStructureLabel(structure, "outright", 0)
+    };
   }
   if (months === null) {
     return {
@@ -1975,20 +2122,25 @@ async function resolveReferralCommissionPlan(env, client) {
       label: referralStructureLabel("configuration_required", planType, months)
     };
   }
-  if (months === 8) {
+  const shortTerm = rules.short_term || null;
+  const longTerm = rules.long_term || null;
+  const shortMin = shortTerm && shortTerm.min_duration_months !== null && shortTerm.min_duration_months !== undefined
+    ? Number(shortTerm.min_duration_months) : 1;
+  const shortMax = shortTerm && shortTerm.max_duration_months !== null && shortTerm.max_duration_months !== undefined
+    ? Number(shortTerm.max_duration_months) : 7;
+  const longMin = longTerm && longTerm.min_duration_months !== null && longTerm.min_duration_months !== undefined
+    ? Number(longTerm.min_duration_months) : 8;
+  if (shortTerm && months >= shortMin && months <= shortMax) {
     return {
-      ...base,
-      structure: "configuration_required",
-      ruleKey: null,
-      flagReason: "An 8-month payment plan has no approved referral commission structure. The owner must choose the structure before publishing.",
-      label: referralStructureLabel("configuration_required", planType, months)
+      ...base, structure: "flat", ruleKey: "short_term", rule: shortTerm,
+      flagReason: null, label: referralStructureLabel("flat", planType, months)
     };
   }
-  if (months <= 7) {
-    return { ...base, structure: "flat", ruleKey: "short_term", flagReason: null, label: referralStructureLabel("flat", planType, months) };
-  }
-  if (months > 8) {
-    return { ...base, structure: "two_stage", ruleKey: "long_term", flagReason: null, label: referralStructureLabel("two_stage", planType, months) };
+  if (longTerm && months >= longMin) {
+    return {
+      ...base, structure: "two_stage", ruleKey: "long_term", rule: longTerm,
+      flagReason: null, label: referralStructureLabel("two_stage", planType, months)
+    };
   }
   return {
     ...base,
@@ -2056,8 +2208,8 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
   if (!client) return { skipped: true, reason: "client_not_found" };
 
   const rules = await getReferralCommissionRules(env);
-  const plan = await resolveReferralCommissionPlan(env, client);
-  const liveRule = plan.ruleKey ? rules[plan.ruleKey] : null;
+  const plan = await resolveReferralCommissionPlan(env, client, rules);
+  const liveRule = plan.rule || (plan.ruleKey ? rules[plan.ruleKey] : null);
   const { results: payments } = await env.DB.prepare(`
     SELECT id, amount_kobo, verified_at
     FROM payments
@@ -2069,17 +2221,19 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
   const existing = await env.DB.prepare(
     "SELECT * FROM referral_commission_accounts WHERE client_id=?"
   ).bind(client.id).first();
-  const storedSnapshot = existing ? safeJsonParse(existing.rule_snapshot_json) : null;
-  // Existing clients keep the rule version they were calculated with. New
-  // clients use the currently active plan version. This prevents a rule edit
-  // from retroactively changing past commission.
-  const effectiveRule = storedSnapshot && storedSnapshot.structure === plan.structure ? storedSnapshot : liveRule;
-  const calc = calculateReferralCommissionKobo(plan.structure, effectiveRule, totalPaidKobo);
-  const planVersionNo = effectiveRule && effectiveRule.plan_version_no
-    ? Number(effectiveRule.plan_version_no)
-    : (liveRule ? Number(liveRule.plan_version_no || 1) : null);
-  const ruleSnapshotJson = effectiveRule
-    ? JSON.stringify({ ...effectiveRule, structure: plan.structure, rule_key: plan.ruleKey })
+  const versions = await getReferralRuleVersions(env);
+  const versionCalc = calculateVersionedReferralTotal(
+    versions, plan.structure, plan.planType, plan.months, payments, liveRule
+  );
+  const effectiveStructure = versionCalc.lastStructure || plan.structure;
+  const displayRule = versionCalc.lastRule || liveRule;
+  const displayCalc = calculateReferralCommissionKobo(effectiveStructure, displayRule, totalPaidKobo);
+  const calc = { ...displayCalc, totalKobo: versionCalc.totalKobo };
+  const planVersionNo = liveRule && liveRule.plan_version_no
+    ? Number(liveRule.plan_version_no)
+    : null;
+  const ruleSnapshotJson = liveRule
+    ? JSON.stringify({ ...liveRule, structure: plan.structure, rule_key: plan.ruleKey })
     : null;
   const recipient = await resolveCommissionRecipient(env, client, "Marketer");
   // Preserve an existing attribution if the marketer is temporarily inactive.
@@ -2095,7 +2249,7 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
   const net = calc.totalKobo + adjusted;
   const carryForward = Math.min(0, net - paid);
   let status = "Pending";
-  if (plan.structure === "configuration_required") status = "Configuration Required";
+  if (effectiveStructure === "configuration_required") status = "Configuration Required";
   else if (net <= 0) status = "Reversed";
   else if (carryForward < 0) status = "Reversed";
   else if (!marketerId) status = "Pending";
@@ -2103,10 +2257,12 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
   else if (paid > 0) status = "Partially Paid";
   else status = "Earned";
 
-  const flagReason = plan.flagReason || (!marketerId ? "No eligible marketer is assigned to this client" : null);
+  const flagReason = effectiveStructure === "configuration_required"
+    ? plan.flagReason
+    : (!marketerId ? "No eligible marketer is assigned to this client" : null);
   const lastPaymentId = payments.length ? payments[payments.length - 1].id : (existing ? existing.last_payment_id : null);
   const values = [
-    marketerId, branchId, teamId, plan.planType, plan.months, plan.structure, plan.ruleKey,
+    marketerId, branchId, teamId, plan.planType, plan.months, effectiveStructure, plan.ruleKey,
     totalPaidKobo, calc.qualifyingKobo, calc.stage1PaidKobo, calc.stage2PaidKobo,
     calc.stage1CommissionKobo, calc.stage2CommissionKobo, calc.totalKobo,
     adjusted, paid, status, flagReason, lastPaymentId,
@@ -2141,11 +2297,11 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
 
   const delta = calc.totalKobo - previousTotal;
   const structureChanged = Boolean(existing) && (
-    existing.structure !== plan.structure ||
+    existing.structure !== effectiveStructure ||
     Number(existing.marketer_id || 0) !== Number(marketerId || 0) ||
     Number(existing.plan_duration_months === null ? -1 : existing.plan_duration_months) !== Number(plan.months === null ? -1 : plan.months)
   );
-  const needsFlagEvent = plan.structure === "configuration_required" && (!existing || existing.status !== "Configuration Required");
+  const needsFlagEvent = effectiveStructure === "configuration_required" && (!existing || existing.status !== "Configuration Required");
   const shouldRecord = !existing || delta !== 0 || structureChanged || needsFlagEvent ||
     Number(existing.carry_forward_kobo || 0) !== Number(carryForward || 0) ||
     Boolean(trigger.forceEvent) || ["reversal", "adjustment"].includes(trigger.eventType);
@@ -2154,8 +2310,8 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
     const defaultSourceKey = `referral:client:${client.id}:calc:${Date.now().toString(36)}:${crypto.randomUUID().slice(0, 8)}`;
     const sourceKey = trigger.sourceKey || defaultSourceKey;
     let eventType = trigger.eventType || (delta > 0 ? "accrual" : delta < 0 ? "reversal" : "recalculation");
-    if (eventType === "recalculation" && delta < 0) eventType = "reversal";
-    if (plan.structure === "configuration_required" && needsFlagEvent) eventType = "flagged";
+    if (eventType === "recalculation" && delta !== 0) eventType = delta > 0 ? "accrual" : "reversal";
+    if (effectiveStructure === "configuration_required" && needsFlagEvent) eventType = "flagged";
     const eventRef = "RCE-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 8).toUpperCase();
     const eventRes = await env.DB.prepare(`
       INSERT OR IGNORE INTO referral_commission_events
@@ -2168,7 +2324,7 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
       marketerId, eventType, delta, totalPaidKobo, calc.qualifyingKobo, net,
       trigger.reason || plan.flagReason || null,
       JSON.stringify({
-        structure: plan.structure, rule_key: plan.ruleKey, plan_type: plan.planType,
+        structure: effectiveStructure, rule_key: plan.ruleKey, plan_type: plan.planType,
         plan_duration_months: plan.months, stage1_paid_kobo: calc.stage1PaidKobo,
         stage2_paid_kobo: calc.stage2PaidKobo, stage1_commission_kobo: calc.stage1CommissionKobo,
         stage2_commission_kobo: calc.stage2CommissionKobo, total_commission_kobo: calc.totalKobo,
@@ -2183,7 +2339,7 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
         "referral_commission", String(accountId), {
           client_id: client.id, client_reference: client.client_reference, event_type: eventType,
           delta_kobo: delta, total_commission_kobo: calc.totalKobo, qualifying_paid_kobo: calc.qualifyingKobo,
-          structure: plan.structure, rule_key: plan.ruleKey, plan_duration_months: plan.months,
+          structure: effectiveStructure, rule_key: plan.ruleKey, plan_duration_months: plan.months,
           marketer_id: marketerId, flag_reason: flagReason
         }, branchId);
       if (delta > 0 && marketerId) {
@@ -2195,7 +2351,7 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
           metadata: { account_id: accountId, client_id: client.id, amount_kobo: delta }
         }).catch(() => {});
       }
-      if (plan.structure === "configuration_required") {
+      if (effectiveStructure === "configuration_required") {
         const managers = await env.DB.prepare(`
           SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
           WHERE u.is_active=1 AND r.name IN ('Managing Director','Super Admin','Finance Officer','Head Accountant')
@@ -2425,16 +2581,17 @@ async function createCommissionPlanVersion(env, planId, versionNo, plan, rules, 
     stage_amount_kobo: Number(rule.stage_amount_kobo || 0),
     stage1_cap_kobo: Number(rule.stage1_cap_kobo || 0),
     stage2_cap_kobo: Number(rule.stage2_cap_kobo || 0),
-    max_cap_kobo: Number(rule.max_cap_kobo || 0)
+    max_cap_kobo: Number(rule.max_cap_kobo || 0),
+    applies_to: rule.applies_to || "all"
   }));
   const res = await env.DB.prepare(`
     INSERT OR IGNORE INTO commission_plan_versions
       (plan_id, version_no, name, description, calculation_basis, effective_from, effective_to,
        commissionable_mode, commissionable_first_months, commissionable_percent_bps,
        commissionable_cap_kobo, rules_json, change_reason, created_by, created_at,
-       plan_family, sale_type, min_duration_months, max_duration_months, outright_applies)
+       plan_family, sale_type, min_duration_months, max_duration_months, outright_applies, outright_treatment)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-      ?, ?, ?, ?, ?)
+      ?, ?, ?, ?, ?, ?)
   `).bind(
     planId, versionNo, plan.name, plan.description || null, plan.calculation_basis,
     plan.effective_from || null, plan.effective_to || null,
@@ -2446,7 +2603,7 @@ async function createCommissionPlanVersion(env, planId, versionNo, plan, rules, 
     plan.plan_family || "standard", plan.sale_type || null,
     plan.min_duration_months === undefined ? null : plan.min_duration_months,
     plan.max_duration_months === undefined ? null : plan.max_duration_months,
-    Number(plan.outright_applies || 0)
+    Number(plan.outright_applies || 0), plan.outright_treatment || "flat"
   ).run();
   return res.meta ? res.meta.last_row_id : null;
 }
@@ -7362,9 +7519,6 @@ async function handleFetch(request, env) {
           }
           const enabledPlans = await propertyEnabledPlanCount(env, existing.id);
           if (!enabledPlans) return json({ error: "Add and enable at least one payment plan before publishing" }, 409);
-          if (await propertyHasEightMonthPlan(env, existing.id)) {
-            return json({ error: "This property has an enabled 8-month plan. The owner must approve the 8-month commission structure before it can be published." }, 409);
-          }
           const isOwner = ["Super Admin", "Managing Director"].includes(actualRole);
           if (!isOwner) {
             workflow = "pending_approval";
@@ -7418,9 +7572,6 @@ async function handleFetch(request, env) {
         }
         const enabledPlans = await propertyEnabledPlanCount(env, property.id);
         if (!enabledPlans) return json({ error: "Add and enable at least one payment plan before approving" }, 409);
-        if (await propertyHasEightMonthPlan(env, property.id)) {
-          return json({ error: "This property has an enabled 8-month plan. The owner must approve the 8-month commission structure before approval." }, 409);
-        }
         await env.DB.prepare(`
           UPDATE properties SET is_published=1, workflow_status='published', approved_by=?, approved_at=datetime('now'),
             updated_by=?, updated_at=datetime('now') WHERE id=?
@@ -13458,6 +13609,11 @@ async function handleFetch(request, env) {
         const salesType = raw.sales_type || (planFamily === "referral" ? "Referral" : null);
         if (salesType && !SALE_TYPES.includes(salesType)) return { error: "Sales type is invalid" };
         if (planFamily === "referral" && salesType !== "Referral") return { error: "Referral commission plans must use the Referral sale type" };
+        const appliesTo = raw.applies_to || (
+          basis === "referral_cumulative_tiered" ? "long_term"
+            : (raw.outright_applies || raw.applies_to === "outright" ? "outright" : "short_term")
+        );
+        if (!["all", "long_term", "short_term", "outright"].includes(appliesTo)) return { error: "Commission rule applicability is invalid" };
         normalized.push({
           id: raw.id ? Number(raw.id) : null,
           role_name: roleName,
@@ -13472,7 +13628,8 @@ async function handleFetch(request, env) {
           stage_amount_kobo: stageAmount,
           stage1_cap_kobo: stage1Cap,
           stage2_cap_kobo: stage2Cap,
-          max_cap_kobo: maxCap
+          max_cap_kobo: maxCap,
+          applies_to: appliesTo
         });
       }
       return { rules: normalized };
@@ -13500,6 +13657,8 @@ async function handleFetch(request, env) {
       const saleType = body.sale_type || (planFamily === "referral" ? "Referral" : null);
       if (saleType && !SALE_TYPES.includes(saleType)) return { error: "Sale type is invalid" };
       if (planFamily === "referral" && saleType !== "Referral") return { error: "Referral commission plans must use the Referral sale type" };
+      const outrightTreatment = body.outright_treatment || "flat";
+      if (!["flat", "two_stage"].includes(outrightTreatment)) return { error: "Outright treatment must be flat or two_stage" };
       const ruleResult = await normalizeCommissionRules(env, basis, body.rules, planFamily);
       if (ruleResult.error) return ruleResult;
       const commissionableMode = body.commissionable_mode || "full";
@@ -13540,7 +13699,8 @@ async function handleFetch(request, env) {
           sale_type: saleType,
           min_duration_months: minDuration,
           max_duration_months: maxDuration,
-          outright_applies: body.outright_applies === undefined ? 0 : (isTruthy(body.outright_applies) ? 1 : 0)
+          outright_applies: body.outright_applies === undefined ? 0 : (isTruthy(body.outright_applies) ? 1 : 0),
+          outright_treatment: outrightTreatment
         },
         rules: ruleResult.rules
       };
@@ -13593,6 +13753,49 @@ async function handleFetch(request, env) {
       return json({ plans });
     }
 
+    if (path === "/api/commission-plans/preview" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const validated = await validateCommissionPlanBody(env, body);
+      if (validated.error) return json({ error: validated.error }, 400);
+      const rule = (validated.rules || []).find(item => item.role_name === "Marketer" && item.is_active);
+      if (!rule) return json({ error: "A Marketer rule is required for the preview" }, 400);
+      const basis = validated.plan.calculation_basis;
+      const structure = basis === "referral_cumulative_tiered" || rule.rule_type === "cumulative_tiered_cap"
+        ? "two_stage" : "flat";
+      const amounts = Array.isArray(body.payments) ? body.payments : (Array.isArray(body.payment_amounts) ? body.payment_amounts : []);
+      let cumulative = 0;
+      let recognized = 0;
+      const rows = [];
+      for (const raw of amounts) {
+        const amountKobo = typeof raw === "object" && raw !== null
+          ? toKobo(raw.amount !== undefined ? raw.amount : raw.amount_ngn)
+          : toKobo(raw);
+        if (!Number.isInteger(amountKobo) || amountKobo <= 0) return json({ error: "Preview payments must be positive amounts" }, 400);
+        cumulative += amountKobo;
+        const calc = calculateReferralCommissionKobo(structure, rule, cumulative);
+        const max = Math.max(0, Number(rule.max_cap_kobo || 0));
+        const total = max > 0 ? Math.min(max, calc.totalKobo) : calc.totalKobo;
+        const newCommission = Math.max(0, total - recognized);
+        recognized = total;
+        rows.push({
+          payment_kobo: amountKobo,
+          cumulative_paid_kobo: cumulative,
+          commission_total_kobo: total,
+          commission_new_kobo: newCommission
+        });
+      }
+      return json({
+        structure,
+        rows,
+        total_paid_kobo: cumulative,
+        total_commission_kobo: recognized
+      });
+    }
+
     if (path === "/api/commission-plans" && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
@@ -13607,24 +13810,24 @@ async function handleFetch(request, env) {
           approval_required, separation_of_duties, is_active, created_by,
           commissionable_mode, commissionable_first_months, commissionable_percent_bps,
           commissionable_cap_kobo, current_version_no, plan_family, sale_type,
-          min_duration_months, max_duration_months, outright_applies)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+          min_duration_months, max_duration_months, outright_applies, outright_treatment)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
       `).bind(plan.name, plan.description, plan.calculation_basis, plan.effective_from, plan.effective_to,
         plan.approval_required, plan.separation_of_duties, plan.is_active, actor.id,
         plan.commissionable_mode, plan.commissionable_first_months, plan.commissionable_percent_bps,
         plan.commissionable_cap_kobo, plan.plan_family, plan.sale_type,
-        plan.min_duration_months, plan.max_duration_months, plan.outright_applies).run();
+        plan.min_duration_months, plan.max_duration_months, plan.outright_applies, plan.outright_treatment).run();
       const planId = res.meta.last_row_id;
       const createdRules = [];
       for (const rule of validated.rules) {
         const ruleRes = await env.DB.prepare(`
           INSERT INTO commission_plan_rules (plan_id, role_name, rate_bps, fixed_amount_kobo,
             property_category_id, sales_type, branch_id, team_id, is_active,
-            rule_type, stage_amount_kobo, stage1_cap_kobo, stage2_cap_kobo, max_cap_kobo)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            rule_type, stage_amount_kobo, stage1_cap_kobo, stage2_cap_kobo, max_cap_kobo, applies_to)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(planId, rule.role_name, rule.rate_bps, rule.fixed_amount_kobo,
           rule.property_category_id, rule.sales_type, rule.branch_id, rule.team_id, rule.is_active,
-          rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo).run();
+          rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo, rule.applies_to).run();
         createdRules.push({ id: ruleRes.meta.last_row_id, ...rule });
       }
       await createCommissionPlanVersion(env, planId, 1, plan, createdRules, body.change_reason || "Initial version", actor.id);
@@ -13661,6 +13864,9 @@ async function handleFetch(request, env) {
       const existing = await env.DB.prepare("SELECT * FROM commission_plans WHERE id=?").bind(commissionPlanMatch[1]).first();
       if (!existing) return json({ error: "Commission plan not found" }, 404);
       const body = await request.json();
+      if (existing.plan_family === "referral" && !String(body.change_reason || "").trim()) {
+        return json({ error: "A change reason is required for every referral commission rule change" }, 400);
+      }
       const validated = await validateCommissionPlanBody(env, body);
       if (validated.error) return json({ error: validated.error }, 400);
       const plan = validated.plan;
@@ -13670,13 +13876,13 @@ async function handleFetch(request, env) {
           approval_required=?, separation_of_duties=?, is_active=?, updated_by=?, updated_at=datetime('now'),
           commissionable_mode=?, commissionable_first_months=?, commissionable_percent_bps=?,
           commissionable_cap_kobo=?, current_version_no=?, plan_family=?, sale_type=?,
-          min_duration_months=?, max_duration_months=?, outright_applies=?
+          min_duration_months=?, max_duration_months=?, outright_applies=?, outright_treatment=?
         WHERE id=?
       `).bind(plan.name, plan.description, plan.calculation_basis, plan.effective_from, plan.effective_to,
         plan.approval_required, plan.separation_of_duties, plan.is_active, actor.id,
         plan.commissionable_mode, plan.commissionable_first_months, plan.commissionable_percent_bps,
         plan.commissionable_cap_kobo, nextVersionNo, plan.plan_family, plan.sale_type,
-        plan.min_duration_months, plan.max_duration_months, plan.outright_applies, existing.id).run();
+        plan.min_duration_months, plan.max_duration_months, plan.outright_applies, plan.outright_treatment, existing.id).run();
       const keptRuleIds = [];
       for (const rule of validated.rules) {
         if (rule.id) {
@@ -13685,22 +13891,22 @@ async function handleFetch(request, env) {
           await env.DB.prepare(`
             UPDATE commission_plan_rules SET role_name=?, rate_bps=?, fixed_amount_kobo=?, property_category_id=?,
               sales_type=?, branch_id=?, team_id=?, is_active=?,
-              rule_type=?, stage_amount_kobo=?, stage1_cap_kobo=?, stage2_cap_kobo=?, max_cap_kobo=?,
+              rule_type=?, stage_amount_kobo=?, stage1_cap_kobo=?, stage2_cap_kobo=?, max_cap_kobo=?, applies_to=?,
               updated_at=datetime('now') WHERE id=?
           `).bind(rule.role_name, rule.rate_bps, rule.fixed_amount_kobo, rule.property_category_id,
             rule.sales_type, rule.branch_id, rule.team_id, rule.is_active,
-            rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo,
+            rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo, rule.applies_to,
             rule.id).run();
           keptRuleIds.push(rule.id);
         } else {
           const res = await env.DB.prepare(`
             INSERT INTO commission_plan_rules (plan_id, role_name, rate_bps, fixed_amount_kobo,
               property_category_id, sales_type, branch_id, team_id, is_active,
-              rule_type, stage_amount_kobo, stage1_cap_kobo, stage2_cap_kobo, max_cap_kobo)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              rule_type, stage_amount_kobo, stage1_cap_kobo, stage2_cap_kobo, max_cap_kobo, applies_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(existing.id, rule.role_name, rule.rate_bps, rule.fixed_amount_kobo,
             rule.property_category_id, rule.sales_type, rule.branch_id, rule.team_id, rule.is_active,
-            rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo).run();
+            rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo, rule.applies_to).run();
           keptRuleIds.push(res.meta.last_row_id);
         }
       }

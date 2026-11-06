@@ -89,7 +89,14 @@
         <input type="hidden" id="planId">
         <div class="form-grid">
           <div class="field-group full"><label class="field-label" for="planName">Plan name</label><input class="field-input" id="planName" required></div>
-          <div class="field-group"><label class="field-label" for="planBasis">Calculation basis</label><select class="field-input" id="planBasis"><option value="contract_value">Contract value</option><option value="verified_collections">Verified collections</option><option value="fixed">Fixed amount</option></select></div>
+          <div class="field-group"><label class="field-label" for="planBasis">Calculation basis</label><select class="field-input" id="planBasis"><option value="contract_value">Contract value</option><option value="verified_collections">Verified collections</option><option value="fixed">Fixed amount</option><option value="referral_cumulative_tiered">Referral cumulative tiered cap</option><option value="referral_percentage">Referral percentage of verified payments</option></select></div>
+          <div class="field-group"><label class="field-label" for="planFamily">Plan family</label><select class="field-input" id="planFamily"><option value="standard">Standard commission plan</option><option value="referral">Referral commission plan</option></select></div>
+          <div class="field-group"><label class="field-label" for="planSaleType">Sale type</label><select class="field-input" id="planSaleType"><option value="">Any sale type</option></select></div>
+          <div class="field-group"><label class="field-label" for="planMinDuration">Short-term / long-term start (months)</label><input class="field-input" type="number" min="0" id="planMinDuration" placeholder="e.g. 1"></div>
+          <div class="field-group"><label class="field-label" for="planMaxDuration">Short-term maximum (months)</label><input class="field-input" type="number" min="0" id="planMaxDuration" placeholder="e.g. 7"></div>
+          <div class="field-group"><label class="field-label" for="planOutrightApplies">Outright purchases</label><select class="field-input" id="planOutrightApplies"><option value="0">Not handled by this plan</option><option value="1">Handled by this plan</option></select></div>
+          <div class="field-group"><label class="field-label" for="planOutrightTreatment">Outright treatment</label><select class="field-input" id="planOutrightTreatment"><option value="flat">Flat percentage (default 10%)</option><option value="two_stage">Use the two-stage cumulative rule</option></select></div>
+          <div class="field-group full"><label class="field-label" for="planChangeReason">Change reason (required for referral edits)</label><input class="field-input" id="planChangeReason" placeholder="Why are these rules changing?"></div>
           <div class="field-group"><label class="field-label" for="planCommissionableMode">Easy-buy commissionable basis</label><select class="field-input" id="planCommissionableMode"><option value="full">100% of every payment (outright/part payment)</option><option value="first_months">Only payments within first N months</option><option value="percentage">Only a percentage of each payment</option><option value="capped_amount">Only up to a fixed amount per sale</option></select></div>
           <div class="field-group" id="planFirstMonthsGroup"><label class="field-label" for="planFirstMonths">First N months (default 2)</label><input class="field-input" type="number" min="0" max="120" id="planFirstMonths" value="2"></div>
           <div class="field-group" id="planPercentGroup"><label class="field-label" for="planPercent">Commissionable percentage of each payment</label><input class="field-input" type="number" min="0" max="100" step="0.01" id="planPercent" value="100"></div>
@@ -103,6 +110,16 @@
         </div>
         <div class="card-head mt-16"><h3>Eligibility rules</h3><button class="btn btn-ghost btn-sm" type="button" id="addRuleBtn">+ Add rule</button></div>
         <div id="planRules"></div>
+        <div class="card mt-16" style="box-shadow:none">
+          <div class="card-head"><h3>Rule preview calculator</h3><span class="small muted">Nothing is saved when you preview</span></div>
+          <div class="field-group full"><label class="field-label" for="previewPayments">Sample payment history (₦ amounts, comma or new line separated)</label><textarea class="field-input" id="previewPayments" rows="3" placeholder="60000, 30000, 40000, 20000"></textarea></div>
+          <button class="btn btn-outline btn-sm" type="button" id="previewBtn">Preview commission</button>
+          <div id="previewResult" class="small muted" style="margin-top:10px"></div>
+        </div>
+        <div class="card mt-16" style="box-shadow:none">
+          <div class="card-head"><h3>Version history</h3><span class="small muted">Who changed what and when</span></div>
+          <div id="planHistory" class="small muted">Save the plan to see its history.</div>
+        </div>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
           <button class="btn btn-ghost" type="button" data-close-modal="planModal">Cancel</button>
           <button class="btn btn-green" type="submit">Save plan</button>

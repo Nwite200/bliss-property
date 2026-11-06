@@ -7,7 +7,7 @@
   let page = 1;
   let total = 0;
   let currentEntry = null;
-  const canManage = () => me && ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role);
+  const canManage = () => me && (me.can_access_commissions === true || ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role));
   const hasCommissionAccess = () => me && me.can_access_commissions === true;
   const canViewCommission = () => hasCommissionAccess() || ["Marketer", "Team Lead", "Project Manager", "Branch Manager"].includes(me && (me.actual_role || me.role));
 
@@ -41,7 +41,16 @@
     options = await S.fetchJson('/api/commission-options');
     el('entryStatusFilter').innerHTML = '<option value="">All statuses</option>' + options.statuses.map(s => `<option>${s}</option>`).join('');
     el('entryBranchFilter').innerHTML = optionHtml(options.branches, 'id', 'name', '', 'All branches');
-    el('planBasis').innerHTML = options.bases.map(b => `<option value="${b}">${b === 'contract_value' ? 'Contract value' : b === 'verified_collections' ? 'Verified collections' : 'Fixed amount'}</option>`).join('');
+    el('planBasis').innerHTML = options.bases.map(b => `<option value="${b}">${
+      b === 'contract_value' ? 'Contract value'
+        : b === 'verified_collections' ? 'Verified collections'
+        : b === 'fixed' ? 'Fixed amount'
+        : b === 'referral_cumulative_tiered' ? 'Referral cumulative tiered cap'
+        : 'Referral percentage of verified payments'
+    }</option>`).join('');
+    if (el('planSaleType')) {
+      el('planSaleType').innerHTML = '<option value="">Any sale type</option>' + options.sale_types.map(s => `<option value="${s}">${S.escape(s)}</option>`).join('');
+    }
     el('entryMarketerFilter').innerHTML = '<option value="">All marketers</option>';
     if (canManage() || me.role === 'Branch Manager') {
       try {
@@ -170,6 +179,12 @@
       <div class="field-group"><label class="field-label">Fixed amount (₦)</label><input class="field-input rule-fixed" type="number" step="0.01" min="0" value="${rule.fixed_amount_kobo ? rule.fixed_amount_kobo / 100 : ''}" placeholder="For fixed plans"></div>
       <div class="field-group"><label class="field-label">Property category</label><select class="field-input rule-category">${optionHtml(options.categories, 'id', 'name', rule.property_category_id, 'Any category')}</select></div>
       <div class="field-group"><label class="field-label">Sales type</label><select class="field-input rule-sale">${optionHtml(options.sale_types.map(s => ({ s })), 's', 's', rule.sales_type, 'Any sale type')}</select></div>
+      <div class="field-group"><label class="field-label">Applies to</label><select class="field-input rule-applies"><option value="all" ${rule.applies_to === 'all' ? 'selected' : ''}>Any structure</option><option value="long_term" ${rule.applies_to === 'long_term' ? 'selected' : ''}>Long-term (two-stage)</option><option value="short_term" ${rule.applies_to === 'short_term' ? 'selected' : ''}>Short-term (percentage)</option><option value="outright" ${rule.applies_to === 'outright' ? 'selected' : ''}>Outright</option></select></div>
+      <div class="field-group"><label class="field-label">Rule type</label><select class="field-input rule-type"><option value="percentage" ${rule.rule_type === 'percentage' ? 'selected' : ''}>Percentage</option><option value="cumulative_tiered_cap" ${rule.rule_type === 'cumulative_tiered_cap' ? 'selected' : ''}>Cumulative tiered cap</option></select></div>
+      <div class="field-group"><label class="field-label">Stage amount (₦)</label><input class="field-input rule-stage-amount" type="number" min="0" step="0.01" value="${rule.stage_amount_kobo ? rule.stage_amount_kobo / 100 : ''}" placeholder="e.g. 60000"></div>
+      <div class="field-group"><label class="field-label">Stage 1 cap (₦)</label><input class="field-input rule-stage1-cap" type="number" min="0" step="0.01" value="${rule.stage1_cap_kobo ? rule.stage1_cap_kobo / 100 : ''}" placeholder="e.g. 20000"></div>
+      <div class="field-group"><label class="field-label">Stage 2 cap (₦)</label><input class="field-input rule-stage2-cap" type="number" min="0" step="0.01" value="${rule.stage2_cap_kobo ? rule.stage2_cap_kobo / 100 : ''}" placeholder="e.g. 15000"></div>
+      <div class="field-group"><label class="field-label">Maximum per client (₦)</label><input class="field-input rule-max-cap" type="number" min="0" step="0.01" value="${rule.max_cap_kobo ? rule.max_cap_kobo / 100 : ''}" placeholder="e.g. 35000"></div>
       <div class="field-group"><label class="field-label">Branch</label><select class="field-input rule-branch">${optionHtml(options.branches, 'id', 'name', rule.branch_id, 'Any branch')}</select></div>
       <div class="field-group"><label class="field-label">Team</label><select class="field-input rule-team">${optionHtml(options.teams, 'id', 'name', rule.team_id, 'Any team')}</select></div>
       <div class="field-group" style="display:flex;align-items:flex-end;gap:10px"><label class="tag" style="display:flex;align-items:center;gap:6px;padding:10px"><input type="checkbox" class="rule-active" ${rule.is_active === 0 ? '' : 'checked'}> Active</label><button class="btn btn-ghost btn-sm" type="button" data-remove-rule>Remove</button></div>
@@ -189,12 +204,19 @@
     el('planCapGroup').style.display = mode === 'capped_amount' ? '' : 'none';
   }
 
-  function openPlanModal(id) {
+  async function openPlanModal(id) {
     const plan = id ? plans.find(p => Number(p.id) === Number(id)) : null;
     el('planId').value = id || '';
     el('planModalTitle').textContent = id ? 'Edit commission plan' : 'New commission plan';
     el('planName').value = plan ? plan.name : '';
     el('planBasis').value = plan ? plan.calculation_basis : 'contract_value';
+    el('planFamily').value = plan ? (plan.plan_family || 'standard') : 'standard';
+    el('planSaleType').value = plan ? (plan.sale_type || '') : '';
+    el('planMinDuration').value = plan && plan.min_duration_months !== null && plan.min_duration_months !== undefined ? plan.min_duration_months : '';
+    el('planMaxDuration').value = plan && plan.max_duration_months !== null && plan.max_duration_months !== undefined ? plan.max_duration_months : '';
+    el('planOutrightApplies').value = plan && Number(plan.outright_applies) === 1 ? '1' : '0';
+    el('planOutrightTreatment').value = plan && plan.outright_treatment ? plan.outright_treatment : 'flat';
+    el('planChangeReason').value = '';
     el('planActive').value = plan ? String(plan.is_active) : '1';
     el('planFrom').value = plan && plan.effective_from ? String(plan.effective_from).slice(0, 10) : '';
     el('planTo').value = plan && plan.effective_to ? String(plan.effective_to).slice(0, 10) : '';
@@ -209,6 +231,20 @@
     el('planRules').innerHTML = '';
     const rules = plan && plan.rules ? plan.rules.filter(r => r.is_active) : [{}];
     (rules.length ? rules : [{}]).forEach(addRule);
+    el('planHistory').textContent = 'Loading history…';
+    if (id) {
+      try {
+        const detail = await S.fetchJson(`/api/commission-plans/${id}`);
+        const versions = (detail.plan && detail.plan.versions) || [];
+        el('planHistory').innerHTML = versions.length ? versions.map(version => `
+          <div style="padding:6px 0;border-bottom:1px solid var(--line)">
+            <div><strong>v${Number(version.version_no)}</strong> · ${S.escape(version.change_reason || 'No reason recorded')}</div>
+            <div style="font-size:11px">Effective ${version.effective_from ? S.formatDate(version.effective_from) : 'immediately'} · ${S.escape(version.created_at || '')}</div>
+          </div>`).join('') : 'No versions yet.';
+      } catch { el('planHistory').textContent = 'Unable to load history.'; }
+    } else {
+      el('planHistory').textContent = 'Save the plan to see its history.';
+    }
     S.openModal('planModal');
   }
 
@@ -219,18 +255,31 @@
     const rules = [...el('planRules').children].map(row => ({
       id: row.dataset.ruleId ? Number(row.dataset.ruleId) : undefined,
       role_name: row.querySelector('.rule-role').value,
-      rate_bps: basis === 'fixed' ? 0 : Math.round(Number(row.querySelector('.rule-rate').value || 0) * 100),
+      rate_bps: row.querySelector('.rule-type').value === 'cumulative_tiered_cap' ? 0 : Math.round(Number(row.querySelector('.rule-rate').value || 0) * 100),
       fixed_amount: basis === 'fixed' ? Number(row.querySelector('.rule-fixed').value || 0) : 0,
       property_category_id: row.querySelector('.rule-category').value || null,
       sales_type: row.querySelector('.rule-sale').value || null,
       branch_id: row.querySelector('.rule-branch').value || null,
       team_id: row.querySelector('.rule-team').value || null,
-      is_active: row.querySelector('.rule-active').checked
+      is_active: row.querySelector('.rule-active').checked,
+      applies_to: row.querySelector('.rule-applies').value,
+      rule_type: row.querySelector('.rule-type').value,
+      stage_amount: Number(row.querySelector('.rule-stage-amount').value || 0),
+      stage1_cap: Number(row.querySelector('.rule-stage1-cap').value || 0),
+      stage2_cap: Number(row.querySelector('.rule-stage2-cap').value || 0),
+      max_cap: Number(row.querySelector('.rule-max-cap').value || 0)
     }));
     const body = {
       name: el('planName').value.trim(),
       description: el('planDescription').value.trim(),
       calculation_basis: basis,
+      plan_family: el('planFamily').value,
+      sale_type: el('planSaleType').value || null,
+      min_duration_months: el('planMinDuration').value === '' ? null : Number(el('planMinDuration').value),
+      max_duration_months: el('planMaxDuration').value === '' ? null : Number(el('planMaxDuration').value),
+      outright_applies: el('planOutrightApplies').value === '1',
+      outright_treatment: el('planOutrightTreatment').value,
+      change_reason: el('planChangeReason').value.trim(),
       effective_from: el('planFrom').value || null,
       effective_to: el('planTo').value || null,
       approval_required: el('planApproval').value === '1',
@@ -249,6 +298,52 @@
       S.toast(id ? 'Commission plan updated.' : 'Commission plan created.');
       await loadPlans();
     } catch (error) { S.toast(error.message, true); }
+  }
+
+  async function previewPlan() {
+    const result = el('previewResult');
+    result.innerHTML = 'Calculating…';
+    const basis = el('planBasis').value;
+    const rules = [...el('planRules').children].map(row => ({
+      role_name: row.querySelector('.rule-role').value,
+      rate_bps: row.querySelector('.rule-type').value === 'cumulative_tiered_cap' ? 0 : Math.round(Number(row.querySelector('.rule-rate').value || 0) * 100),
+      fixed_amount: basis === 'fixed' ? Number(row.querySelector('.rule-fixed').value || 0) : 0,
+      property_category_id: row.querySelector('.rule-category').value || null,
+      sales_type: row.querySelector('.rule-sale').value || null,
+      branch_id: row.querySelector('.rule-branch').value || null,
+      team_id: row.querySelector('.rule-team').value || null,
+      is_active: row.querySelector('.rule-active').checked,
+      applies_to: row.querySelector('.rule-applies').value,
+      rule_type: row.querySelector('.rule-type').value,
+      stage_amount: Number(row.querySelector('.rule-stage-amount').value || 0),
+      stage1_cap: Number(row.querySelector('.rule-stage1-cap').value || 0),
+      stage2_cap: Number(row.querySelector('.rule-stage2-cap').value || 0),
+      max_cap: Number(row.querySelector('.rule-max-cap').value || 0)
+    }));
+    const amounts = el('previewPayments').value
+      .split(/[\n,]+/).map(item => item.trim()).filter(Boolean).map(Number);
+    try {
+      const data = await S.fetchJson('/api/commission-plans/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: el('planName').value.trim() || 'Preview',
+          calculation_basis: basis,
+          plan_family: el('planFamily').value,
+          sale_type: el('planSaleType').value || null,
+          min_duration_months: el('planMinDuration').value === '' ? null : Number(el('planMinDuration').value),
+          max_duration_months: el('planMaxDuration').value === '' ? null : Number(el('planMaxDuration').value),
+          outright_applies: el('planOutrightApplies').value === '1',
+          outright_treatment: el('planOutrightTreatment').value,
+          rules,
+          payments: amounts
+        })
+      });
+      result.innerHTML = `<table class="table"><thead><tr><th>Payment</th><th>Cumulative paid</th><th>Commission to date</th><th>New commission</th></tr></thead><tbody>${
+        (data.rows || []).map(row => `<tr><td>${money(row.payment_kobo)}</td><td>${money(row.cumulative_paid_kobo)}</td><td><strong>${money(row.commission_total_kobo)}</strong></td><td>${money(row.commission_new_kobo)}</td></tr>`).join('')
+      }</tbody></table><div style="margin-top:8px">Total: <strong>${money(data.total_commission_kobo)}</strong></div>`;
+    } catch (error) {
+      result.innerHTML = S.escape(error.message);
+    }
   }
 
   async function togglePlan(id, active) {
@@ -460,6 +555,7 @@
     el('newPlanBtn').addEventListener('click', () => openPlanModal(null));
     el('generateBtn').addEventListener('click', () => S.openModal('generateModal'));
     el('addRuleBtn').addEventListener('click', () => addRule({}));
+    if (el('previewBtn')) el('previewBtn').addEventListener('click', previewPlan);
     el('planCommissionableMode').addEventListener('change', syncCommissionableFields);
     el('planForm').addEventListener('submit', savePlan);
     el('generateForm').addEventListener('submit', submitGenerate);
