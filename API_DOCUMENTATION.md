@@ -178,6 +178,8 @@ Client endpoints are always scoped to the authenticated client. Cross-client acc
 
 The webhook re-queries ALATPay with the secret key before crediting any payment. It does not trust an unverified callback payload.
 
+Dedicated/static payment accounts are displayed everywhere as **“Client Name / Bliss Legacy Limited”**, including the client dashboard, client virtual-account page and staff client detail view. Clients without a BVN can still create their account and add the BVN later from My Virtual Account.
+
 ### Referral fields
 
 Client onboarding accepts:
@@ -186,9 +188,9 @@ Client onboarding accepts:
 - `state`
 - `city`
 - `branch_id` (the client chooses a branch; `assigned_branch_id` is still ignored)
-- `identity_type` (`NIN`, `International Passport`, `Driver's License`, `Permanent Voter's Card`)
-- `identity_number` (stored only as a masked value, last four digits and a hash)
-- `bvn` (used once to provision the client's permanent ALATPay wallet; never stored)
+- `identity_type` (`NIN`, `International Passport`, `Driver's License`, `Permanent Voter's Card`) — optional
+- `identity_number` (stored only as a masked value, last four digits and a hash) — optional
+- `bvn` (used once to provision the client's permanent ALATPay wallet; never stored) — optional
 - `alternate_phone`
 - `next_of_kin_name`
 - `next_of_kin_phone`

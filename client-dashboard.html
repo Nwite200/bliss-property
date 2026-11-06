@@ -440,6 +440,17 @@
         </div>
       </div>
 
+      <!-- Payment Account -->
+      <div class="dash-box" id="paymentAccountCard" style="margin-bottom:20px">
+        <div class="dash-box-title">
+          <span>Your Dedicated Payment Account</span>
+          <a href="client-virtual-account.html">Manage account →</a>
+        </div>
+        <div id="paymentAccountContainer">
+          <p style="color:var(--muted);font-size:13px">Loading payment account...</p>
+        </div>
+      </div>
+
       <!-- Split Layout: Property on Left, Next Payment & Notifications on Right -->
       <div class="dashboard-split-grid">
         <!-- Left: Assigned / Reserved Property -->
@@ -514,6 +525,59 @@
     const esc = (value) => String(value == null ? '' : value)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+
+    async function loadPaymentAccount() {
+      const box = document.getElementById('paymentAccountContainer');
+      if (!box) return;
+      try {
+        const res = await fetch('/api/client/virtual-account', { credentials: 'include' });
+        if (!res.ok) throw new Error('Unable to load payment account');
+        const data = await res.json();
+        if (data.is_active && data.account_number) {
+          box.innerHTML = `
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;padding:4px 0">
+              <div>
+                <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Account name</span>
+                <div style="font-size:14px;font-weight:800;color:var(--ink);margin-top:3px">${esc(data.account_name)}</div>
+              </div>
+              <div>
+                <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Account number</span>
+                <div style="font-family:'Space Mono',monospace;font-size:20px;font-weight:800;color:var(--green-dark);margin-top:3px">${esc(data.account_number)}</div>
+              </div>
+              <div>
+                <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Bank</span>
+                <div style="font-size:14px;font-weight:700;color:var(--ink);margin-top:3px">${esc(data.bank_name || 'Wema Bank')}</div>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+              <p style="font-size:12px;color:var(--muted);margin:0">Use this dedicated account for all payments. It accepts any amount and any number of transfers.</p>
+              <button class="btn btn-outline btn-sm" type="button" id="copyPaymentAccountBtn">Copy account number</button>
+            </div>`;
+          const copyBtn = document.getElementById('copyPaymentAccountBtn');
+          if (copyBtn) copyBtn.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(data.account_number); }
+            catch { /* clipboard may be unavailable */ }
+            if (window.Bliss && Bliss.toast) Bliss.toast('Account number copied.'); else copyBtn.textContent = 'Copied';
+          });
+        } else if (data.static_wallet && data.static_wallet.status === 'otp_pending') {
+          box.innerHTML = `
+            <div style="background:#FFFBEB;border:1px solid #FDE68A;border-left:4px solid #D97706;border-radius:var(--radius-sm);padding:16px">
+              <strong style="color:#92400E">Your dedicated account is awaiting OTP activation.</strong>
+              <p style="font-size:12px;color:var(--muted);margin:6px 0 10px">Enter the OTP sent to the phone linked to your BVN to activate the account.</p>
+              <a class="btn btn-green btn-sm" href="client-virtual-account.html">Complete activation →</a>
+            </div>`;
+        } else {
+          box.innerHTML = `
+            <div style="background:var(--soft);border:1px solid var(--line);border-radius:var(--radius-sm);padding:16px">
+              <strong style="color:var(--ink)">No active payment account yet.</strong>
+              <p style="font-size:12px;color:var(--muted);margin:6px 0 10px">Add your BVN in My Virtual Account to create your permanent dedicated account for payments.</p>
+              <a class="btn btn-green btn-sm" href="client-virtual-account.html">Set up payment account →</a>
+            </div>`;
+        }
+      } catch (error) {
+        box.innerHTML = `<p style="font-size:12px;color:var(--muted)">Payment account details are temporarily unavailable. <a href="client-virtual-account.html">Open My Virtual Account</a>.</p>`;
+      }
+    }
     document.addEventListener('DOMContentLoaded', async () => {
       try {
         const res = await fetch('/api/client/dashboard');
@@ -659,6 +723,8 @@
           document.getElementById('verificationBanner').style.display = '';
         }
       } catch { /* optional */ }
+
+      await loadPaymentAccount();
 
       // Logout handler
       document.getElementById('logoutBtn').addEventListener('click', async (e) => {

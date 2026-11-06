@@ -355,6 +355,8 @@ await test('client onboarding stores alternate phone, next of kin and valid staf
   assert(client.next_of_kin_name === 'Next Kin' && client.next_of_kin_phone === '08088000333', 'next-of-kin details not stored');
   assert(client.next_of_kin_relationship === 'Sibling' && client.next_of_kin_address === '3 Next of Kin Street', 'next-of-kin relationship/address missing');
   assert(client.referral_code_used === 'BL-P8-MD' && client.referred_by_staff_id === mdId, 'staff referral attribution missing');
+  assert(client.identity_type === null && client.bvn_last4 === null, 'identity and BVN must remain optional at signup');
+  assert(signup.data.virtual_account && signup.data.virtual_account.status === 'bvn_required', 'signup without BVN should mark the virtual account as BVN-required');
   assert(client.assigned_branch_id === ikeja, 'signup should use the branch selected by the client');
   const referredAssignment = db.prepare("SELECT relationship_manager_id FROM client_assignments WHERE client_id=? AND is_primary=1").get(client.id);
   assert(referredAssignment && referredAssignment.relationship_manager_id === mdId, 'referred client was not automatically assigned to the referring staff member');
@@ -1323,10 +1325,13 @@ await test('ALATPay static wallet creation, signature validation, status verific
       method: 'POST', headers: { Cookie: mdCookie }, body: { otp: '123456' }, env: alatEnv
     });
     assert(validate.status === 200 && validate.data.status === 'active' && validate.data.account_number === '0412345678', 'static wallet validate expected active account');
+    assert(validate.data.account_name === 'Phase 8 Client / Bliss Legacy Limited', `unexpected static wallet account name: ${validate.data.account_name}`);
     const staffWallet = await request(`/api/finance/clients/${adaId}/static-wallet`, { headers: { Cookie: mdCookie }, env: alatEnv });
     assert(staffWallet.data.wallet && staffWallet.data.wallet.status === 'active', 'staff static wallet view missing');
+    assert(staffWallet.data.wallet.account_name === 'Phase 8 Client / Bliss Legacy Limited', 'staff static wallet account name was not normalized');
     const clientWallet = await request('/api/client/virtual-account', { headers: { Cookie: clientCookie }, env: alatEnv });
     assert(clientWallet.data.is_active === true && clientWallet.data.is_static === true && clientWallet.data.account_number === '0412345678', 'client static wallet view missing');
+    assert(clientWallet.data.account_name === 'Phase 8 Client / Bliss Legacy Limited', 'client static wallet account name was not normalized');
 
     const payload = {
       Value: { Data: {

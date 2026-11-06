@@ -103,12 +103,13 @@
         </div>
         <div class="full">
           <div class="route-note" style="font-size:11px">
-            <strong>Identity verification.</strong> We verify every client before activating payments. Only masked identity details are stored.
+            <strong>Identity verification (optional).</strong> You can provide your identity details now or add them later from your profile. Only masked identity details are stored.
           </div>
         </div>
         <div>
-          <label for="identityType">Identity type *</label>
-          <select id="identityType" required>
+          <label for="identityType">Identity type (optional)</label>
+          <select id="identityType">
+            <option value="">Not provided</option>
             <option value="NIN">NIN (National Identification Number)</option>
             <option value="International Passport">International Passport</option>
             <option value="Driver's License">Driver's Licence</option>
@@ -116,13 +117,13 @@
           </select>
         </div>
         <div>
-          <label for="identityNumber">Identity number *</label>
-          <input id="identityNumber" type="text" autocomplete="off" placeholder="Enter the number exactly as issued" required>
+          <label for="identityNumber">Identity number (optional)</label>
+          <input id="identityNumber" type="text" autocomplete="off" placeholder="Enter the number exactly as issued">
         </div>
         <div class="full">
-          <label for="bvn">BVN for your dedicated virtual account *</label>
-          <input id="bvn" type="password" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="11-digit BVN" required>
-          <div class="route-note" style="font-size:11px;margin-top:5px">Your BVN is used once to create your permanent ALATPay account and is never stored by Bliss Legacy Limited.</div>
+          <label for="bvn">BVN for your dedicated virtual account (optional)</label>
+          <input id="bvn" type="password" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="11-digit BVN">
+          <div class="route-note" style="font-size:11px;margin-top:5px">Your BVN is used once to create your permanent ALATPay account and is never stored. You can add it later from My Virtual Account.</div>
         </div>
         <div class="full">
           <label for="property">Interested property</label>

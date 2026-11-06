@@ -605,8 +605,7 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
   }
   const transactionId = data.transactionId || data.transaction_id || null;
   const bankName = data.bankName || data.bank_name || "Wema Bank";
-  const accountName = data.virtualBankAccountName || data.accountName ||
-    data.account_name || "Bliss Legacy Limited";
+  const accountName = clientVirtualAccountName(client);
   const expiresAt = data.expiredAt || data.expiresAt || null;
   await env.DB.prepare(`
     INSERT INTO virtual_accounts
@@ -807,11 +806,12 @@ async function validateAlatpayStaticWallet(env, client, otp, actorId) {
   });
   const accountNumber = data.accountNumber || data.account_number;
   if (!accountNumber) throw Object.assign(new Error("ALATPay did not return a static account number"), { status: 502 });
+  const displayAccountName = clientVirtualAccountName(client);
   await env.DB.prepare(`
     UPDATE client_static_wallets SET account_number=?, account_name=?, bank_name=?, status='active',
       provider_status='active', wallet_reference=COALESCE(?, wallet_reference), updated_by=?, updated_at=datetime('now')
     WHERE id=?
-  `).bind(String(accountNumber), data.accountName || data.account_name || null, data.bankName || data.bank_name || "Wema Bank",
+  `).bind(String(accountNumber), displayAccountName, data.bankName || data.bank_name || "Wema Bank",
     data.id || null, actorId || null, wallet.id).run();
   await audit(env, actorId || null, "provider.static_wallet.active", "client", String(client.id), {
     provider: "alatpay", mode: settings.mode, account_number: String(accountNumber)
@@ -824,7 +824,7 @@ async function validateAlatpayStaticWallet(env, client, otp, actorId) {
     idempotencyKey: `client:${client.id}:static_wallet_ready`,
     createdBy: actorId || null
   }).catch(() => {});
-  return { ok: true, status: "active", account_number: String(accountNumber), account_name: data.accountName || data.account_name || null };
+  return { ok: true, status: "active", account_number: String(accountNumber), account_name: displayAccountName };
 }
 
 function revenueScopeSql(actor, alias = "p") {
@@ -3092,6 +3092,14 @@ async function buildAnalytics(env, actor, scope, url) {
 }
 function formatNGN(kobo) {
   return "₦" + (fromKobo(kobo)).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Permanent / dedicated payment accounts are displayed as
+// "Client Name / Bliss Legacy Limited" on every client-facing screen.
+const VIRTUAL_ACCOUNT_COMPANY_NAME = "Bliss Legacy Limited";
+function clientVirtualAccountName(client) {
+  const name = String((client && client.full_name) || "").trim() || "Bliss Client";
+  return `${name} / ${VIRTUAL_ACCOUNT_COMPANY_NAME}`;
 }
 
 // Demo data is only accepted outside production unless explicitly enabled.
@@ -7632,7 +7640,7 @@ export default {
           provider_status: settings.status,
           status: settings.status,
           bank_name: staticWallet.bank_name || "Wema Bank",
-          account_name: staticWallet.account_name,
+          account_name: clientVirtualAccountName(client),
           account_number: staticWallet.account_number,
           account_status: "active",
           wallet_reference: staticWallet.wallet_reference,
@@ -7660,7 +7668,7 @@ export default {
           provider_status: settings.status,
           status: settings.status,
           bank_name: va.bank_name || "Wema Bank",
-          account_name: va.account_name,
+          account_name: clientVirtualAccountName(client),
           account_number: va.account_number,
           account_status: va.account_status,
           amount_kobo: Number(va.amount_kobo || 0),
@@ -7682,7 +7690,7 @@ export default {
         static_wallet: staticWallet ? {
           status: staticWallet.status,
           account_number: staticWallet.account_number,
-          account_name: staticWallet.account_name,
+          account_name: clientVirtualAccountName(client),
           bank_name: staticWallet.bank_name,
           wallet_reference: staticWallet.wallet_reference
         } : null,
@@ -7752,6 +7760,7 @@ export default {
       }
       if (request.method === "GET") {
         const wallet = await getClientStaticWallet(env, client.id);
+        if (wallet) wallet.account_name = clientVirtualAccountName(client);
         return json({ wallet: wallet || null, payment_mode: getPaymentMode(env) });
       }
       if (request.method === "POST" && staticWalletMatch[2] === "initiate") {
