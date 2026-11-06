@@ -1139,8 +1139,52 @@ function normalizeTemperature(value, fallback = null) {
 function canManagePropertyPlans(actor) {
   if (!actor) return false;
   const actual = actor.actual_role_name || actor.role_name;
-  if (["Super Admin", "Managing Director", "Head Accountant"].includes(actual)) return true;
-  return Number(actor.property_plans_access || 0) === 1;
+  return ["Super Admin", "Managing Director", "Branch Manager"].includes(actual);
+}
+
+function isPropertyManager(actor) {
+  if (!actor) return false;
+  const actual = actor.actual_role_name || actor.role_name;
+  return ["Super Admin", "Managing Director", "Branch Manager"].includes(actual);
+}
+
+function canManagePropertyRecord(actor, property) {
+  if (!actor || !property) return false;
+  const actual = actor.actual_role_name || actor.role_name;
+  if (["Super Admin", "Managing Director"].includes(actual)) return true;
+  if (actual === "Branch Manager") return Number(property.branch_id) === Number(actor.branch_id);
+  return false;
+}
+
+async function getAppSetting(env, key, fallback = null) {
+  const row = await env.DB.prepare("SELECT setting_value FROM app_settings WHERE setting_key=?").bind(key).first();
+  return row && row.setting_value !== null && row.setting_value !== undefined ? row.setting_value : fallback;
+}
+
+async function setAppSetting(env, key, value, actorId) {
+  await env.DB.prepare(`
+    INSERT INTO app_settings (setting_key, setting_value, updated_by, updated_at)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,
+      updated_by=excluded.updated_by, updated_at=datetime('now')
+  `).bind(key, value === undefined || value === null ? null : String(value), actorId || null).run();
+}
+
+async function getSiteConfig(env) {
+  const raw = await getAppSetting(env, "site_config", "{}");
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function propertyEnabledPlanCount(env, propertyId) {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS c FROM property_payment_plans WHERE property_id=? AND is_enabled=1"
+  ).bind(propertyId).first();
+  return Number(row ? row.c : 0);
 }
 
 function canManageSms(actor) {
@@ -1615,6 +1659,7 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
     SELECT id, amount_kobo, verified_at
     FROM payments
     WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+      AND COALESCE(is_internal_test,0)=0 AND COALESCE(is_archived,0)=0
     ORDER BY verified_at, id
   `).bind(client.id).all();
   const totalPaidKobo = payments.reduce((sum, payment) => sum + Number(payment.amount_kobo || 0), 0);
@@ -1779,8 +1824,9 @@ async function backfillReferralCommissions(env, actorId, options = {}) {
     LEFT JOIN referral_commission_accounts a ON a.client_id=c.id
     WHERE c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%'
       AND EXISTS (SELECT 1 FROM payments p
-        WHERE p.client_id=c.id AND p.status='verified' AND p.is_demo=0 AND p.currency='NGN')
-      ${onlyStale ? "AND (a.id IS NULL OR a.last_calculated_at IS NULL OR datetime(a.last_calculated_at) < datetime((SELECT MAX(p2.verified_at) FROM payments p2 WHERE p2.client_id=c.id AND p2.status='verified' AND p2.is_demo=0 AND p2.currency='NGN')))" : ""}
+        WHERE p.client_id=c.id AND p.status='verified' AND p.is_demo=0 AND p.currency='NGN'
+          AND COALESCE(p.is_internal_test,0)=0 AND COALESCE(p.is_archived,0)=0)
+      ${onlyStale ? "AND (a.id IS NULL OR a.last_calculated_at IS NULL OR datetime(a.last_calculated_at) < datetime((SELECT MAX(p2.verified_at) FROM payments p2 WHERE p2.client_id=c.id AND p2.status='verified' AND p2.is_demo=0 AND p2.currency='NGN' AND COALESCE(p2.is_internal_test,0)=0 AND COALESCE(p2.is_archived,0)=0)))" : ""}
     ORDER BY c.id LIMIT ?
   `).bind(limit).all();
 
@@ -2066,6 +2112,7 @@ async function generateCommissionEntries(env, actor, body) {
       const { results: verifiedPayments } = await env.DB.prepare(`
         SELECT id, amount_kobo, verified_at FROM payments
         WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+          AND COALESCE(is_internal_test,0)=0 AND COALESCE(is_archived,0)=0
         ORDER BY verified_at, id
       `).bind(client.id).all();
 
@@ -2389,6 +2436,8 @@ async function buildReportDataset(env, actor, scope, filters) {
     (filters.branch_id ? `; branch ${filters.branch_id}` : "") +
     (filters.team_id ? `; team ${filters.team_id}` : "") +
     (filters.marketer_id ? `; marketer ${filters.marketer_id}` : "");
+  const reportTestFilter = filters.include_test ? "" : " AND COALESCE(c.is_internal_test,0)=0 AND COALESCE(c.is_archived,0)=0";
+  const paymentTestFilter = filters.include_test ? "" : " AND COALESCE(p.is_internal_test,0)=0 AND COALESCE(p.is_archived,0)=0";
 
   if (type === "sales") {
     const { results } = await env.DB.prepare(`
@@ -2399,7 +2448,7 @@ async function buildReportDataset(env, actor, scope, filters) {
       LEFT JOIN branches b ON b.id=c.assigned_branch_id
       LEFT JOIN users m ON m.id=c.original_marketer_id
       WHERE c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%'
-        AND c.status NOT IN ('Cancelled','Inactive') AND ${clientScope.clause}${branchFilter}${clientExtraFilter}
+        AND c.status NOT IN ('Cancelled','Inactive') AND ${clientScope.clause}${branchFilter}${clientExtraFilter}${reportTestFilter}
         AND date(c.created_at) BETWEEN date(?) AND date(?)
       ORDER BY c.created_at DESC
     `).bind(...clientBinds, ...clientExtraBinds, range.from, range.to).all();
@@ -2419,7 +2468,7 @@ async function buildReportDataset(env, actor, scope, filters) {
              p.amount_kobo, p.method, p.verified_at
       FROM payments p JOIN clients c ON c.id=p.client_id
       LEFT JOIN branches b ON b.id=c.assigned_branch_id
-      WHERE p.status='verified' AND p.is_demo=0 AND p.currency='NGN'
+      WHERE p.status='verified' AND p.is_demo=0 AND p.currency='NGN'${paymentTestFilter}
         AND ${clientScope.clause}${branchFilter}${clientExtraFilter}
         AND date(p.verified_at) BETWEEN date(?) AND date(?)
       ORDER BY p.verified_at DESC
@@ -2439,11 +2488,12 @@ async function buildReportDataset(env, actor, scope, filters) {
       SELECT c.client_reference, c.full_name, b.name AS branch_name,
              c.agreed_purchase_price,
              COALESCE((SELECT SUM(p.amount_kobo) FROM payments p
-               WHERE p.client_id=c.id AND p.status='verified' AND p.is_demo=0 AND p.currency='NGN'),0) AS verified_kobo
+               WHERE p.client_id=c.id AND p.status='verified' AND p.is_demo=0 AND p.currency='NGN'
+                 AND COALESCE(p.is_internal_test,0)=0 AND COALESCE(p.is_archived,0)=0),0) AS verified_kobo
       FROM clients c LEFT JOIN branches b ON b.id=c.assigned_branch_id
       WHERE c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%'
         AND c.agreed_purchase_price IS NOT NULL AND c.agreed_purchase_price > 0
-        AND ${clientScope.clause}${branchFilter}${clientExtraFilter}
+        AND ${clientScope.clause}${branchFilter}${clientExtraFilter}${reportTestFilter}
       ORDER BY c.agreed_purchase_price DESC
     `).bind(...clientBinds, ...clientExtraBinds).all();
     const rows = results.map(row => {
@@ -2479,6 +2529,7 @@ async function buildReportDataset(env, actor, scope, filters) {
       WHERE ${commissionScope.clause}${commissionExtra}
         AND date(ce.created_at) BETWEEN date(?) AND date(?)
         ${liabilityOnly ? "AND ce.status IN ('Approved','Partially Paid','Paid','Reversed')" : ""}
+        ${filters.include_test ? "" : "AND COALESCE(c.is_internal_test,0)=0 AND COALESCE(c.is_archived,0)=0"}
       ORDER BY ce.created_at DESC
     `).bind(...commissionBinds, range.from, range.to).all();
     const total = results.reduce((sum, row) => sum + Number(row.commission_kobo || 0), 0);
@@ -2583,6 +2634,7 @@ async function queryActivities(env, scope, url, defaultLimit = 20) {
 
 async function buildAnalytics(env, actor, scope, url) {
   const range = defaultDateRange(url);
+  const includeTest = url.searchParams.get("include_test") === "1";
   const clientScope = clientScopeSql(scope, "c");
   const financeScope = scope.role === "Finance Officer";
   // Finance receives financial analytics only; lead/staff operational data is
@@ -2610,9 +2662,9 @@ async function buildAnalytics(env, actor, scope, url) {
     clientBinds.push(Number(requestedCategory));
   }
 
-  const clientWhere = `c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%' AND ${clientScope.clause}${clientBranch}${categoryFilter}`;
+  const clientWhere = `c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%' AND ${clientScope.clause}${clientBranch}${categoryFilter}${includeTest ? "" : " AND COALESCE(c.is_internal_test,0)=0 AND COALESCE(c.is_archived,0)=0"}`;
   const leadWhere = `l.is_demo=0 AND ${leadScope.clause}${leadBranch}`;
-  const paymentWhere = `p.status='verified' AND p.is_demo=0 AND p.currency='NGN' AND ${clientScope.clause}${clientBranch}${categoryFilter}`;
+  const paymentWhere = `p.status='verified' AND p.is_demo=0 AND p.currency='NGN' AND ${clientScope.clause}${clientBranch}${categoryFilter}${includeTest ? "" : " AND COALESCE(p.is_internal_test,0)=0 AND COALESCE(p.is_archived,0)=0"}`;
 
   const clientAgg = await env.DB.prepare(`
     SELECT COUNT(*) AS total,
@@ -4982,7 +5034,7 @@ export default {
       let propertyId = interested_property_id ? Number(interested_property_id) : null;
       let signupPlan = null;
       if (propertyId) {
-        const property = await env.DB.prepare("SELECT id FROM properties WHERE id=? AND is_published=1").bind(propertyId).first();
+        const property = await env.DB.prepare("SELECT id FROM properties WHERE id=? AND is_published=1 AND is_internal_test=0 AND is_archived=0").bind(propertyId).first();
         if (!property) return json({ error: "Selected property is not available" }, 400);
         const planResult = await resolvePropertyPlanForPurchase(env, propertyId, property_plan_id ? Number(property_plan_id) : null);
         if (planResult.error) return json({ error: planResult.error, plans: planResult.plans || [] }, 400);
@@ -5382,6 +5434,61 @@ export default {
         clients,
         pagination: { page, limit, total: Number(count ? count.c : 0) }
       });
+    }
+
+    if (path === "/api/admin/app-settings" && (request.method === "GET" || request.method === "PUT")) {
+      const auth = await adminActor("settings.manage");
+      if (auth.error) return auth.error;
+      if (request.method === "GET") {
+        const config = await getSiteConfig(env);
+        return json({
+          settings: {
+            branch_manager_listing_approval: String(await getAppSetting(env, "branch_manager_listing_approval", "1")) === "1",
+            hide_demo_properties: String(await getAppSetting(env, "hide_demo_properties", "1")) === "1",
+            hide_all_test_data: String(await getAppSetting(env, "hide_all_test_data", "0")) === "1",
+            site_config: config
+          }
+        });
+      }
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const body = await request.json().catch(() => ({}));
+      if (body.branch_manager_listing_approval !== undefined) {
+        await setAppSetting(env, "branch_manager_listing_approval", isTruthy(body.branch_manager_listing_approval) ? "1" : "0", auth.actor.id);
+      }
+      if (body.hide_demo_properties !== undefined) {
+        await setAppSetting(env, "hide_demo_properties", isTruthy(body.hide_demo_properties) ? "1" : "0", auth.actor.id);
+      }
+      if (body.hide_all_test_data !== undefined) {
+        await setAppSetting(env, "hide_all_test_data", isTruthy(body.hide_all_test_data) ? "1" : "0", auth.actor.id);
+      }
+      if (body.site_config !== undefined) {
+        if (typeof body.site_config !== "object" || Array.isArray(body.site_config)) return json({ error: "site_config must be an object" }, 400);
+        await setAppSetting(env, "site_config", JSON.stringify(body.site_config), auth.actor.id);
+      }
+      await audit(env, auth.actor.id, "settings.update", "app_settings", null, {
+        branch_manager_listing_approval: body.branch_manager_listing_approval,
+        hide_demo_properties: body.hide_demo_properties,
+        hide_all_test_data: body.hide_all_test_data,
+        site_config_updated: body.site_config !== undefined
+      }, null);
+      return json({ ok: true });
+    }
+
+    if (path === "/api/admin/archive-test-data" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const auth = await adminActor("settings.manage");
+      if (auth.error) return auth.error;
+      const properties = await env.DB.prepare("UPDATE properties SET is_archived=1, is_published=0, workflow_status='archived', archived_at=datetime('now'), updated_at=datetime('now') WHERE is_internal_test=1 AND is_archived=0").run();
+      const clients = await env.DB.prepare("UPDATE clients SET is_archived=1, updated_at=datetime('now') WHERE is_internal_test=1 AND is_archived=0").run();
+      const payments = await env.DB.prepare("UPDATE payments SET is_archived=1 WHERE is_internal_test=1 AND is_archived=0").run();
+      await setAppSetting(env, "hide_all_test_data", "1", auth.actor.id);
+      const summary = {
+        properties: Number(properties.meta ? properties.meta.changes : 0),
+        clients: Number(clients.meta ? clients.meta.changes : 0),
+        payments: Number(payments.meta ? payments.meta.changes : 0)
+      };
+      await audit(env, auth.actor.id, "test_data.archive", "app_settings", null, summary, null);
+      return json({ ok: true, archived: summary });
     }
 
     if (path === "/api/admin/terms" && request.method === "GET") {
@@ -5989,6 +6096,27 @@ export default {
     // =========================================================================
     // PROPERTIES (Public & Staff)
     // =========================================================================
+    if (path === "/api/site-config" && request.method === "GET") {
+      const config = await getSiteConfig(env);
+      return json({
+        config: {
+          companyName: config.company_name || "Bliss Legacy Limited",
+          tagline: config.tagline || "Your Future Begins With the Right Property.",
+          phone: config.phone || "",
+          whatsappNumber: config.whatsapp_number || "",
+          email: config.email || "",
+          address: config.address || "",
+          social: {
+            facebook: config.facebook || "",
+            instagram: config.instagram || "",
+            twitter: config.twitter || "",
+            linkedin: config.linkedin || ""
+          },
+          branches: Array.isArray(config.branches) ? config.branches : []
+        }
+      }, 200, { "Cache-Control": "public, max-age=60" });
+    }
+
     if (path === "/api/property-categories" && request.method === "GET") {
       const { results } = await env.DB.prepare("SELECT id, name FROM property_categories ORDER BY name").all();
       return json({ categories: results });
@@ -6012,6 +6140,7 @@ export default {
 
     if (path === "/api/properties" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
+      const actualRole = actor ? (actor.actual_role_name || actor.role_name) : null;
       const q = url.searchParams.get("q") || "";
       const category = url.searchParams.get("category") || "";
       const location = url.searchParams.get("location") || "";
@@ -6019,27 +6148,44 @@ export default {
       const branch = url.searchParams.get("branch") || "";
       const featured = url.searchParams.get("featured");
       const published = url.searchParams.get("is_published");
+      const workflowStatus = url.searchParams.get("workflow_status") || "";
+      const pendingApproval = url.searchParams.get("pending_approval") === "1";
+      const includeArchived = url.searchParams.get("include_archived") === "1" && isPropertyManager(actor);
       const parsedPage = parseInt(url.searchParams.get("page") || "1", 10);
       const parsedLimit = parseInt(url.searchParams.get("limit") || "20", 10);
       const page = Number.isFinite(parsedPage) ? Math.max(1, parsedPage) : 1;
       const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(50, parsedLimit)) : 20;
       const offset = (page - 1) * limit;
 
-      let where = [];
+      const where = [];
       const binds = [];
-      if (!actor || ["Client", "Marketer"].includes(actor.role_name)) where.push("p.is_published=1");
+      const isClient = actor && actor.role_name === "Client";
+      const isPublicViewer = !actor || isClient;
+      if (isPublicViewer) {
+        where.push("p.is_published=1", "p.is_archived=0");
+        where.push(`(p.is_internal_test=0${isClient ? ` OR EXISTS (SELECT 1 FROM client_properties cp JOIN clients c ON c.id=cp.client_id WHERE cp.property_id=p.id AND c.user_id=?)` : ""})`);
+        if (isClient) binds.push(actor.id);
+        const hideDemo = String(await getAppSetting(env, "hide_demo_properties", "1")) !== "0";
+        if (hideDemo) where.push("p.is_demo=0");
+      } else if (!includeArchived) {
+        where.push("p.is_archived=0");
+      }
       if (published === "1") where.push("p.is_published=1");
       if (published === "0") where.push("p.is_published=0");
+      if (workflowStatus) { where.push("p.workflow_status=?"); binds.push(workflowStatus); }
+      if (pendingApproval) where.push("p.workflow_status='pending_approval'");
       if (q) { where.push("(p.title LIKE ? OR p.city LIKE ? OR p.state LIKE ?)"); binds.push(`%${q}%`, `%${q}%`, `%${q}%`); }
       if (category) { where.push("pc.name=?"); binds.push(category); }
       if (location) { where.push("(p.city=? OR p.state=?)"); binds.push(location, location); }
       if (status) { where.push("p.status=?"); binds.push(status); }
       if (branch) { where.push("b.name=?"); binds.push(branch); }
       if (featured === "1") { where.push("p.is_featured=1"); }
-      if (actor && actor.role_name === "Branch Manager") { where.push("p.branch_id=?"); binds.push(actor.branch_id); }
+      if (actor && actualRole === "Branch Manager") { where.push("p.branch_id=?"); binds.push(actor.branch_id); }
 
       const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
-      const sql = `SELECT p.*, pc.name AS category_name, b.name AS branch_name FROM properties p LEFT JOIN property_categories pc ON pc.id=p.category_id LEFT JOIN branches b ON b.id=p.branch_id ${whereSql} ORDER BY p.id DESC LIMIT ? OFFSET ?`;
+      const sql = `SELECT p.*, pc.name AS category_name, b.name AS branch_name,
+        (SELECT COUNT(*) FROM property_payment_plans pp WHERE pp.property_id=p.id AND pp.is_enabled=1) AS enabled_plan_count
+        FROM properties p LEFT JOIN property_categories pc ON pc.id=p.category_id LEFT JOIN branches b ON b.id=p.branch_id ${whereSql} ORDER BY p.id DESC LIMIT ? OFFSET ?`;
       const countSql = `SELECT COUNT(*) AS c FROM properties p LEFT JOIN property_categories pc ON pc.id=p.category_id LEFT JOIN branches b ON b.id=p.branch_id ${whereSql}`;
       const { results } = await env.DB.prepare(sql).bind(...binds, limit, offset).all();
       const cnt = await env.DB.prepare(countSql).bind(...binds).first();
@@ -6050,19 +6196,43 @@ export default {
     if (propMatch && request.method === "GET") {
       const id = propMatch[1];
       const actor = await getSessionUser(env, request);
+      const actualRole = actor ? (actor.actual_role_name || actor.role_name) : null;
       const prop = await env.DB.prepare("SELECT p.*, pc.name AS category_name, b.name AS branch_name FROM properties p LEFT JOIN property_categories pc ON pc.id=p.category_id LEFT JOIN branches b ON b.id=p.branch_id WHERE p.id=?").bind(id).first();
       if (!prop) return json({ error: "Not found" }, 404);
-      if ((!actor || ["Client", "Marketer"].includes(actor.role_name)) && !prop.is_published) return json({ error: "Not found" }, 404);
+      if (!actor) {
+        const hideDemo = String(await getAppSetting(env, "hide_demo_properties", "1")) !== "0";
+        if (!prop.is_published || prop.is_archived || prop.is_internal_test || (hideDemo && prop.is_demo)) return json({ error: "Not found" }, 404);
+      } else if (actor.role_name === "Client") {
+        const hideDemo = String(await getAppSetting(env, "hide_demo_properties", "1")) !== "0";
+        let internalAccess = false;
+        if (prop.is_internal_test) {
+          const client = await getClientForActor(env, actor);
+          if (client) {
+            const access = await env.DB.prepare(`
+              SELECT 1 AS ok FROM client_properties WHERE client_id=? AND property_id=?
+              UNION SELECT 1 WHERE ?=(SELECT interested_property_id FROM clients WHERE id=?)
+              LIMIT 1
+            `).bind(client.id, prop.id, prop.id, client.id).first();
+            internalAccess = Boolean(access);
+          }
+        }
+        if (!prop.is_published || prop.is_archived || (prop.is_internal_test && !internalAccess) || (hideDemo && prop.is_demo)) {
+          return json({ error: "Not found" }, 404);
+        }
+      } else if (prop.is_archived && !isPropertyManager(actor)) {
+        return json({ error: "Not found" }, 404);
+      }
       const { results: images } = await env.DB.prepare("SELECT id, r2_key, is_main, sort_order FROM property_images WHERE property_id=? ORDER BY is_main DESC, sort_order").bind(id).all();
       // Internal property documents are never exposed to anonymous or client callers.
       let documents = [];
       const canSeeDocuments = actor && actor.role_name !== "Client"
-        && !(actor.role_name === "Branch Manager" && Number(prop.branch_id) !== Number(actor.branch_id));
+        && !(actualRole === "Branch Manager" && Number(prop.branch_id) !== Number(actor.branch_id));
       if (canSeeDocuments) {
         const result = await env.DB.prepare("SELECT id, r2_key, filename FROM property_documents WHERE property_id=?").bind(id).all();
         documents = result.results;
       }
-      const planWhere = canManagePropertyPlans(actor) ? "" : " AND is_enabled=1";
+      const canManagePlans = canManagePropertyPlans(actor) && canManagePropertyRecord(actor, prop);
+      const planWhere = canManagePlans ? "" : " AND is_enabled=1";
       const { results: paymentPlans } = await env.DB.prepare(`
         SELECT * FROM property_payment_plans WHERE property_id=?${planWhere}
         ORDER BY CASE plan_type WHEN 'outright' THEN 1 WHEN 'part_payment' THEN 2 WHEN 'daily' THEN 3
@@ -6075,10 +6245,33 @@ export default {
     if (propertyPlansMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       const propertyId = propertyPlansMatch[1];
-      const property = await env.DB.prepare("SELECT id, branch_id, is_published FROM properties WHERE id=?").bind(propertyId).first();
+      const property = await env.DB.prepare("SELECT id, branch_id, is_published, is_archived, is_internal_test, is_demo FROM properties WHERE id=?").bind(propertyId).first();
       if (!property) return json({ error: "Property not found" }, 404);
-      if ((!actor || actor.role_name === "Client") && !property.is_published) return json({ error: "Not found" }, 404);
-      const includeDisabled = canManagePropertyPlans(actor) && url.searchParams.get("all") === "1";
+      if (!actor) {
+        const hideDemo = String(await getAppSetting(env, "hide_demo_properties", "1")) !== "0";
+        if (!property.is_published || property.is_archived || property.is_internal_test || (hideDemo && property.is_demo)) return json({ error: "Not found" }, 404);
+      } else if (actor.role_name === "Client") {
+        const hideDemo = String(await getAppSetting(env, "hide_demo_properties", "1")) !== "0";
+        let internalAccess = false;
+        if (property.is_internal_test) {
+          const client = await getClientForActor(env, actor);
+          if (client) {
+            const access = await env.DB.prepare(`
+              SELECT 1 AS ok FROM client_properties WHERE client_id=? AND property_id=?
+              UNION SELECT 1 WHERE ?=(SELECT interested_property_id FROM clients WHERE id=?)
+              LIMIT 1
+            `).bind(client.id, property.id, property.id, client.id).first();
+            internalAccess = Boolean(access);
+          }
+        }
+        if (!property.is_published || property.is_archived || (property.is_internal_test && !internalAccess) || (hideDemo && property.is_demo)) {
+          return json({ error: "Not found" }, 404);
+        }
+      } else if (property.is_archived && !isPropertyManager(actor)) {
+        return json({ error: "Not found" }, 404);
+      }
+      const canManagePlans = canManagePropertyPlans(actor) && canManagePropertyRecord(actor, property);
+      const includeDisabled = canManagePlans && url.searchParams.get("all") === "1";
       const { results } = await env.DB.prepare(`
         SELECT * FROM property_payment_plans WHERE property_id=?${includeDisabled ? "" : " AND is_enabled=1"}
         ORDER BY CASE plan_type WHEN 'outright' THEN 1 WHEN 'part_payment' THEN 2 WHEN 'daily' THEN 3
@@ -6096,10 +6289,27 @@ export default {
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!canManagePropertyPlans(actor)) return json({ error: "Property plan management access is required" }, 403);
       const propertyId = propertyPlansMatch[1];
-      const property = await env.DB.prepare("SELECT id, branch_id FROM properties WHERE id=?").bind(propertyId).first();
+      const property = await env.DB.prepare("SELECT id, branch_id, is_published, is_archived FROM properties WHERE id=?").bind(propertyId).first();
       if (!property) return json({ error: "Property not found" }, 404);
+      if (!canManagePropertyRecord(actor, property)) return json({ error: "Cross-branch or unauthorised property" }, 403);
+      if (property.is_archived) return json({ error: "Archived properties cannot change plans" }, 409);
       const body = await request.json();
       if (!Array.isArray(body.plans)) return json({ error: "A plans array is required" }, 400);
+
+      const { results: existingPlans } = await env.DB.prepare(
+        "SELECT plan_type, is_enabled FROM property_payment_plans WHERE property_id=?"
+      ).bind(propertyId).all();
+      const finalEnabled = new Set(existingPlans.filter(plan => Number(plan.is_enabled) === 1).map(plan => normalizePlanType(plan.plan_type)));
+      for (const raw of body.plans) {
+        const planType = normalizePlanType(raw.plan_type, null);
+        const enabled = raw.is_enabled === undefined ? true : isTruthy(raw.is_enabled);
+        if (!planType) continue;
+        if (enabled) finalEnabled.add(planType); else finalEnabled.delete(planType);
+      }
+      if (Number(property.is_published) === 1 && finalEnabled.size === 0) {
+        return json({ error: "A published property must keep at least one enabled payment plan" }, 409);
+      }
+
       const seen = new Set();
       for (const raw of body.plans) {
         const planType = normalizePlanType(raw.plan_type, null);
@@ -6113,6 +6323,7 @@ export default {
           ? null : Number(raw.duration_months);
         const number = raw.number_of_installments === undefined || raw.number_of_installments === null || raw.number_of_installments === ""
           ? null : Number(raw.number_of_installments);
+        const firstPaymentRule = raw.first_payment_rule ? String(raw.first_payment_rule).trim().slice(0, 500) : null;
         if (!Number.isInteger(totalKobo) || totalKobo <= 0) return json({ error: "Plan total price must be positive" }, 400);
         if (!Number.isInteger(depositKobo) || depositKobo < 0 || depositKobo > totalKobo) return json({ error: "Plan deposit is invalid" }, 400);
         if (durationMonths !== null && (!Number.isInteger(durationMonths) || durationMonths < 0 || durationMonths > 120)) {
@@ -6126,24 +6337,35 @@ export default {
         } else if ((!Number.isFinite(installmentKobo) || installmentKobo < 0) && !number) {
           return json({ error: "Non-outright plans need an instalment amount or number of instalments" }, 400);
         }
+        let balanceDifferenceKobo = 0;
+        if (number && planType !== "outright") {
+          const expectedKobo = depositKobo + (installmentKobo * number);
+          balanceDifferenceKobo = totalKobo - expectedKobo;
+        } else if (number && planType === "outright") {
+          balanceDifferenceKobo = totalKobo - depositKobo - installmentKobo;
+        }
         await env.DB.prepare(`
           INSERT INTO property_payment_plans
             (property_id, plan_type, total_price_kobo, deposit_kobo, installment_kobo,
-             duration_months, number_of_installments, is_enabled, notes, created_by, updated_by, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+             duration_months, number_of_installments, is_enabled, notes, first_payment_rule,
+             balance_difference_kobo, created_by, updated_by, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(property_id, plan_type) DO UPDATE SET
             total_price_kobo=excluded.total_price_kobo, deposit_kobo=excluded.deposit_kobo,
             installment_kobo=excluded.installment_kobo, duration_months=excluded.duration_months,
             number_of_installments=excluded.number_of_installments, is_enabled=excluded.is_enabled,
-            notes=excluded.notes, updated_by=excluded.updated_by, updated_at=datetime('now')
+            notes=excluded.notes, first_payment_rule=excluded.first_payment_rule,
+            balance_difference_kobo=excluded.balance_difference_kobo,
+            updated_by=excluded.updated_by, updated_at=datetime('now')
         `).bind(
           propertyId, planType, totalKobo, depositKobo, installmentKobo,
-          durationMonths, number, isTruthy(raw.is_enabled) || raw.is_enabled === undefined ? 1 : 0,
-          raw.notes || null, actor.id, actor.id
+          durationMonths, number, raw.is_enabled === undefined ? 1 : (isTruthy(raw.is_enabled) ? 1 : 0),
+          raw.notes || null, firstPaymentRule, balanceDifferenceKobo, actor.id, actor.id
         ).run();
       }
       await audit(env, actor.id, "property.payment_plans.update", "property", String(propertyId), {
-        plans: body.plans.map(plan => normalizePlanType(plan.plan_type))
+        plans: body.plans.map(plan => normalizePlanType(plan.plan_type)),
+        enabled_plan_types: [...finalEnabled]
       }, property.branch_id);
       const { results } = await env.DB.prepare(
         "SELECT * FROM property_payment_plans WHERE property_id=? ORDER BY plan_type"
@@ -6156,42 +6378,64 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!isPropertyManager(actor)) return json({ error: "Forbidden" }, 403);
+      const actualRole = actor.actual_role_name || actor.role_name;
       const body = await request.json();
       const {
         title, description, category_name, property_type, sale_price, promotional_price,
-        state, city, address, branch_name, land_size, bedrooms, bathrooms, toilets,
-        parking_spaces, features, is_featured, is_published
+        state, city, address, branch_name, branch_id, land_size, bedrooms, bathrooms, toilets,
+        parking_spaces, features, is_featured, is_published, available_units, total_units,
+        is_demo, is_internal_test
       } = body || {};
       const price = Number(sale_price);
       if (!title || !Number.isFinite(price) || price <= 0) return json({ error: "Title and a positive sale price are required" }, 400);
+      if (isTruthy(is_demo) || isTruthy(is_internal_test)) {
+        if (!["Super Admin", "Managing Director"].includes(actualRole)) {
+          return json({ error: "Only the MD or Super Admin can mark a property as demo or internal test" }, 403);
+        }
+      }
+      if (isTruthy(is_published)) {
+        return json({ error: "Create the property as a draft, add at least one payment plan, then publish it" }, 400);
+      }
+      const availableUnits = available_units === undefined || available_units === null || available_units === "" ? null : Number(available_units);
+      const totalUnits = total_units === undefined || total_units === null || total_units === "" ? null : Number(total_units);
+      if (availableUnits !== null && (!Number.isInteger(availableUnits) || availableUnits < 0)) return json({ error: "Available units must be a non-negative whole number" }, 400);
+      if (totalUnits !== null && (!Number.isInteger(totalUnits) || totalUnits < 0)) return json({ error: "Total units must be a non-negative whole number" }, 400);
 
       let categoryId = null;
       if (category_name) {
         const category = await env.DB.prepare("SELECT id FROM property_categories WHERE name=?").bind(category_name).first();
         categoryId = category ? category.id : null;
       }
-      let branchId = null;
-      if (branch_name) {
+      let branchId = branch_id ? Number(branch_id) : null;
+      if (!branchId && branch_name) {
         const branch = await env.DB.prepare("SELECT id FROM branches WHERE name=?").bind(branch_name).first();
         branchId = branch ? branch.id : null;
       }
-      if (actor.role_name === "Branch Manager") {
-        if (branchId !== null && branchId !== actor.branch_id) return json({ error: "Cross-branch forbidden" }, 403);
+      if (actualRole === "Branch Manager") {
+        if (branchId !== null && branchId !== Number(actor.branch_id)) return json({ error: "Cross-branch forbidden" }, 403);
         branchId = actor.branch_id;
       }
+      if (!branchId) return json({ error: "A branch is required" }, 400);
+      const branch = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(branchId).first();
+      if (!branch) return json({ error: "Branch not found" }, 400);
+
       const ref = "BLP-" + Date.now().toString(36).toUpperCase() + "-" + Math.random().toString(36).slice(2, 6).toUpperCase();
-      const res = await env.DB.prepare(`INSERT INTO properties (reference,title,description,category_id,property_type,sale_price,promotional_price,state,city,address,branch_id,land_size,bedrooms,bathrooms,toilets,parking_spaces,features,is_featured,is_published,created_by,updated_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      const res = await env.DB.prepare(`INSERT INTO properties (reference,title,description,category_id,property_type,sale_price,promotional_price,state,city,address,branch_id,land_size,bedrooms,bathrooms,toilets,parking_spaces,features,status,is_featured,is_published,workflow_status,is_demo,is_internal_test,available_units,total_units,created_by,updated_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .bind(ref, title, description || null, categoryId, property_type || null, price, promotional_price || null,
           state || null, city || null, address || null, branchId, land_size || null, bedrooms || null,
           bathrooms || null, toilets || null, parking_spaces || null, features ? JSON.stringify(features) : null,
-          isTruthy(is_featured) ? 1 : 0, isTruthy(is_published) ? 1 : 0, actor.id, actor.id).run();
+          "Available", isTruthy(is_featured) ? 1 : 0, 0, "draft", isTruthy(is_demo) ? 1 : 0,
+          isTruthy(is_internal_test) ? 1 : 0, availableUnits, totalUnits, actor.id, actor.id).run();
       const newId = res.meta.last_row_id;
       await env.DB.prepare("INSERT INTO property_status_history (property_id, old_status, new_status, changed_by) VALUES (?,?,?,?)")
-        .bind(newId, null, "Available", actor.id).run();
-      await audit(env, actor.id, "property.create", "property", String(newId), { title, sale_price: price, branch_id: branchId }, branchId);
-      return json({ ok: true, id: newId, reference: ref });
+        .bind(newId, null, "draft", actor.id).run();
+      await audit(env, actor.id, "property.create", "property", String(newId), {
+        title, sale_price: price, branch_id: branchId, workflow_status: "draft",
+        is_demo: isTruthy(is_demo), is_internal_test: isTruthy(is_internal_test)
+      }, branchId);
+      return json({ ok: true, id: newId, reference: ref, workflow_status: "draft" });
     }
 
     // ---- Update property (Phase 3) ----
@@ -6200,28 +6444,33 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!isPropertyManager(actor)) return json({ error: "Forbidden" }, 403);
+      const actualRole = actor.actual_role_name || actor.role_name;
       const id = propUpdateMatch[1];
       const existing = await env.DB.prepare("SELECT * FROM properties WHERE id=?").bind(id).first();
       if (!existing) return json({ error: "Not found" }, 404);
-      if (actor.role_name === "Branch Manager" && existing.branch_id !== actor.branch_id) {
-        return json({ error: "Cross-branch forbidden" }, 403);
-      }
+      if (!canManagePropertyRecord(actor, existing)) return json({ error: "Cross-branch or unauthorised property" }, 403);
+      if (existing.is_archived) return json({ error: "Archived properties cannot be edited" }, 409);
       const body = await request.json();
       if (body.sale_price !== undefined) {
         const price = Number(body.sale_price);
         if (!Number.isFinite(price) || price <= 0) return json({ error: "Sale price must be positive" }, 400);
       }
+      if ((body.is_demo !== undefined || body.is_internal_test !== undefined) && !["Super Admin", "Managing Director"].includes(actualRole)) {
+        return json({ error: "Only the MD or Super Admin can change demo or internal-test flags" }, 403);
+      }
       const fields = ["title", "description", "property_type", "sale_price", "promotional_price", "state",
         "city", "address", "land_size", "bedrooms", "bathrooms", "toilets", "parking_spaces",
-        "is_featured", "is_published"];
+        "is_featured", "available_units", "total_units"];
       const sets = [];
       const vals = [];
       for (const field of fields) {
         if (body[field] === undefined) continue;
         sets.push(`${field}=?`);
-        vals.push(["is_featured", "is_published"].includes(field) ? (isTruthy(body[field]) ? 1 : 0) : body[field]);
+        vals.push(field === "is_featured" ? (isTruthy(body[field]) ? 1 : 0) : body[field]);
       }
+      if (body.is_demo !== undefined) { sets.push("is_demo=?"); vals.push(isTruthy(body.is_demo) ? 1 : 0); }
+      if (body.is_internal_test !== undefined) { sets.push("is_internal_test=?"); vals.push(isTruthy(body.is_internal_test) ? 1 : 0); }
       if (body.category_name !== undefined) {
         const category = await env.DB.prepare("SELECT id FROM property_categories WHERE name=?").bind(body.category_name).first();
         sets.push("category_id=?");
@@ -6231,13 +6480,41 @@ export default {
         sets.push("features=?");
         vals.push(JSON.stringify(body.features));
       }
-      if (body.branch_name !== undefined) {
-        const branch = await env.DB.prepare("SELECT id FROM branches WHERE name=?").bind(body.branch_name).first();
-        if (actor.role_name === "Branch Manager" && (!branch || branch.id !== actor.branch_id)) {
+      let nextBranchId = existing.branch_id;
+      if (body.branch_id !== undefined || body.branch_name !== undefined) {
+        const branch = body.branch_id
+          ? await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(Number(body.branch_id)).first()
+          : await env.DB.prepare("SELECT id FROM branches WHERE name=?").bind(body.branch_name).first();
+        if (actualRole === "Branch Manager" && (!branch || branch.id !== actor.branch_id)) {
           return json({ error: "Cross-branch forbidden" }, 403);
         }
+        if (!branch) return json({ error: "Branch not found" }, 400);
+        nextBranchId = branch.id;
         sets.push("branch_id=?");
-        vals.push(branch ? branch.id : null);
+        vals.push(branch.id);
+      }
+
+      let workflow = existing.workflow_status || (existing.is_published ? "published" : "draft");
+      if (body.is_published !== undefined || body.workflow_status !== undefined) {
+        const wantsPublished = body.is_published !== undefined ? isTruthy(body.is_published) : body.workflow_status === "published";
+        if (wantsPublished) {
+          const enabledPlans = await propertyEnabledPlanCount(env, existing.id);
+          if (!enabledPlans) return json({ error: "Add and enable at least one payment plan before publishing" }, 409);
+          const approvalRequired = String(await getAppSetting(env, "branch_manager_listing_approval", "1")) !== "0";
+          if (actualRole === "Branch Manager" && approvalRequired) {
+            workflow = "pending_approval";
+            sets.push("is_published=?", "workflow_status=?", "submitted_at=datetime('now')");
+            vals.push(0, workflow);
+          } else {
+            workflow = "published";
+            sets.push("is_published=?", "workflow_status=?", "approved_by=?", "approved_at=datetime('now')");
+            vals.push(1, workflow, actor.id);
+          }
+        } else {
+          workflow = body.workflow_status === "draft" ? "draft" : "unpublished";
+          sets.push("is_published=?", "workflow_status=?");
+          vals.push(0, workflow);
+        }
       }
       if (!sets.length) return json({ error: "No fields" }, 400);
       sets.push("updated_by=?");
@@ -6245,8 +6522,82 @@ export default {
       sets.push("updated_at=datetime('now')");
       vals.push(id);
       await env.DB.prepare(`UPDATE properties SET ${sets.join(",")} WHERE id=?`).bind(...vals).run();
-      await audit(env, actor.id, "property.update", "property", id, body, existing.branch_id);
-      return json({ ok: true });
+      if (body.is_internal_test !== undefined && isTruthy(body.is_internal_test)) {
+        await env.DB.prepare("UPDATE clients SET is_internal_test=1 WHERE interested_property_id=?").bind(id).run();
+        await env.DB.prepare("UPDATE payments SET is_internal_test=1 WHERE property_id=?").bind(id).run();
+      }
+      await audit(env, actor.id, "property.update", "property", id, {
+        before: { sale_price: existing.sale_price, workflow_status: existing.workflow_status, branch_id: existing.branch_id },
+        after: { sale_price: body.sale_price !== undefined ? Number(body.sale_price) : existing.sale_price, workflow_status: workflow, branch_id: nextBranchId },
+        changed_fields: Object.keys(body || {})
+      }, existing.branch_id);
+      return json({ ok: true, workflow_status: workflow });
+    }
+
+    // ---- Property workflow actions (publish approval, archive, convert demo) ----
+    const propWorkflowMatch = path.match(/^\/api\/properties\/(\d+)\/(approve|unpublish|archive|convert-to-real)$/);
+    if (propWorkflowMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isPropertyManager(actor)) return json({ error: "Forbidden" }, 403);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      const property = await env.DB.prepare("SELECT * FROM properties WHERE id=?").bind(propWorkflowMatch[1]).first();
+      if (!property) return json({ error: "Not found" }, 404);
+      if (!canManagePropertyRecord(actor, property)) return json({ error: "Cross-branch or unauthorised property" }, 403);
+      const action = propWorkflowMatch[2];
+      if (action === "approve") {
+        if (!["Super Admin", "Managing Director"].includes(actualRole)) return json({ error: "Only the MD or Super Admin can approve a listing" }, 403);
+        const enabledPlans = await propertyEnabledPlanCount(env, property.id);
+        if (!enabledPlans) return json({ error: "Add and enable at least one payment plan before approving" }, 409);
+        await env.DB.prepare(`
+          UPDATE properties SET is_published=1, workflow_status='published', approved_by=?, approved_at=datetime('now'),
+            updated_by=?, updated_at=datetime('now') WHERE id=?
+        `).bind(actor.id, actor.id, property.id).run();
+        await env.DB.prepare("INSERT INTO property_status_history (property_id, old_status, new_status, changed_by) VALUES (?,?,?,?)")
+          .bind(property.id, property.workflow_status, "published", actor.id).run();
+        await audit(env, actor.id, "property.approve", "property", String(property.id), { previous: property.workflow_status }, property.branch_id);
+        if (property.created_by && Number(property.created_by) !== Number(actor.id)) {
+          await createNotification(env, {
+            userId: property.created_by,
+            type: "property.approved",
+            title: "Property listing approved",
+            message: `${property.title} (${property.reference}) is now published.`,
+            metadata: { property_id: property.id }
+          }).catch(() => {});
+        }
+        return json({ ok: true, workflow_status: "published" });
+      }
+      if (action === "unpublish") {
+        await env.DB.prepare(`
+          UPDATE properties SET is_published=0, workflow_status='unpublished', updated_by=?, updated_at=datetime('now') WHERE id=?
+        `).bind(actor.id, property.id).run();
+        await env.DB.prepare("INSERT INTO property_status_history (property_id, old_status, new_status, changed_by) VALUES (?,?,?,?)")
+          .bind(property.id, property.workflow_status, "unpublished", actor.id).run();
+        await audit(env, actor.id, "property.unpublish", "property", String(property.id), null, property.branch_id);
+        return json({ ok: true, workflow_status: "unpublished" });
+      }
+      if (action === "archive") {
+        await env.DB.prepare(`
+          UPDATE properties SET is_published=0, is_archived=1, workflow_status='archived',
+            archived_at=datetime('now'), updated_by=?, updated_at=datetime('now') WHERE id=?
+        `).bind(actor.id, property.id).run();
+        await env.DB.prepare("INSERT INTO property_status_history (property_id, old_status, new_status, changed_by) VALUES (?,?,?,?)")
+          .bind(property.id, property.workflow_status, "archived", actor.id).run();
+        await audit(env, actor.id, "property.archive", "property", String(property.id), null, property.branch_id);
+        return json({ ok: true, workflow_status: "archived" });
+      }
+      if (action === "convert-to-real") {
+        if (!["Super Admin", "Managing Director", "Branch Manager"].includes(actualRole)) return json({ error: "Forbidden" }, 403);
+        await env.DB.prepare(`
+          UPDATE properties SET is_demo=0, is_internal_test=0, is_archived=0, is_published=0,
+            workflow_status='draft', archived_at=NULL, updated_by=?, updated_at=datetime('now') WHERE id=?
+        `).bind(actor.id, property.id).run();
+        await audit(env, actor.id, "property.convert_to_real", "property", String(property.id), {
+          previous_demo: Boolean(property.is_demo), previous_test: Boolean(property.is_internal_test)
+        }, property.branch_id);
+        return json({ ok: true, workflow_status: "draft" });
+      }
     }
 
     // ---- Property status change (Phase 3) ----
@@ -6255,20 +6606,19 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!isPropertyManager(actor)) return json({ error: "Forbidden" }, 403);
       const id = statusMatch[1];
       const body = await request.json();
       const newStatus = body.status;
       if (!["Available", "Reserved", "Sold", "Unavailable"].includes(newStatus)) {
         return json({ error: "Invalid status" }, 400);
       }
-      const existing = await env.DB.prepare("SELECT status, branch_id FROM properties WHERE id=?").bind(id).first();
+      const existing = await env.DB.prepare("SELECT status, branch_id, workflow_status, is_archived FROM properties WHERE id=?").bind(id).first();
       if (!existing) return json({ error: "Not found" }, 404);
-      if (actor.role_name === "Branch Manager" && existing.branch_id !== actor.branch_id) {
-        return json({ error: "Cross-branch forbidden" }, 403);
-      }
-      await env.DB.prepare("UPDATE properties SET status=?, updated_by=?, updated_at=datetime('now') WHERE id=?")
-        .bind(newStatus, actor.id, id).run();
+      if (!canManagePropertyRecord(actor, existing)) return json({ error: "Cross-branch or unauthorised property" }, 403);
+      if (existing.is_archived) return json({ error: "Archived properties cannot change status" }, 409);
+      await env.DB.prepare("UPDATE properties SET status=?, workflow_status=CASE WHEN ?='Sold' THEN 'sold_out' ELSE workflow_status END, updated_by=?, updated_at=datetime('now') WHERE id=?")
+        .bind(newStatus, newStatus, actor.id, id).run();
       await env.DB.prepare("INSERT INTO property_status_history (property_id, old_status, new_status, changed_by) VALUES (?,?,?,?)")
         .bind(id, existing.status, newStatus, actor.id).run();
       await audit(env, actor.id, "property.status", "property", id, { from: existing.status, to: newStatus }, existing.branch_id);
@@ -6304,13 +6654,12 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!isPropertyManager(actor)) return json({ error: "Forbidden" }, 403);
       const id = imageUploadMatch[1];
-      const existing = await env.DB.prepare("SELECT branch_id FROM properties WHERE id=?").bind(id).first();
+      const existing = await env.DB.prepare("SELECT branch_id, is_archived FROM properties WHERE id=?").bind(id).first();
       if (!existing) return json({ error: "Not found" }, 404);
-      if (actor.role_name === "Branch Manager" && existing.branch_id !== actor.branch_id) {
-        return json({ error: "Cross-branch forbidden" }, 403);
-      }
+      if (!canManagePropertyRecord(actor, existing)) return json({ error: "Cross-branch or unauthorised property" }, 403);
+      if (existing.is_archived) return json({ error: "Archived properties cannot be changed" }, 409);
       const formData = await request.formData();
       const file = formData.get("file");
       if (!file || typeof file === "string") return json({ error: "No file" }, 400);
@@ -6335,16 +6684,15 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!isPropertyManager(actor)) return json({ error: "Forbidden" }, 403);
       const propId = imageDeleteMatch[1];
       const imgId = imageDeleteMatch[2];
       const image = await env.DB.prepare("SELECT r2_key, property_id FROM property_images WHERE id=?").bind(imgId).first();
       if (!image || String(image.property_id) !== propId) return json({ error: "Not found" }, 404);
-      const prop = await env.DB.prepare("SELECT branch_id FROM properties WHERE id=?").bind(propId).first();
+      const prop = await env.DB.prepare("SELECT branch_id, is_archived FROM properties WHERE id=?").bind(propId).first();
       if (!prop) return json({ error: "Not found" }, 404);
-      if (actor.role_name === "Branch Manager" && prop.branch_id !== actor.branch_id) {
-        return json({ error: "Cross-branch forbidden" }, 403);
-      }
+      if (!canManagePropertyRecord(actor, prop)) return json({ error: "Cross-branch or unauthorised property" }, 403);
+      if (prop.is_archived) return json({ error: "Archived properties cannot be changed" }, 409);
       if (env.FILES.delete) await env.FILES.delete(image.r2_key);
       await env.DB.prepare("DELETE FROM property_images WHERE id=?").bind(imgId).run();
       await audit(env, actor.id, "property.image.delete", "property", propId, { key: image.r2_key }, prop.branch_id);
@@ -6388,18 +6736,17 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!isPropertyManager(actor)) return json({ error: "Forbidden" }, 403);
       const propertyId = docDeleteMatch[1];
       const documentId = docDeleteMatch[2];
       const doc = await env.DB.prepare(`
-        SELECT d.*, p.branch_id FROM property_documents d
+        SELECT d.*, p.branch_id, p.is_archived FROM property_documents d
         JOIN properties p ON p.id=d.property_id
         WHERE d.id=? AND d.property_id=?
       `).bind(documentId, propertyId).first();
       if (!doc) return json({ error: "Not found" }, 404);
-      if (actor.role_name === "Branch Manager" && Number(doc.branch_id) !== Number(actor.branch_id)) {
-        return json({ error: "Forbidden" }, 403);
-      }
+      if (!canManagePropertyRecord(actor, doc)) return json({ error: "Cross-branch or unauthorised property" }, 403);
+      if (doc.is_archived) return json({ error: "Archived properties cannot be changed" }, 409);
       if (env.FILES.delete) await env.FILES.delete(doc.r2_key);
       await env.DB.prepare("DELETE FROM property_documents WHERE id=?").bind(doc.id).run();
       await audit(env, actor.id, "property.document.delete", "property", propertyId, { key: doc.r2_key }, doc.branch_id);
@@ -6412,13 +6759,12 @@ export default {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!isPropertyManager(actor)) return json({ error: "Forbidden" }, 403);
       const propertyId = docUploadMatch[1];
-      const property = await env.DB.prepare("SELECT branch_id FROM properties WHERE id=?").bind(propertyId).first();
+      const property = await env.DB.prepare("SELECT branch_id, is_archived FROM properties WHERE id=?").bind(propertyId).first();
       if (!property) return json({ error: "Not found" }, 404);
-      if (actor.role_name === "Branch Manager" && Number(property.branch_id) !== Number(actor.branch_id)) {
-        return json({ error: "Cross-branch forbidden" }, 403);
-      }
+      if (!canManagePropertyRecord(actor, property)) return json({ error: "Cross-branch or unauthorised property" }, 403);
+      if (property.is_archived) return json({ error: "Archived properties cannot be changed" }, 409);
       const formData = await request.formData();
       const file = formData.get("file");
       if (!file || typeof file === "string") return json({ error: "No file" }, 400);
@@ -8082,6 +8428,9 @@ export default {
         "date(p.verified_at) BETWEEN date(?) AND date(?)"
       ];
       const binds = [...scope.binds, range.from, range.to];
+      if (url.searchParams.get("include_test") !== "1") {
+        clauses.push("COALESCE(p.is_internal_test,0)=0", "COALESCE(p.is_archived,0)=0");
+      }
       if (companyWide && branchId) {
         clauses.push("COALESCE(p.revenue_branch_id, c.assigned_branch_id)=?");
         binds.push(branchId);

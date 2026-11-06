@@ -19,8 +19,11 @@ async function load() {
   if (!data.property) { document.body.innerHTML = "<p>Property not found.</p><a href='properties.html'>Back</a>"; return; }
   const p = data.property;
   const me = await fetchJson("/me");
-  const canManageAssets = me.ok && ["Managing Director", "Branch Manager"].includes(me.data.role);
-  const canManagePlans = me.ok && (me.data.property_plans_access || ["Managing Director", "Head Accountant", "Super Admin"].includes(me.data.actual_role || me.data.role));
+  const actual = me.ok ? (me.data.actual_role || me.data.role) : "";
+  const canManageAssets = me.ok && ["Managing Director", "Super Admin", "Branch Manager"].includes(actual);
+  const canApprove = me.ok && ["Managing Director", "Super Admin"].includes(actual);
+  const canManagePlans = canManageAssets;
+  const canManageFlags = canApprove;
   if (!canManageAssets) {
     const uploads = [document.getElementById("imageUploadControls"), document.getElementById("docUploadControls")];
     uploads.forEach(el => { if (el) el.style.display = "none"; });
@@ -32,6 +35,10 @@ async function load() {
   document.getElementById("detailDesc").textContent = p.description || "No description provided.";
   document.getElementById("detailPrice").textContent = money(p.sale_price);
   document.getElementById("detailStatus").textContent = p.status;
+  document.getElementById("detailWorkflow").textContent = String(p.workflow_status || "draft").replace(/_/g, " ");
+  document.getElementById("detailUnits").textContent = p.available_units !== null && p.available_units !== undefined
+    ? `${p.available_units} available${p.total_units ? " of " + p.total_units : ""}`
+    : (p.land_size || "-");
   document.getElementById("detailCategory").textContent = p.category_name || "-";
   document.getElementById("detailBranch").textContent = p.branch_name || "-";
   document.getElementById("detailBeds").textContent = p.bedrooms || "-";
@@ -114,7 +121,7 @@ async function load() {
         <td>${money(plan.total_price_kobo / 100)}</td>
         <td>${money((plan.deposit_kobo || 0) / 100)}</td>
         <td>${money((plan.installment_kobo || 0) / 100)}</td>
-        <td>${plan.duration_months ? plan.duration_months + ' month(s)' : '-'}${plan.number_of_installments ? ' · ' + plan.number_of_installments + ' instalment(s)' : ''}</td>
+        <td>${plan.duration_months ? plan.duration_months + ' month(s)' : '-'}${plan.number_of_installments ? ' · ' + plan.number_of_installments + ' instalment(s)' : ''}${Number(plan.balance_difference_kobo || 0) !== 0 ? `<div class="small" style="color:#B45309;margin-top:4px">Balance difference: ${money(Number(plan.balance_difference_kobo) / 100)}</div>` : ''}${plan.first_payment_rule ? `<div class="small muted" style="margin-top:4px">${esc(plan.first_payment_rule)}</div>` : ''}</td>
         <td>${plan.is_enabled ? '<span class="badge badge-green">Enabled</span>' : '<span class="badge badge-gray">Disabled</span>'}</td>
         <td>${canManagePlans ? `<button class="btn btn-ghost btn-xs" type="button" data-edit-plan="${plan.id}">Edit</button>` : ''}</td>
       </tr>`).join("");
@@ -134,6 +141,7 @@ async function load() {
     document.getElementById("ppInstallment").value = editing ? Number(plan.installment_kobo || 0) / 100 : 0;
     document.getElementById("ppCount").value = editing && plan.number_of_installments ? plan.number_of_installments : "";
     document.getElementById("ppDuration").value = editing && plan.duration_months ? plan.duration_months : "";
+    document.getElementById("ppFirstRule").value = editing ? (plan.first_payment_rule || "") : "";
     document.getElementById("ppNotes").value = editing ? (plan.notes || "") : "";
     document.getElementById("paymentPlanModal").classList.add("open");
   }
@@ -152,6 +160,7 @@ async function load() {
           installment: Number(document.getElementById("ppInstallment").value || 0),
           duration_months: document.getElementById("ppDuration").value ? Number(document.getElementById("ppDuration").value) : null,
           number_of_installments: document.getElementById("ppCount").value ? Number(document.getElementById("ppCount").value) : null,
+          first_payment_rule: document.getElementById("ppFirstRule").value.trim() || null,
           notes: document.getElementById("ppNotes").value.trim() || null
         }]
       };
@@ -211,9 +220,63 @@ async function load() {
     if (res.ok) { alert("Status updated"); location.reload(); } else alert(res.data.error || "Failed");
   };
 
+  const workflow = p.workflow_status || "draft";
+  const publishBtn = document.getElementById("publishBtn");
+  const approveBtn = document.getElementById("approveBtn");
+  const unpublishBtn = document.getElementById("unpublishBtn");
+  const archiveBtn = document.getElementById("archiveBtn");
+  const convertBtn = document.getElementById("convertBtn");
+  const flagsBox = document.getElementById("managementFlags");
+
+  if (!canManageAssets || p.is_archived || workflow === "published" || workflow === "pending_approval") publishBtn.style.display = "none";
+  if (canManageAssets && actual === "Branch Manager") publishBtn.textContent = "Submit for approval";
+  if (canApprove && workflow === "pending_approval") approveBtn.style.display = "";
+  if (canManageAssets && workflow === "published") unpublishBtn.style.display = "";
+  if (canManageAssets && !p.is_archived) archiveBtn.style.display = "";
+  if (canManageAssets && (p.is_demo || p.is_internal_test)) convertBtn.style.display = "";
+  if (canManageFlags) {
+    flagsBox.style.display = "";
+    document.getElementById("flagDemo").checked = Boolean(p.is_demo);
+    document.getElementById("flagInternalTest").checked = Boolean(p.is_internal_test);
+    document.getElementById("saveFlagsBtn").onclick = async () => {
+      const result = await fetchJson(`/properties/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          is_demo: document.getElementById("flagDemo").checked,
+          is_internal_test: document.getElementById("flagInternalTest").checked
+        })
+      });
+      if (!result.ok) { alert(result.data.error || "Unable to save flags"); return; }
+      location.reload();
+    };
+  }
+  if (!canManageAssets) {
+    document.getElementById("statusSelect").style.display = "none";
+    document.getElementById("changeStatusBtn").style.display = "none";
+  }
+
+  const runWorkflow = async (action) => {
+    const result = await fetchJson(`/properties/${id}/${action}`, { method: "POST" });
+    if (!result.ok) { alert(result.data.error || "Action failed"); return; }
+    location.reload();
+  };
   document.getElementById("publishBtn").onclick = async () => {
-    const res = await fetchJson("/properties/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ is_published: true }) });
-    if (res.ok) { alert("Published"); location.reload(); } else alert(res.data.error || "Failed");
+    const res = await fetchJson(`/properties/${id}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_published: true })
+    });
+    if (!res.ok) { alert(res.data.error || "Failed"); return; }
+    if (res.data.workflow_status === "pending_approval") alert("Submitted for MD/Super Admin approval.");
+    else alert("Published");
+    location.reload();
+  };
+  document.getElementById("approveBtn").onclick = () => runWorkflow("approve");
+  document.getElementById("unpublishBtn").onclick = () => runWorkflow("unpublish");
+  document.getElementById("archiveBtn").onclick = () => {
+    if (confirm("Archive this property? It will be removed from public listings.")) runWorkflow("archive");
+  };
+  document.getElementById("convertBtn").onclick = () => {
+    if (confirm("Convert this demo/test property into a real property?")) runWorkflow("convert-to-real");
   };
 
   document.getElementById("logoutBtn").addEventListener("click", async (e) => {

@@ -1,5 +1,6 @@
 // Bliss Legacy Limited — Main Landing Page Logic
 document.addEventListener('DOMContentLoaded', async () => {
+  if (window.BLISS_CONFIG_READY) await window.BLISS_CONFIG_READY;
   // Render persistent site header and footer
   const headerSlot = document.getElementById('header-slot');
   const footerSlot = document.getElementById('footer-slot');
@@ -28,7 +29,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Render 6 Branches Section
   const branchesGrid = document.getElementById('branchesGrid');
   if (branchesGrid) {
-    const branches = Bliss.branches();
+    const configuredBranches = (c.branches && c.branches.length) ? c.branches : null;
+    const branches = configuredBranches || Bliss.branches();
     branchesGrid.innerHTML = branches.map(b => `
       <div class="branch-card fade-in ${b.isHeadOffice ? 'branch-head-office' : ''}">
         <div class="branch-badge">${b.type}</div>

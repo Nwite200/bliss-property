@@ -45,19 +45,25 @@
             <input id="city" type="text" placeholder="City" required>
             <input id="address" type="text" placeholder="Full address" required>
             <select id="branch_id" required><option value="">Branch</option></select>
-            <input id="land_size" type="text" placeholder="Land/building size">
+            <input id="land_size" type="text" placeholder="Size / unit description">
             <input id="bedrooms" type="number" placeholder="Bedrooms">
             <input id="bathrooms" type="number" placeholder="Bathrooms">
             <input id="toilets" type="number" placeholder="Toilets">
             <input id="parking_spaces" type="number" placeholder="Parking spaces">
+            <input id="available_units" type="number" min="0" placeholder="Available units">
+            <input id="total_units" type="number" min="0" placeholder="Total units">
             <input id="features" type="text" placeholder="Features (comma separated)">
           </div>
+          <textarea id="description" rows="4" placeholder="Property description"></textarea>
           <label style="display:flex;align-items:center;gap:8px;font-size:13px">
             <input type="checkbox" id="is_featured"> Featured property
           </label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:13px">
-            <input type="checkbox" id="is_published"> Publish immediately
-          </label>
+          <div id="adminFlags" style="display:none;border:1px solid var(--line);border-radius:8px;padding:12px">
+            <strong style="font-size:12px">Management-only flags</strong>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:8px"><input type="checkbox" id="is_demo"> Demo property</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:6px"><input type="checkbox" id="is_internal_test"> Internal test property (staff/test clients only)</label>
+          </div>
+          <div class="route-note" style="font-size:11px">Properties are created as drafts. Add at least one enabled payment plan on the property page, then publish or submit for approval.</div>
           <button class="btn btn-green" type="submit">Create Property</button>
           <div id="formMsg" style="color:#c0392b;font-size:13px"></div>
         </form>

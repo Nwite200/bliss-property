@@ -43,9 +43,13 @@
           <h1 id="pageTitle">Property Details</h1>
           <p id="pageSub" style="color:var(--muted);font-size:13px"></p>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap" id="workflowActions">
           <a class="btn btn-outline" href="properties.html">Back</a>
-          <button class="btn btn-green" id="publishBtn">Publish</button>
+          <button class="btn btn-green" id="publishBtn" type="button">Publish / submit</button>
+          <button class="btn btn-green" id="approveBtn" type="button" style="display:none">Approve</button>
+          <button class="btn btn-outline" id="unpublishBtn" type="button" style="display:none">Unpublish</button>
+          <button class="btn btn-danger" id="archiveBtn" type="button" style="display:none">Archive</button>
+          <button class="btn btn-outline" id="convertBtn" type="button" style="display:none">Convert to real</button>
         </div>
       </div>
       <div class="property-detail-grid">
@@ -70,14 +74,22 @@
           <div class="meta" style="margin-bottom:16px">
             <div class="meta-item"><span>Price</span><strong id="detailPrice">-</strong></div>
             <div class="meta-item"><span>Status</span><strong id="detailStatus">-</strong></div>
+            <div class="meta-item"><span>Workflow</span><strong id="detailWorkflow">-</strong></div>
             <div class="meta-item"><span>Category</span><strong id="detailCategory">-</strong></div>
             <div class="meta-item"><span>Branch</span><strong id="detailBranch">-</strong></div>
+            <div class="meta-item"><span>Units</span><strong id="detailUnits">-</strong></div>
             <div class="meta-item"><span>Bedrooms</span><strong id="detailBeds">-</strong></div>
             <div class="meta-item"><span>Bathrooms</span><strong id="detailBaths">-</strong></div>
             <div class="meta-item"><span>Parking</span><strong id="detailParking">-</strong></div>
           </div>
           <h3 style="font-size:16px;margin-bottom:8px">Status History</h3>
           <div id="statusHistory" style="font-size:12px;color:var(--muted)"></div>
+          <div id="managementFlags" style="display:none;margin-top:16px;border:1px solid var(--line);border-radius:8px;padding:12px">
+            <strong style="font-size:12px">Management flags</strong>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:8px"><input type="checkbox" id="flagDemo"> Demo property</label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:6px"><input type="checkbox" id="flagInternalTest"> Internal test property</label>
+            <button class="btn btn-outline btn-sm" type="button" id="saveFlagsBtn" style="margin-top:10px">Save flags</button>
+          </div>
           <div style="margin-top:18px;display:flex;gap:8px">
             <select id="statusSelect" style="padding:10px 14px;border:1px solid var(--line);border-radius:7px;flex:1"></select>
             <button class="btn btn-green" id="changeStatusBtn" style="padding:10px 18px">Change Status</button>
@@ -145,6 +157,7 @@
               <div class="field-group"><label class="field-label" for="ppInstallment">Instalment amount (₦)</label><input class="field-input" type="number" min="0" step="0.01" id="ppInstallment" value="0"></div>
               <div class="field-group"><label class="field-label" for="ppCount">Number of instalments</label><input class="field-input" type="number" min="1" max="1000" id="ppCount"></div>
               <div class="field-group"><label class="field-label" for="ppDuration">Duration (months)</label><input class="field-input" type="number" min="0" max="120" id="ppDuration"></div>
+              <div class="field-group full"><label class="field-label" for="ppFirstRule">First payment rule</label><input class="field-input" id="ppFirstRule" placeholder="e.g. Deposit due at allocation; first instalment due 30 days later"></div>
               <div class="field-group full"><label class="field-label" for="ppNotes">Notes</label><input class="field-input" id="ppNotes"></div>
             </div>
             <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">

@@ -111,6 +111,27 @@
     }
   }
 
+  async function loadSiteSettings() {
+    const data = await S.fetchJson("/api/admin/app-settings");
+    const settings = data.settings || {};
+    const c = settings.site_config || {};
+    el("siteCompanyName").value = c.company_name || "Bliss Legacy Limited";
+    el("siteTagline").value = c.tagline || "";
+    el("sitePhone").value = c.phone || "";
+    el("siteWhatsapp").value = c.whatsapp_number || "";
+    el("siteEmail").value = c.email || "";
+    el("siteAddress").value = c.address || "";
+    el("siteFacebook").value = c.facebook || "";
+    el("siteInstagram").value = c.instagram || "";
+    el("siteTwitter").value = c.twitter || "";
+    el("siteLinkedin").value = c.linkedin || "";
+    el("siteBranches").value = JSON.stringify(Array.isArray(c.branches) ? c.branches : [], null, 2);
+    el("settingBranchApproval").checked = Boolean(settings.branch_manager_listing_approval);
+    el("settingHideDemo").checked = Boolean(settings.hide_demo_properties);
+    el("settingHideTest").checked = Boolean(settings.hide_all_test_data);
+    el("siteSettingsMeta").textContent = "Super Admin / MD settings";
+  }
+
   async function loadTerms() {
     const data = await S.fetchJson("/api/admin/terms");
     const active = data.active;
@@ -181,12 +202,67 @@
       await loadCommissionFailures();
       await loadAdminClientBranches();
       await loadAdminClients();
+      await loadSiteSettings();
       await loadTerms();
     } catch (error) {
       S.toast(error.message || "Unable to load system administration", true);
     }
 
     el("loadCommissionBackfill").addEventListener("click", loadCommissionBackfill);
+
+    el("saveSiteSettingsBtn").addEventListener("click", async () => {
+      const msg = el("siteSettingsMsg");
+      msg.textContent = "";
+      let branches = [];
+      try {
+        branches = JSON.parse(el("siteBranches").value || "[]");
+        if (!Array.isArray(branches)) throw new Error("Branch offices must be a JSON array.");
+      } catch (error) {
+        msg.textContent = error.message || "Branch offices JSON is invalid.";
+        return;
+      }
+      el("saveSiteSettingsBtn").disabled = true;
+      try {
+        await S.fetchJson("/api/admin/app-settings", {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            branch_manager_listing_approval: el("settingBranchApproval").checked,
+            hide_demo_properties: el("settingHideDemo").checked,
+            hide_all_test_data: el("settingHideTest").checked,
+            site_config: {
+              company_name: el("siteCompanyName").value.trim(),
+              tagline: el("siteTagline").value.trim(),
+              phone: el("sitePhone").value.trim(),
+              whatsapp_number: el("siteWhatsapp").value.trim(),
+              email: el("siteEmail").value.trim(),
+              address: el("siteAddress").value.trim(),
+              facebook: el("siteFacebook").value.trim(),
+              instagram: el("siteInstagram").value.trim(),
+              twitter: el("siteTwitter").value.trim(),
+              linkedin: el("siteLinkedin").value.trim(),
+              branches
+            }
+          })
+        });
+        msg.textContent = "Settings saved.";
+        S.toast("Public site settings saved.");
+      } catch (error) {
+        msg.textContent = error.message || "Unable to save settings.";
+      } finally {
+        el("saveSiteSettingsBtn").disabled = false;
+      }
+    });
+
+    el("archiveTestDataBtn").addEventListener("click", async () => {
+      if (!confirm("Archive all internal test properties, clients and payments from normal reports? Audit history is kept.")) return;
+      try {
+        const result = await S.fetchJson("/api/admin/archive-test-data", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+        });
+        S.toast(`Archived ${result.archived.properties} properties, ${result.archived.clients} clients and ${result.archived.payments} payments.`);
+        await loadSiteSettings();
+      } catch (error) { S.toast(error.message, true); }
+    });
 
     el("adminClientApply").addEventListener("click", () => { clientPage = 1; loadAdminClients(); });
     el("adminClientReset").addEventListener("click", () => {

@@ -1,5 +1,6 @@
 // Bliss Legacy Limited — Dedicated Public Property Details Logic
 document.addEventListener('DOMContentLoaded', async () => {
+  if (window.BLISS_CONFIG_READY) await window.BLISS_CONFIG_READY;
   // Render persistent site header and footer
   const headerSlot = document.getElementById('header-slot');
   const footerSlot = document.getElementById('footer-slot');

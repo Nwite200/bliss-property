@@ -101,6 +101,36 @@
         </div>
       </div>
 
+      <div class="card" style="margin-bottom:20px" id="siteSettingsCard">
+        <div class="card-head"><h3>Public site &amp; listing settings</h3><span class="small muted" id="siteSettingsMeta">Loading…</span></div>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label">Company name</label><input class="field-input" id="siteCompanyName"></div>
+          <div class="field-group"><label class="field-label">Tagline</label><input class="field-input" id="siteTagline"></div>
+          <div class="field-group"><label class="field-label">Phone</label><input class="field-input" id="sitePhone" placeholder="e.g. +234..."></div>
+          <div class="field-group"><label class="field-label">WhatsApp number</label><input class="field-input" id="siteWhatsapp" placeholder="Digits with country code"></div>
+          <div class="field-group"><label class="field-label">Email</label><input class="field-input" id="siteEmail" type="email"></div>
+          <div class="field-group"><label class="field-label">Address</label><input class="field-input" id="siteAddress"></div>
+          <div class="field-group"><label class="field-label">Facebook URL</label><input class="field-input" id="siteFacebook"></div>
+          <div class="field-group"><label class="field-label">Instagram URL</label><input class="field-input" id="siteInstagram"></div>
+          <div class="field-group"><label class="field-label">X / Twitter URL</label><input class="field-input" id="siteTwitter"></div>
+          <div class="field-group"><label class="field-label">LinkedIn URL</label><input class="field-input" id="siteLinkedin"></div>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="field-label" for="siteBranches">Branch offices (JSON array: name, city, state, type, address, phone, isHeadOffice)</label>
+          <textarea class="field-input" id="siteBranches" rows="8" placeholder='[{"name":"Head Office","city":"Lagos","state":"Lagos State","type":"Corporate Headquarters","address":"...","phone":"...","isHeadOffice":true}]'></textarea>
+        </div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:14px">
+          <label class="tag" style="display:flex;align-items:center;gap:8px;padding:8px 10px"><input type="checkbox" id="settingBranchApproval"> Branch manager listings need MD approval</label>
+          <label class="tag" style="display:flex;align-items:center;gap:8px;padding:8px 10px"><input type="checkbox" id="settingHideDemo"> Hide demo properties from the public site</label>
+          <label class="tag" style="display:flex;align-items:center;gap:8px;padding:8px 10px"><input type="checkbox" id="settingHideTest"> Hide archived test data from reports</label>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+          <button class="btn btn-green" type="button" id="saveSiteSettingsBtn">Save settings</button>
+          <button class="btn btn-danger" type="button" id="archiveTestDataBtn">Archive all test data</button>
+          <span class="small muted" id="siteSettingsMsg"></span>
+        </div>
+      </div>
+
       <div class="card" style="margin-bottom:20px" id="termsCard">
         <div class="card-head">
           <h3>Terms &amp; Conditions</h3>
