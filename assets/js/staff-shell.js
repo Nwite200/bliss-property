@@ -5,6 +5,9 @@
   BlissStaff.roles = {
     "Super Admin": "SA",
     "Managing Director": "MD",
+    "Sub Admin": "SUB",
+    "GSM": "GSM",
+    "Accountant": "ACC",
     "Project Manager": "PM",
     "Branch Manager": "BM",
     "Team Lead": "TL",
@@ -15,7 +18,7 @@
   };
 
   BlissStaff.isStaffRole = function (role) {
-    return ["Super Admin", "Managing Director", "Project Manager", "Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"].includes(role);
+    return ["Super Admin", "Managing Director", "Sub Admin", "GSM", "Accountant", "Project Manager", "Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"].includes(role);
   };
 
   BlissStaff.fetchJson = async function (path, options = {}) {
@@ -129,21 +132,24 @@
     const links = [
       { section: "Management" },
       { href: "dashboard.html", label: "📊 Overview", page: "dashboard", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "sub-admin-dashboard.html", label: "🧭 Sub Admin", page: "sub-admin", roles: ["Sub Admin"] },
+      { href: "gsm-dashboard.html", label: "🎯 GSM Dashboard", page: "gsm", roles: ["GSM"] },
+      { href: "accountant-dashboard.html", label: "🧮 Accountant", page: "accountant", roles: ["Accountant"] },
       { href: "performance.html", label: "📈 Performance", page: "performance", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "revenue.html", label: "💰 Revenue Drill-down", page: "revenue", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "defaulting.html", label: "⚠️ Defaulting Clients", page: "defaulting", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "customer-care.html", label: "☎️ Customer Care", page: "care", roles: ["Customer Care"] },
       { href: "sms-center.html", label: "✉️ SMS Centre", page: "sms", roles: ["Managing Director", "Head Accountant", "Branch Manager", "Finance Officer"], requiresSmsAccess: true },
-      { href: "properties.html", label: "🏡 Properties", page: "properties", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "clients.html", label: "👥 Clients", page: "clients", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "properties.html", label: "🏡 Properties", page: "properties", roles: ["Managing Director", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "clients.html", label: "👥 Clients", page: "clients", roles: ["Managing Director", "Sub Admin", "Accountant", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "phone-cleanup.html", label: "📞 Phone Cleanup", page: "phone-cleanup", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer"] },
       { section: "Sales & Teams" },
       { href: "leads.html", label: "🎯 Lead Pipeline", page: "leads", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer"] },
-      { href: "staff-management.html", label: "👔 Staff & Teams", page: "staff", roles: ["Managing Director", "Branch Manager"] },
+      { href: "staff-management.html", label: "👔 Staff & Teams", page: "staff", roles: ["Managing Director", "Sub Admin", "Branch Manager"] },
       { href: "activity-centre.html", label: "🕘 Activity Centre", page: "activity", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Finance" },
-      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
-      { href: "referral-commissions.html", label: "🧾 Referral Commissions", page: "referral-commissions", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
+      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Sub Admin", "Accountant", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
+      { href: "referral-commissions.html", label: "🧾 Referral Commissions", page: "referral-commissions", roles: ["Managing Director", "Sub Admin", "Accountant", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
       { href: "reports.html", label: "📄 Financial Reports", page: "reports", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
       { href: "finance-dashboard.html", label: "💳 Finance & Ledger", page: "finance", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
       { href: "provider-config.html", label: "🏦 Payment Provider", page: "provider", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
@@ -157,12 +163,12 @@
     let items = links.filter(item => (!item.roles || item.roles.includes(role)) &&
       (!item.requiresCommissionAccess || me.can_access_commissions) &&
       (!item.requiresSmsAccess || me.sms_access) &&
-      (!item.commissionNav || me.can_access_commissions || ["Marketer", "Team Lead", "Branch Manager"].includes(role))).map(item => {
+      (!item.commissionNav || me.can_access_commissions || ["Marketer", "Team Lead", "Branch Manager", "Sub Admin", "Accountant"].includes(role))).map(item => {
       if (item.section) return `<div class="section-label">${item.section}</div>`;
       return `<a href="${item.href}" ${item.page === activePage ? 'class="active"' : ""} ${item.id ? `id="${item.id}"` : ""} ${item.page === "logout" ? 'style="color:#E74C3C"' : ""}>${item.label}</a>`;
     }).join("");
     if (["Super Admin", "Managing Director"].includes(me.actual_role || role)) {
-      items += `<div class="section-label">System</div><a href="super-admin.html" class="${activePage === "super-admin" ? "active" : ""}">🛡️ System Administration</a>`;
+      items += `<div class="section-label">System</div><a href="super-admin.html" class="${activePage === "super-admin" ? "active" : ""}">🛡️ System Administration</a><a href="permissions.html" class="${activePage === "permissions" ? "active" : ""}">🔐 Permissions</a>`;
     }
     if (role === "Customer Care") {
       items += `<div class="section-label">Account</div><a href="index.html">🌐 Public Website</a><a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Logout</a>`;

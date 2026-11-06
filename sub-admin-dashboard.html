@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sub Admin Dashboard | Bliss Legacy Limited</title>
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/motion.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <script src="assets/js/intro-config.js"></script>
+  <script src="assets/js/motion.js"></script>
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <div class="dash-top"><h1>Sub Admin Dashboard</h1><span class="small muted">Read-only financial oversight · non-financial client edits</span></div>
+
+      <div class="card">
+        <div class="card-head"><h3>Financial approvals</h3><span class="small muted" id="approvalMode">Read-only</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>Action</th><th>Endpoint</th><th>Permission</th><th>Can perform</th></tr></thead><tbody id="approvalCatalog"></tbody></table></div>
+        <div id="pendingApprovals" class="small" style="margin-top:12px"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Edit client (non-financial only)</h3><span class="small muted">Reason required · audited</span></div>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="editClientId">Client ID</label><input class="field-input" id="editClientId" type="number" min="1"></div>
+          <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-outline" id="loadClientBtn">Load client</button></div>
+          <div class="field-group"><label class="field-label" for="editName">Full name</label><input class="field-input" id="editName"></div>
+          <div class="field-group"><label class="field-label" for="editPhone">Phone (login)</label><input class="field-input" id="editPhone" type="tel"></div>
+          <div class="field-group"><label class="field-label" for="editEmail">Email (optional)</label><input class="field-input" id="editEmail" type="email"></div>
+          <div class="field-group"><label class="field-label" for="editAddress">Residential address</label><input class="field-input" id="editAddress"></div>
+          <div class="field-group"><label class="field-label" for="editState">State</label><input class="field-input" id="editState"></div>
+          <div class="field-group"><label class="field-label" for="editCity">City</label><input class="field-input" id="editCity"></div>
+          <div class="field-group full"><label class="field-label" for="editReason">Reason for edit</label><input class="field-input" id="editReason" placeholder="Required"></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-green" id="saveClientBtn">Save non-financial edits</button><span class="small" id="editMsg"></span></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Branch / assignment change</h3><span class="small muted">Past payments keep their snapshots</span></div>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="changeBranch">New branch</label><select class="field-input" id="changeBranch"></select></div>
+          <div class="field-group"><label class="field-label" for="changeManager">New assignee (optional)</label><select class="field-input" id="changeManager"><option value="">Leave Unassigned</option></select></div>
+          <div class="field-group full"><label class="field-label" for="changeReason">Reason</label><input class="field-input" id="changeReason" placeholder="Required for branch/assignment change"></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-outline" id="changeBranchBtn">Move branch / assignment</button><span class="small" id="branchMsg"></span></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Unassigned queue</h3><span class="small muted">Clients without a primary assignee</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>Client</th><th>Reference</th><th>Branch</th><th>Phone</th></tr></thead><tbody id="unassignedBody"></tbody></table></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Client edit history</h3><span class="small muted">From the client record</span></div>
+        <div id="editHistory" class="small muted">Load a client to see history.</div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/mobile-nav.js"></script>
+  <script src="assets/js/pwa.js"></script>
+  <script>
+    (async () => {
+      const me = await BlissStaff.initShell('sub-admin');
+      if (!me) return;
+      const el = id => document.getElementById(id);
+      const esc = BlissStaff.escape;
+      let branches = [];
+      let staff = [];
+      let currentClientId = null;
+      async function loadApprovals() {
+        const data = await BlissStaff.fetchJson('/api/financial-approvals');
+        el('approvalMode').textContent = data.read_only ? 'Read-only' : 'Can perform';
+        el('approvalCatalog').innerHTML = (data.catalog || []).map(row => `<tr><td>${esc(row.label)}</td><td><code>${esc(row.method)} ${esc(row.endpoint)}</code></td><td>${esc(row.permission)}</td><td>${row.can_perform ? 'Yes' : '<span class="badge badge-gray">Read-only</span>'}</td></tr>`).join('');
+        const p = data.pending || {};
+        el('pendingApprovals').innerHTML = `
+          <div><strong>Pending payments:</strong> ${(p.payments || []).length}</div>
+          <div><strong>Pending commissions:</strong> ${(p.commissions || []).length}</div>
+          <div><strong>Pending client change requests:</strong> ${(p.client_change_requests || []).length}</div>
+          <div><strong>Pending listings:</strong> ${(p.property_listings || []).length}</div>`;
+      }
+      async function loadOptions() {
+        const [b, u] = await Promise.all([BlissStaff.fetchJson('/api/branches'), BlissStaff.fetchJson('/api/users')]);
+        branches = b.branches || [];
+        staff = (u.users || []).filter(x => x.is_active !== 0);
+        el('changeBranch').innerHTML = branches.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
+        el('changeManager').innerHTML = '<option value="">Leave Unassigned</option>' + staff.map(x => `<option value="${x.id}">${esc(x.full_name)} — ${esc(x.role_name || x.role || '')}</option>`).join('');
+      }
+      async function loadUnassigned() {
+        const data = await BlissStaff.fetchJson('/api/clients/unassigned');
+        el('unassignedBody').innerHTML = (data.clients || []).map(c => `<tr><td>${esc(c.full_name)}</td><td>${esc(c.client_reference)}</td><td>${esc(c.branch_name || '')}</td><td>${esc(c.phone_number || '')}</td></tr>`).join('') || '<tr><td colspan="4">No unassigned clients.</td></tr>';
+      }
+      async function loadClient() {
+        const id = Number(el('editClientId').value);
+        if (!id) return;
+        currentClientId = id;
+        try {
+          const data = await BlissStaff.fetchJson('/api/clients/' + id);
+          const c = data.client || {};
+          el('editName').value = c.full_name || '';
+          el('editPhone').value = c.phone_number || '';
+          el('editEmail').value = c.email_address || '';
+          el('editAddress').value = c.residential_address || '';
+          el('editState').value = c.state || '';
+          el('editCity').value = c.city || '';
+          el('changeBranch').value = String(c.assigned_branch_id || '');
+          el('editHistory').innerHTML = (data.edit_history || []).length
+            ? data.edit_history.map(h => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><strong>${esc(h.action)}</strong> · ${esc(h.created_at)} · ${esc(h.actor_name || 'System')}<div style="font-size:11px">${esc(JSON.stringify(h.metadata || {}))}</div></div>`).join('')
+            : 'No edits recorded.';
+        } catch (error) { el('editMsg').textContent = error.message; }
+      }
+      el('loadClientBtn').addEventListener('click', loadClient);
+      el('saveClientBtn').addEventListener('click', async () => {
+        const msg = el('editMsg'); msg.textContent = '';
+        if (!currentClientId) { msg.textContent = 'Load a client first.'; return; }
+        const body = {
+          full_name: el('editName').value.trim(),
+          phone_number: el('editPhone').value.trim(),
+          email_address: el('editEmail').value.trim(),
+          residential_address: el('editAddress').value.trim(),
+          state: el('editState').value.trim(),
+          city: el('editCity').value.trim(),
+          reason: el('editReason').value.trim()
+        };
+        try {
+          await BlissStaff.fetchJson('/api/clients/' + currentClientId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          msg.textContent = 'Client details updated and audited.';
+          await loadClient();
+        } catch (error) { msg.textContent = error.message; }
+      });
+      el('changeBranchBtn').addEventListener('click', async () => {
+        const msg = el('branchMsg'); msg.textContent = '';
+        if (!currentClientId) { msg.textContent = 'Load a client first.'; return; }
+        const body = {
+          branch_id: Number(el('changeBranch').value),
+          relationship_manager_id: el('changeManager').value ? Number(el('changeManager').value) : null,
+          reason: el('changeReason').value.trim()
+        };
+        try {
+          await BlissStaff.fetchJson('/api/clients/' + currentClientId + '/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          msg.textContent = 'Branch/assignment updated and audited. Past payments kept their snapshots.';
+          await Promise.all([loadClient(), loadUnassigned()]);
+        } catch (error) { msg.textContent = error.message; }
+      });
+      await Promise.all([loadApprovals(), loadOptions(), loadUnassigned()]);
+    })();
+  </script>
+</body>
+</html>

@@ -10,7 +10,7 @@
 
   function roleOptions() {
     return isMD()
-      ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"]
+      ? ["Sub Admin", "GSM", "Accountant", "Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"]
       : ["Team Lead", "Marketer", "Finance Officer"];
   }
 

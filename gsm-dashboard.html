@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GSM Dashboard | Bliss Legacy Limited</title>
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/motion.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <script src="assets/js/intro-config.js"></script>
+  <script src="assets/js/motion.js"></script>
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <div class="dash-top"><h1>GSM Dashboard</h1><span class="small muted">Targets & operational visibility · no commission totals by default</span></div>
+
+      <div class="card">
+        <div class="card-head"><h3>Set a target</h3><span class="small muted">Branch, staff or role</span></div>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="targetType">Target type</label><select class="field-input" id="targetType"><option value="branch">Branch</option><option value="staff">Staff</option><option value="role">Role</option></select></div>
+          <div class="field-group"><label class="field-label" for="targetId">Target</label><select class="field-input" id="targetId"></select></div>
+          <div class="field-group"><label class="field-label" for="targetMetric">Metric</label><select class="field-input" id="targetMetric"><option value="revenue">Revenue</option><option value="clients">Clients</option><option value="leads">Leads</option><option value="collections">Collections</option></select></div>
+          <div class="field-group"><label class="field-label" for="targetPeriod">Period</label><select class="field-input" id="targetPeriod"><option value="month">Month</option><option value="week">Week</option><option value="quarter">Quarter</option><option value="year">Year</option><option value="custom">Custom</option></select></div>
+          <div class="field-group"><label class="field-label" for="targetStart">Start</label><input class="field-input" type="date" id="targetStart"></div>
+          <div class="field-group"><label class="field-label" for="targetEnd">End</label><input class="field-input" type="date" id="targetEnd"></div>
+          <div class="field-group"><label class="field-label" for="targetAmount">Amount (₦)</label><input class="field-input" type="number" min="1" step="1" id="targetAmount"></div>
+          <div class="field-group full"><label class="field-label" for="targetNotes">Notes</label><input class="field-input" id="targetNotes"></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-green" id="saveTargetBtn">Save target</button><span class="small" id="targetMsg"></span></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Targets</h3><span class="small muted">Latest first</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>Type</th><th>Target</th><th>Metric</th><th>Period</th><th>Amount</th><th>Notes</th></tr></thead><tbody id="targetBody"></tbody></table></div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/mobile-nav.js"></script>
+  <script src="assets/js/pwa.js"></script>
+  <script>
+    (async () => {
+      const me = await BlissStaff.initShell('gsm');
+      if (!me) return;
+      const el = id => document.getElementById(id);
+      const esc = BlissStaff.escape;
+      let branches = [], users = [], roles = [];
+      function fillTargets() {
+        const type = el('targetType').value;
+        const items = type === 'branch' ? branches : type === 'staff' ? users : roles;
+        el('targetId').innerHTML = items.map(x => `<option value="${x.id}">${esc(x.name || x.full_name || x.role_name || x.id)}</option>`).join('');
+      }
+      async function load() {
+        const [b, u, t] = await Promise.all([
+          BlissStaff.fetchJson('/api/branches'),
+          BlissStaff.fetchJson('/api/users'),
+          BlissStaff.fetchJson('/api/targets')
+        ]);
+        branches = b.branches || [];
+        users = (u.users || []).filter(x => x.is_active !== 0);
+        roles = [...new Map(users.map(x => [x.role_name || x.role, { id: x.role_id || x.role_name, role_name: x.role_name || x.role }])).values()];
+        fillTargets();
+        el('targetBody').innerHTML = (t.targets || []).map(row => `<tr><td>${esc(row.target_type)}</td><td>${esc(row.branch_name || row.target_id || '-')}</td><td>${esc(row.metric)}</td><td>${esc(row.period_start)} → ${esc(row.period_end)}</td><td>${BlissStaff.money(row.amount_kobo)}</td><td>${esc(row.notes || '')}</td></tr>`).join('') || '<tr><td colspan="6">No targets set.</td></tr>';
+      }
+      el('targetType').addEventListener('change', fillTargets);
+      el('saveTargetBtn').addEventListener('click', async () => {
+        const msg = el('targetMsg'); msg.textContent = '';
+        const body = {
+          target_type: el('targetType').value,
+          target_id: Number(el('targetId').value),
+          metric: el('targetMetric').value,
+          period_type: el('targetPeriod').value,
+          period_start: el('targetStart').value,
+          period_end: el('targetEnd').value,
+          amount: Number(el('targetAmount').value),
+          notes: el('targetNotes').value.trim()
+        };
+        try {
+          await BlissStaff.fetchJson('/api/targets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          msg.textContent = 'Target saved.';
+          await load();
+        } catch (error) { msg.textContent = error.message; }
+      });
+      await load();
+    })();
+  </script>
+</body>
+</html>

@@ -1121,12 +1121,26 @@ await test('client details, protected updates, status history and notes are serv
     method: 'PUT', headers: { Cookie: mktCookie }, body: { agreed_purchase_price: 1 }
   });
   assert(priceByMarketer.status === 403, 'marketer cannot change contract price');
-  const update = await request(`/api/clients/${phase4ClientId}`, {
-    method: 'PUT', headers: { Cookie: bmCookie }, body: { agreed_purchase_price: 7600000, city: 'Ikeja' }
+  const cityUpdate = await request(`/api/clients/${phase4ClientId}`, {
+    method: 'PUT', headers: { Cookie: bmCookie }, body: { city: 'Ikeja', reason: 'Client moved within Ikeja' }
   });
-  assert(update.status === 200, `BM own-branch update expected 200, got ${update.status}`);
+  assert(cityUpdate.status === 200, `BM non-financial update expected 200, got ${cityUpdate.status}`);
+  const priceAttempt = await request(`/api/clients/${phase4ClientId}`, {
+    method: 'PUT', headers: { Cookie: bmCookie }, body: { agreed_purchase_price: 7600000, reason: 'Price change requires approval' }
+  });
+  assert(priceAttempt.status === 403, 'BM must not change a client price directly');
+  const changeRequest = await request(`/api/clients/${phase4ClientId}/financial-change-requests`, {
+    method: 'POST', headers: { Cookie: bmCookie }, body: {
+      change_type: 'price', payload: { agreed_purchase_price: 7600000 }, reason: 'Phase 5 approved price change'
+    }
+  });
+  assert(changeRequest.status === 200, `BM price request expected 200, got ${changeRequest.status}`);
+  const approve = await request(`/api/financial-change-requests/${changeRequest.data.id}/approve`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(approve.status === 200, `owner price approval expected 200, got ${approve.status}`);
   const row = db.prepare('SELECT agreed_purchase_price, city FROM clients WHERE id=?').get(phase4ClientId);
-  assert(row.agreed_purchase_price === 7600000 && row.city === 'Ikeja', 'BM update persisted');
+  assert(row.agreed_purchase_price === 7600000 && row.city === 'Ikeja', 'approved price and city update persisted');
   const status = await request(`/api/clients/${phase4ClientId}/status`, {
     method: 'POST', headers: { Cookie: mktCookie }, body: { status: 'Interested' }
   });

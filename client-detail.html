@@ -126,6 +126,20 @@
         <div id="phoneChangeMsg" class="small" style="margin-top:8px"></div>
       </div>
 
+      <div class="card" style="max-width:800px;margin-top:18px" id="financialChangeCard">
+        <div class="card-head"><h3>Financial change requests</h3><span class="small muted">Post-purchase price, plan, schedule or balance changes</span></div>
+        <p class="small muted">Branch managers submit a request. An authorised finance approver must approve before anything changes.</p>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="finChangeType">Change type</label><select class="field-input" id="finChangeType"><option value="price">Agreed price</option><option value="plan">Payment plan</option><option value="schedule">Schedule</option><option value="balance">Balance adjustment</option></select></div>
+          <div class="field-group"><label class="field-label" for="finChangeAmount">Amount / total (₦)</label><input class="field-input" type="number" id="finChangeAmount" min="0" step="0.01"></div>
+          <div class="field-group"><label class="field-label" for="finChangeInstallment">Instalment (₦, plan/schedule only)</label><input class="field-input" type="number" id="finChangeInstallment" min="0" step="0.01"></div>
+          <div class="field-group"><label class="field-label" for="finChangeCount">Number of instalments</label><input class="field-input" type="number" id="finChangeCount" min="1" step="1"></div>
+          <div class="field-group full"><label class="field-label" for="finChangeReason">Reason</label><input class="field-input" id="finChangeReason" placeholder="Required"></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-outline" type="button" id="finChangeSubmitBtn">Submit change request</button><span class="small" id="finChangeMsg"></span></div>
+        <div id="finChangeList" class="small" style="margin-top:12px"></div>
+      </div>
+
       <div class="card" style="max-width:800px;margin-top:18px" id="staticWalletCard">
         <div class="card-head"><h3>ALATPay static wallet</h3><span id="staticWalletStatus"></span></div>
         <p class="small muted">Permanent account number for this client. Creating or validating a wallet requires the client's BVN/OTP. BVN and OTP are sent to ALATPay and are never stored by this portal.</p>

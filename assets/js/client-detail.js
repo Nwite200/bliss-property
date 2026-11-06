@@ -124,6 +124,53 @@ async function load() {
     ` : `<div>No static wallet or dynamic account yet. The client can pay without a BVN by generating a one-off account from My Virtual Account.</div>`;
   }
 
+  const finList = document.getElementById("finChangeList");
+  if (finList) {
+    const requests = Array.isArray(data.financial_change_requests) ? data.financial_change_requests : [];
+    finList.innerHTML = requests.length ? requests.map(r => `
+      <div style="padding:8px 0;border-bottom:1px solid var(--line)">
+        <div><strong>${esc(r.change_type)}</strong> · ${esc(r.status)} · ${new Date(r.created_at).toLocaleString()}</div>
+        <div style="font-size:11px">Requested by ${esc(r.requested_by_name || "-")} · Reason: ${esc(r.reason || "")}</div>
+        <div style="font-size:11px;font-family:monospace">${esc(r.payload_json || "")}</div>
+        ${r.status === "pending" && ["Managing Director", "Super Admin", "Finance Officer", "Head Accountant"].includes(actualRole) ? `<div style="margin-top:6px"><button class="btn btn-green btn-xs" data-approve-fin="${r.id}">Approve</button> <button class="btn btn-danger btn-xs" data-reject-fin="${r.id}">Reject</button></div>` : ""}
+      </div>`).join("") : "No financial change requests.";
+    finList.querySelectorAll("[data-approve-fin]").forEach(btn => btn.onclick = async () => {
+      const id = btn.getAttribute("data-approve-fin");
+      const res = await fetchJson(`/financial-change-requests/${id}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      alert(res.ok ? "Approved and applied." : (res.data.error || "Approval failed."));
+      if (res.ok) location.reload();
+    });
+    finList.querySelectorAll("[data-reject-fin]").forEach(btn => btn.onclick = async () => {
+      const id = btn.getAttribute("data-reject-fin");
+      const reason = prompt("Rejection reason:");
+      if (!reason) return;
+      const res = await fetchJson(`/financial-change-requests/${id}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) });
+      alert(res.ok ? "Rejected." : (res.data.error || "Rejection failed."));
+      if (res.ok) location.reload();
+    });
+  }
+  const finSubmit = document.getElementById("finChangeSubmitBtn");
+  if (finSubmit) {
+    finSubmit.onclick = async () => {
+      const msg = document.getElementById("finChangeMsg");
+      const type = document.getElementById("finChangeType").value;
+      const reason = document.getElementById("finChangeReason").value.trim();
+      const amount = Number(document.getElementById("finChangeAmount").value || 0);
+      const installment = Number(document.getElementById("finChangeInstallment").value || 0);
+      const count = Number(document.getElementById("finChangeCount").value || 0);
+      if (!reason) { msg.textContent = "Enter a reason."; return; }
+      const payload = type === "price" ? { agreed_purchase_price: amount }
+        : type === "balance" ? { amount }
+          : { total_amount: amount, installment_amount: installment || undefined, number_of_installments: count || undefined };
+      const res = await fetchJson(`/clients/${id}/financial-change-requests`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ change_type: type, payload, reason })
+      });
+      msg.textContent = res.ok ? "Request submitted for approval." : (res.data.error || "Unable to submit request.");
+      if (res.ok) setTimeout(() => location.reload(), 700);
+    };
+  }
+
   const resetBtn = document.getElementById("resetClientBtn");
   const canReset = ["Super Admin", "Managing Director", "Branch Manager", "Customer Care"].includes(actualRole);
   if (resetBtn) {

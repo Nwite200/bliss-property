@@ -155,9 +155,16 @@
           return;
         }
         const me = await fetch('/api/me').then(r => r.json());
-        window.location.href = (me.role_name || me.role) === 'Customer Care'
+        const staffRole = me.role_name || me.role || '';
+        window.location.href = staffRole === 'Customer Care'
           ? '/customer-care.html'
-          : `/dashboard.html?role=${encodeURIComponent(me.role_name || me.role || '')}`;
+          : staffRole === 'Sub Admin'
+            ? '/sub-admin-dashboard.html'
+            : staffRole === 'GSM'
+              ? '/gsm-dashboard.html'
+              : staffRole === 'Accountant'
+                ? '/accountant-dashboard.html'
+                : `/dashboard.html?role=${encodeURIComponent(staffRole)}`;
       } catch (err) {
         msg.textContent = 'Server is currently offline. Management portal will be enabled in Phase 2.';
         submitBtn.disabled = false;

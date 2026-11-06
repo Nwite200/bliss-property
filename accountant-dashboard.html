@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Accountant Dashboard | Bliss Legacy Limited</title>
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/motion.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <script src="assets/js/intro-config.js"></script>
+  <script src="assets/js/motion.js"></script>
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <div class="dash-top"><h1>Accountant Dashboard</h1><span class="small muted">Financial records · commission totals · no rates</span></div>
+
+      <div class="card">
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="from">From</label><input class="field-input" type="date" id="from"></div>
+          <div class="field-group"><label class="field-label" for="to">To</label><input class="field-input" type="date" id="to"></div>
+          <div class="field-group"><label class="field-label" for="branch">Branch</label><select class="field-input" id="branch"><option value="">All branches</option></select></div>
+          <div class="field-group" style="display:flex;align-items:flex-end;gap:8px"><button class="btn btn-green" id="loadBtn">Load</button><button class="btn btn-outline" id="exportBtn">Export CSV</button><button class="btn btn-ghost" id="printBtn">Print branch statement</button></div>
+        </div>
+      </div>
+
+      <div class="kpi-grid kpi-grid-5" id="kpis"></div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Branch comparison</h3><span class="small muted">Collected, pending, expected and difference</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>Branch</th><th>Collected</th><th>Pending</th><th>Reversed</th><th>Expected</th><th>Difference</th></tr></thead><tbody id="branchBody"></tbody></table></div>
+      </div>
+
+      <div class="card" style="margin-top:16px" id="commissionCard">
+        <div class="card-head"><h3>Commission earnings</h3><span class="small muted">Totals only · no rates</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>Marketer</th><th>Earned</th><th>Paid</th><th>Outstanding</th></tr></thead><tbody id="commissionBody"></tbody></table></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Client payments</h3><span class="small muted">Latest 5,000 in the period</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>Reference</th><th>Client</th><th>Property</th><th>Gross</th><th>Fees</th><th>Stamp</th><th>Net</th><th>Provider</th><th>Status</th><th>Branch</th><th>Marketer</th><th>Assignee</th><th>Time</th></tr></thead><tbody id="paymentBody"></tbody></table></div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/mobile-nav.js"></script>
+  <script src="assets/js/pwa.js"></script>
+  <script>
+    (async () => {
+      const me = await BlissStaff.initShell('accountant');
+      if (!me) return;
+      const el = id => document.getElementById(id);
+      const esc = BlissStaff.escape;
+      let lastData = null;
+      const today = new Date().toISOString().slice(0, 10);
+      const monthAgo = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+      el('from').value = monthAgo;
+      el('to').value = today;
+      async function loadBranches() {
+        const data = await BlissStaff.fetchJson('/api/branches');
+        el('branch').innerHTML = '<option value="">All branches</option>' + (data.branches || []).map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('');
+      }
+      async function load() {
+        const params = new URLSearchParams({ from: el('from').value, to: el('to').value });
+        if (el('branch').value) params.set('branch_id', el('branch').value);
+        const data = await BlissStaff.fetchJson('/api/accountant/earnings?' + params.toString());
+        lastData = data;
+        const s = data.summary || {};
+        el('kpis').innerHTML = [
+          ['Collected', BlissStaff.money(s.collected_kobo)],
+          ['Pending', BlissStaff.money(s.pending_kobo)],
+          ['Reversed', BlissStaff.money(s.reversed_kobo)],
+          ['Outstanding', BlissStaff.money(s.outstanding_kobo)],
+          ['Settlement difference', BlissStaff.money(s.settlement_difference_kobo)]
+        ].map(([label, value]) => `<div class="kpi"><div class="label">${esc(label)}</div><div class="value">${value}</div></div>`).join('');
+        el('branchBody').innerHTML = (data.branch_comparison || []).map(b => `<tr><td>${esc(b.branch_name)}</td><td>${BlissStaff.money(b.collected_kobo)}</td><td>${BlissStaff.money(b.pending_kobo)}</td><td>${BlissStaff.money(b.reversed_kobo)}</td><td>${BlissStaff.money(b.expected_kobo)}</td><td>${BlissStaff.money(b.difference_kobo)}</td></tr>`).join('');
+        if (data.commission) {
+          el('commissionCard').style.display = '';
+          el('commissionBody').innerHTML = (data.commission.rows || []).map(r => `<tr><td>${esc(r.marketer_name)}</td><td>${BlissStaff.money(r.earned_kobo)}</td><td>${BlissStaff.money(r.paid_kobo)}</td><td>${BlissStaff.money(r.outstanding_kobo)}</td></tr>`).join('');
+        } else {
+          el('commissionCard').style.display = 'none';
+        }
+        el('paymentBody').innerHTML = (data.payments || []).map(p => `<tr><td>${esc(p.transaction_ref)}</td><td>${esc(p.client_name)}<div class="small muted">${esc(p.client_reference)}</div></td><td>${esc(p.property_reference || '')}</td><td>${BlissStaff.money(p.gross_kobo)}</td><td>${BlissStaff.money(p.fees_kobo)}</td><td>${BlissStaff.money(p.stamp_duty_kobo)}</td><td>${BlissStaff.money(p.net_settled_kobo)}</td><td>${esc(p.provider || '')}<div class="small muted">${esc(p.provider_reference || '')}</div></td><td>${esc(p.status)}</td><td>${esc(p.branch_name || '')}</td><td>${esc(p.marketer_name || '')}</td><td>${esc(p.assignee_name || '')}</td><td>${esc(p.created_at || '')}</td></tr>`).join('') || '<tr><td colspan="13">No payments in this period.</td></tr>';
+      }
+      el('loadBtn').addEventListener('click', load);
+      el('exportBtn').addEventListener('click', () => {
+        const params = new URLSearchParams({ from: el('from').value, to: el('to').value });
+        window.location.href = '/api/accountant/export?' + params.toString();
+      });
+      el('printBtn').addEventListener('click', async () => {
+        if (!el('branch').value) { alert('Select a branch first.'); return; }
+        const params = new URLSearchParams({ branch_id: el('branch').value, from: el('from').value, to: el('to').value });
+        const data = await BlissStaff.fetchJson('/api/accountant/statement?' + params.toString());
+        const win = window.open('', '_blank');
+        win.document.write(`<h2>${esc(data.branch.name)} — ${esc(data.period.from)} to ${esc(data.period.to)}</h2><p>Collected: ${BlissStaff.money(data.collected_kobo)}</p><table border="1" cellpadding="6" cellspacing="0"><tr><th>Ref</th><th>Client</th><th>Amount</th><th>Status</th><th>Time</th></tr>${(data.payments || []).map(p => `<tr><td>${esc(p.transaction_ref)}</td><td>${esc(p.client_name)}</td><td>${BlissStaff.money(p.amount_kobo)}</td><td>${esc(p.status)}</td><td>${esc(p.created_at)}</td></tr>`).join('')}</table>`);
+        win.document.close();
+        win.print();
+      });
+      await loadBranches();
+      await load();
+    })();
+  </script>
+</body>
+</html>

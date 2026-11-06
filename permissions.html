@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Permissions | Bliss Legacy Limited</title>
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/motion.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <script src="assets/js/intro-config.js"></script>
+  <script src="assets/js/motion.js"></script>
+</head>
+<body>
+  <div class="dash">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="dash-main">
+      <div class="dash-top"><h1>Permission Matrix</h1><span class="small muted">MD / Super Admin only</span></div>
+
+      <div class="card">
+        <div class="card-head"><h3>Grant or revoke</h3><span class="small muted">Every change requires a reason and is audited</span></div>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="permTargetType">Target type</label><select class="field-input" id="permTargetType"><option value="user">User</option><option value="role">Role</option></select></div>
+          <div class="field-group"><label class="field-label" for="permTargetId">Target</label><select class="field-input" id="permTargetId"></select></div>
+          <div class="field-group"><label class="field-label" for="permName">Permission</label><select class="field-input" id="permName"></select></div>
+          <div class="field-group"><label class="field-label" for="permScope">Scope</label><select class="field-input" id="permScope"><option value="national">National</option><option value="branch">Branch</option></select></div>
+          <div class="field-group full"><label class="field-label" for="permReason">Reason</label><input class="field-input" id="permReason" placeholder="Why is this access changing?"></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn btn-green" id="grantBtn">Grant permission</button>
+          <button class="btn btn-danger" id="revokeBtn">Revoke permission</button>
+          <span class="small" id="permMsg"></span>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Effective permissions</h3><span class="small muted">Look up any user</span></div>
+        <div class="form-grid">
+          <div class="field-group"><label class="field-label" for="effectiveUser">User</label><select class="field-input" id="effectiveUser"></select></div>
+          <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-outline" id="effectiveBtn">View effective permissions</button></div>
+        </div>
+        <div id="effectiveResult" class="small" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Role grants</h3><span class="small muted">Default matrix</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>Role</th><th>Permission</th><th>Scope</th></tr></thead><tbody id="roleGrants"></tbody></table></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>User grants</h3><span class="small muted">Extra access beyond role defaults</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>User</th><th>Permission</th><th>Scope</th><th>Granted</th></tr></thead><tbody id="userGrants"></tbody></table></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Change history</h3><span class="small muted">Who changed what and why</span></div>
+        <div class="table-responsive"><table class="table"><thead><tr><th>When</th><th>Actor</th><th>Target</th><th>Permission</th><th>Action</th><th>Scope</th><th>Reason</th></tr></thead><tbody id="permHistory"></tbody></table></div>
+      </div>
+    </main>
+  </div>
+  <script src="assets/js/staff-shell.js"></script>
+  <script src="assets/js/mobile-nav.js"></script>
+  <script src="assets/js/pwa.js"></script>
+  <script>
+    (async () => {
+      const me = await BlissStaff.initShell('permissions');
+      if (!me) return;
+      const el = id => document.getElementById(id);
+      const esc = BlissStaff.escape;
+      let catalog = null;
+      function fillTargets() {
+        const type = el('permTargetType').value;
+        const items = type === 'role' ? catalog.roles : catalog.users;
+        el('permTargetId').innerHTML = items.map(item => `<option value="${item.id}">${esc(type === 'role' ? item.name : `${item.full_name} — ${item.role_name}`)}</option>`).join('');
+      }
+      async function load() {
+        try {
+          catalog = await BlissStaff.fetchJson('/api/permissions/catalog');
+          el('permName').innerHTML = catalog.permissions.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+          el('effectiveUser').innerHTML = catalog.users.map(u => `<option value="${u.id}">${esc(u.full_name)} — ${esc(u.role_name)}</option>`).join('');
+          fillTargets();
+          el('roleGrants').innerHTML = catalog.role_grants.map(g => `<tr><td>${esc((catalog.roles.find(r => r.id === g.role_id) || {}).name || g.role_id)}</td><td>${esc(g.permission_name)}</td><td>${esc(g.scope)}</td></tr>`).join('') || '<tr><td colspan="3">No role grants.</td></tr>';
+          el('userGrants').innerHTML = catalog.user_grants.map(g => {
+            const user = catalog.users.find(u => u.id === g.user_id) || {};
+            return `<tr><td>${esc(user.full_name || g.user_id)}</td><td>${esc(g.permission_name)}</td><td>${esc(g.scope)}</td><td>${esc(g.created_at)}</td></tr>`;
+          }).join('') || '<tr><td colspan="4">No extra user grants.</td></tr>';
+          const history = await BlissStaff.fetchJson('/api/permissions/history');
+          el('permHistory').innerHTML = (history.history || []).map(h => `<tr><td>${esc(h.created_at)}</td><td>${esc(h.actor_name || '-')}</td><td>${esc(h.target_type)} #${esc(h.target_id)}</td><td>${esc(h.permission_name)}</td><td>${esc(h.action)}</td><td>${esc(h.scope || '-')}</td><td>${esc(h.reason || '-')}</td></tr>`).join('') || '<tr><td colspan="7">No permission changes yet.</td></tr>';
+        } catch (error) { el('permMsg').textContent = error.message; }
+      }
+      async function change(action) {
+        const msg = el('permMsg'); msg.textContent = '';
+        const body = {
+          target_type: el('permTargetType').value,
+          target_id: Number(el('permTargetId').value),
+          permission_name: el('permName').value,
+          scope: el('permScope').value,
+          reason: el('permReason').value.trim()
+        };
+        try {
+          await BlissStaff.fetchJson(`/api/permissions/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          msg.textContent = `${action === 'grant' ? 'Granted' : 'Revoked'}.`;
+          el('permReason').value = '';
+          await load();
+        } catch (error) { msg.textContent = error.message; }
+      }
+      el('permTargetType').addEventListener('change', fillTargets);
+      el('grantBtn').addEventListener('click', () => change('grant'));
+      el('revokeBtn').addEventListener('click', () => change('revoke'));
+      el('effectiveBtn').addEventListener('click', async () => {
+        try {
+          const data = await BlissStaff.fetchJson('/api/permissions/effective?user_id=' + el('effectiveUser').value);
+          el('effectiveResult').innerHTML = data.is_owner_authority
+            ? '<strong>Owner authority: all permissions.</strong>'
+            : data.permissions.map(p => `<div>${esc(p.permission)} — ${esc(p.scope)}</div>`).join('') || 'No effective permissions.';
+        } catch (error) { el('effectiveResult').textContent = error.message; }
+      });
+      await load();
+    })();
+  </script>
+</body>
+</html>

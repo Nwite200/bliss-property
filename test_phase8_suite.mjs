@@ -135,6 +135,9 @@ const haId = upsertUser('ha.p8@bliss.com', 'Phase 8 Head Accountant', 'Head Acco
 const mktNoTeamId = upsertUser('mkt.noteam.p8@bliss.com', 'Phase 8 Ikeja Direct Marketer', 'Marketer', ikeja);
 const careBranchId = upsertUser('care.branch.p8@bliss.com', 'Phase 13 Branch Care', 'Customer Care', ikeja);
 const careNationalId = upsertUser('care.national.p8@bliss.com', 'Phase 13 National Care', 'Customer Care', null);
+const subAdminId = upsertUser('subadmin.p28@bliss.com', 'Phase 28 Sub Admin', 'Sub Admin', headOffice);
+const gsmId = upsertUser('gsm.p28@bliss.com', 'Phase 28 GSM', 'GSM', ikeja);
+const accountantId = upsertUser('accountant.p28@bliss.com', 'Phase 28 Accountant', 'Accountant', headOffice);
 db.prepare("UPDATE users SET care_scope='branch' WHERE id=?").run(careBranchId);
 db.prepare("UPDATE users SET care_scope='national' WHERE id=?").run(careNationalId);
 db.prepare("UPDATE users SET referral_code='BL-P8-MD' WHERE id=?").run(mdId);
@@ -265,6 +268,9 @@ const haCookie = await login('ha.p8@bliss.com');
 const mktNoTeamCookie = await login('mkt.noteam.p8@bliss.com');
 const careBranchCookie = await login('care.branch.p8@bliss.com');
 const careNationalCookie = await login('care.national.p8@bliss.com');
+const subAdminCookie = await login('subadmin.p28@bliss.com');
+const gsmCookie = await login('gsm.p28@bliss.com');
+const accountantCookie = await login('accountant.p28@bliss.com');
 const clientCookie = await login('client.p8@example.com');
 
 console.log('--- 1. Authentication, sessions and CSRF ---');
@@ -2835,6 +2841,188 @@ await test('commission preview calculator and change-reason validation work', as
   assert(noReason.status === 400 && /change reason/i.test(noReason.data.error || ''), 'referral edit must require a change reason');
 });
 
+console.log('\n--- 17. Five-dashboards permissions, Sub Admin edits, targets and accountant earnings ---');
+
+await test('GSM has no commission totals by default; grant adds totals only; revoke is immediate; Sub Admin cannot grant', async () => {
+  const before = await request('/api/referral-commissions', { headers: { Cookie: gsmCookie } });
+  assert(before.status === 403, 'GSM must not see commission totals by default');
+  const grant = await request('/api/permissions/grant', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {
+      target_type: 'user', target_id: gsmId, permission_name: 'commission.totals.view',
+      scope: 'national', reason: 'Phase 28 test grant'
+    }
+  });
+  assert(grant.status === 200, `owner grant failed: ${grant.status} ${JSON.stringify(grant.data)}`);
+  const after = await request('/api/referral-commissions', { headers: { Cookie: gsmCookie } });
+  assert(after.status === 200, 'GSM should see totals after the grant');
+  assert((after.data.entries || []).every(row => !('rate_bps' in row) && !('rule_key' in row) && !('stage1_commission_kobo' in row) && !('structure' in row)), 'GSM totals leaked rates or rule fields');
+  const rates = await request('/api/referral-commissions/rules', { headers: { Cookie: gsmCookie } });
+  assert(rates.status === 403, 'GSM must still not see commission rates');
+  const revoke = await request('/api/permissions/revoke', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {
+      target_type: 'user', target_id: gsmId, permission_name: 'commission.totals.view',
+      scope: 'national', reason: 'Phase 28 test revoke'
+    }
+  });
+  assert(revoke.status === 200, 'owner revoke failed');
+  const afterRevoke = await request('/api/referral-commissions', { headers: { Cookie: gsmCookie } });
+  assert(afterRevoke.status === 403, 'revoked GSM access must be immediate');
+  const subGrant = await request('/api/permissions/grant', {
+    method: 'POST', headers: { Cookie: subAdminCookie }, body: {
+      target_type: 'user', target_id: gsmId, permission_name: 'commission.totals.view',
+      scope: 'national', reason: 'Sub Admin must not grant'
+    }
+  });
+  assert(subGrant.status === 403, 'Sub Admin must not grant permissions');
+  const log = db.prepare("SELECT * FROM permission_change_log WHERE target_type='user' AND target_id=? AND permission_name='commission.totals.view' ORDER BY id").all(gsmId);
+  assert(log.length >= 2 && log.every(row => row.reason), 'permission grant/revoke was not audit logged with reasons');
+  const effective = await request('/api/permissions/effective?user_id=' + gsmId, { headers: { Cookie: mdCookie } });
+  assert(effective.status === 200, 'owner effective-permission view failed');
+  const subEffective = await request('/api/permissions/effective?user_id=' + gsmId, { headers: { Cookie: subAdminCookie } });
+  assert(subEffective.status === 403, 'Sub Admin must not inspect another user effective permissions');
+});
+
+await test('Sub Admin sees financial approvals read-only and can edit only non-financial client details', async () => {
+  const approvals = await request('/api/financial-approvals', { headers: { Cookie: subAdminCookie } });
+  assert(approvals.status === 200 && approvals.data.read_only === true, 'Sub Admin financial approvals must be read-only');
+  assert((approvals.data.catalog || []).some(row => row.key === 'manual_payment'), 'financial approval catalogue missing manual payment');
+  assert((approvals.data.catalog || []).some(row => row.key === 'client_price'), 'financial approval catalogue missing client price');
+  const financeApprovals = await request('/api/financial-approvals', { headers: { Cookie: finCookie } });
+  assert(financeApprovals.status === 200 && financeApprovals.data.read_only === false, 'Finance must be able to perform financial approvals');
+  const gsmApprovals = await request('/api/financial-approvals', { headers: { Cookie: gsmCookie } });
+  assert(gsmApprovals.status === 403, 'GSM must not see financial approvals by default');
+
+  const client = createLoginClient({
+    ref: 'BLC-P28-SUBADMIN', name: 'Phase 28 Sub Admin Client', phone: nextTestPhone(),
+    branch: ikeja, marketerId: mkt1Id, teamLeadId: tlId, price: 500000
+  });
+  const edit = await request(`/api/clients/${client.cid}`, {
+    method: 'PUT', headers: { Cookie: subAdminCookie }, body: {
+      full_name: 'Phase 28 Sub Admin Client Updated',
+      residential_address: '28 Sub Admin Street', state: 'Lagos', city: 'Ikeja',
+      reason: 'Client supplied updated address'
+    }
+  });
+  assert(edit.status === 200, `Sub Admin client edit failed: ${edit.status} ${JSON.stringify(edit.data)}`);
+  const editAudit = db.prepare("SELECT * FROM audit_logs WHERE action='client.update' AND target_id=? ORDER BY id DESC LIMIT 1").get(String(client.cid));
+  assert(editAudit && String(editAudit.metadata).includes('Client supplied updated address'), 'Sub Admin client edit reason missing from audit');
+
+  const newPhone = nextTestPhone();
+  const phone = await request(`/api/clients/${client.cid}/phone`, {
+    method: 'PUT', headers: { Cookie: subAdminCookie },
+    body: { phone_number: newPhone, reason: 'Client changed phone' }
+  });
+  assert(phone.status === 200, `Sub Admin phone change failed: ${phone.status} ${JSON.stringify(phone.data)}`);
+  assert(db.prepare('SELECT phone_e164 FROM users WHERE id=?').get(client.uid).phone_e164 === normalizePhoneForTest(newPhone), 'login phone not updated');
+  const phoneAudit = db.prepare("SELECT * FROM audit_logs WHERE action='client.phone_change' AND target_id=? ORDER BY id DESC LIMIT 1").get(String(client.cid));
+  assert(phoneAudit && String(phoneAudit.metadata).includes('Client changed phone'), 'phone change reason missing from audit');
+  const badPhone = await request(`/api/clients/${client.cid}/phone`, {
+    method: 'PUT', headers: { Cookie: subAdminCookie }, body: { phone_number: 'abc', reason: 'Bad phone test' }
+  });
+  assert(badPhone.status === 400, 'invalid phone must be rejected');
+  const duplicatePhone = await request(`/api/clients/${client.cid}/phone`, {
+    method: 'PUT', headers: { Cookie: subAdminCookie }, body: { phone_number: '08088000001', reason: 'Duplicate phone test' }
+  });
+  assert(duplicatePhone.status === 409, 'duplicate phone must be rejected');
+
+  const priceAttempt = await request(`/api/clients/${client.cid}`, {
+    method: 'PUT', headers: { Cookie: subAdminCookie },
+    body: { agreed_purchase_price: 1, reason: 'Illegal money edit' }
+  });
+  assert(priceAttempt.status === 403, 'Sub Admin must not edit client money fields');
+  const planAttempt = await request(`/api/installments/${db.prepare('SELECT id FROM payment_schedules LIMIT 1').get().id}`, {
+    method: 'PUT', headers: { Cookie: subAdminCookie }, body: { installment_amount: 1 }
+  });
+  assert(planAttempt.status === 403, 'Sub Admin must not edit a client payment plan');
+
+  const historical = db.prepare(`INSERT INTO payments
+    (client_id, transaction_ref, amount, amount_kobo, currency, method, status, verified_at, is_demo, revenue_branch_id, revenue_staff_id, revenue_attributed_at)
+    VALUES (?, 'P28-SUBADMIN-HISTORY', 1000, 100000, 'NGN', 'Bank Transfer', 'verified', datetime('now'), 0, ?, ?, datetime('now'))`)
+    .run(client.cid, ikeja, mkt1Id);
+  const move = await request(`/api/clients/${client.cid}/assign`, {
+    method: 'POST', headers: { Cookie: subAdminCookie },
+    body: { branch_id: ajah, relationship_manager_id: null, reason: 'Client relocated to Ajah' }
+  });
+  assert(move.status === 200 && move.data.unassigned === true, 'Sub Admin branch move to unassigned failed');
+  assert(db.prepare('SELECT assigned_branch_id FROM clients WHERE id=?').get(client.cid).assigned_branch_id === ajah, 'client did not move to the new branch');
+  assert(db.prepare('SELECT revenue_branch_id FROM payments WHERE id=?').get(Number(historical.lastInsertRowid)).revenue_branch_id === ikeja, 'past payment branch snapshot was rewritten');
+  const unassigned = await request('/api/clients/unassigned', { headers: { Cookie: subAdminCookie } });
+  assert(unassigned.status === 200 && unassigned.data.clients.some(row => row.id === client.cid), 'client missing from Unassigned queue');
+});
+
+await test('Branch Manager money changes require an approved request; Finance approval applies them', async () => {
+  const client = createLoginClient({
+    ref: 'BLC-P28-BM-REQUEST', name: 'Phase 28 BM Request Client', phone: nextTestPhone(),
+    branch: ikeja, marketerId: mkt1Id, teamLeadId: tlId, price: 500000
+  });
+  const directPrice = await request(`/api/clients/${client.cid}`, {
+    method: 'PUT', headers: { Cookie: bm1Cookie },
+    body: { agreed_purchase_price: 450000, reason: 'BM direct edit attempt' }
+  });
+  assert(directPrice.status === 403, 'Branch Manager must not directly change a client price');
+  const requestRes = await request(`/api/clients/${client.cid}/financial-change-requests`, {
+    method: 'POST', headers: { Cookie: bm1Cookie },
+    body: { change_type: 'price', payload: { agreed_purchase_price: 450000 }, reason: 'Client renegotiated price' }
+  });
+  assert(requestRes.status === 200, `BM change request failed: ${requestRes.status} ${JSON.stringify(requestRes.data)}`);
+  const approve = await request(`/api/financial-change-requests/${requestRes.data.id}/approve`, {
+    method: 'POST', headers: { Cookie: finCookie }, body: {}
+  });
+  assert(approve.status === 200, `Finance approval failed: ${approve.status} ${JSON.stringify(approve.data)}`);
+  assert(Number(db.prepare('SELECT agreed_purchase_price FROM clients WHERE id=?').get(client.cid).agreed_purchase_price) === 450000, 'approved price change was not applied');
+  const approveAudit = db.prepare("SELECT * FROM audit_logs WHERE action='client.financial_change.approve' AND target_id=? ORDER BY id DESC LIMIT 1").get(String(client.cid));
+  assert(approveAudit, 'approved financial change was not audited');
+  const bmManualPayment = await request('/api/finance/payments', {
+    method: 'POST', headers: { Cookie: bm1Cookie },
+    body: { client_id: client.cid, amount: 1000, method: 'Bank Transfer' }
+  });
+  assert(bmManualPayment.status === 403, 'Branch Manager must not manually enter a payment');
+});
+
+await test('targets work for GSM, Sub Admin and owner; Accountant sees totals without rates and cannot approve money', async () => {
+  const target = await request('/api/targets', {
+    method: 'POST', headers: { Cookie: gsmCookie }, body: {
+      target_type: 'branch', target_id: ajah, metric: 'revenue', period_type: 'month',
+      period_start: new Date().toISOString().slice(0, 7) + '-01',
+      period_end: new Date().toISOString().slice(0, 10), amount: 1000000, notes: 'Phase 28 GSM target'
+    }
+  });
+  assert(target.status === 200, `GSM target creation failed: ${target.status} ${JSON.stringify(target.data)}`);
+  const list = await request('/api/targets', { headers: { Cookie: gsmCookie } });
+  assert(list.status === 200 && list.data.targets.some(row => row.notes === 'Phase 28 GSM target'), 'GSM target list missing');
+  const subTarget = await request('/api/targets', {
+    method: 'POST', headers: { Cookie: subAdminCookie }, body: {
+      target_type: 'branch', target_id: ikeja, metric: 'clients', period_type: 'month',
+      period_start: new Date().toISOString().slice(0, 7) + '-01',
+      period_end: new Date().toISOString().slice(0, 10), amount: 50, notes: 'Phase 28 Sub Admin target'
+    }
+  });
+  assert(subTarget.status === 200, 'Sub Admin target creation failed');
+  const marketerTarget = await request('/api/targets', {
+    method: 'POST', headers: { Cookie: mkt1Cookie }, body: {
+      target_type: 'branch', target_id: ikeja, metric: 'clients', period_type: 'month',
+      period_start: new Date().toISOString().slice(0, 7) + '-01',
+      period_end: new Date().toISOString().slice(0, 10), amount: 10
+    }
+  });
+  assert(marketerTarget.status === 403, 'Marketer must not set targets');
+
+  const earnings = await request('/api/accountant/earnings', { headers: { Cookie: accountantCookie } });
+  assert(earnings.status === 200, `Accountant earnings failed: ${earnings.status} ${JSON.stringify(earnings.data)}`);
+  assert(Array.isArray(earnings.data.payments), 'Accountant payment list missing');
+  assert(earnings.data.commission && Array.isArray(earnings.data.commission.rows), 'Accountant commission totals missing');
+  assert(JSON.stringify(earnings.data.commission).indexOf('rate_bps') === -1 && JSON.stringify(earnings.data.commission).indexOf('stage1') === -1, 'Accountant commission totals leaked rates');
+  const csv = await request('/api/accountant/export', { headers: { Cookie: accountantCookie } });
+  assert(csv.status === 200 && /text\/csv/.test(csv.headers.get('content-type') || ''), 'Accountant CSV export failed');
+  const paymentId = db.prepare('SELECT id FROM payments LIMIT 1').get().id;
+  const verifyAttempt = await request(`/api/finance/payments/${paymentId}/verify`, {
+    method: 'POST', headers: { Cookie: accountantCookie }, body: {}
+  });
+  assert(verifyAttempt.status === 403, 'Accountant must not verify payments');
+  const rulesAttempt = await request('/api/commission-plans', { headers: { Cookie: accountantCookie } });
+  assert(rulesAttempt.status === 403, 'Accountant must not see commission rates');
+});
+
 console.log('\n--- 13. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
@@ -2842,12 +3030,12 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 27, `expected 27 migrations, found ${files.length}`);
+  assert(files.length === 28, `expected 28 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }
   const tables = clean.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
-  assert(tables.length >= 47, `expected at least 47 tables, found ${tables.length}`);
+  assert(tables.length >= 51, `expected at least 51 tables, found ${tables.length}`);
   const integrity = clean.prepare('PRAGMA integrity_check').get();
   assert(Object.values(integrity)[0] === 'ok', 'clean migration database integrity check failed');
   const fk = clean.prepare('PRAGMA foreign_key_check').all();

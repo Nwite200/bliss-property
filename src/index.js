@@ -1227,7 +1227,7 @@ function canResetClientPassword(actor, client) {
 
 function canChangeClientPhone(actor, client) {
   const actual = actor.actual_role_name || actor.role_name;
-  if (["Super Admin", "Managing Director"].includes(actual)) return true;
+  if (["Super Admin", "Managing Director", "Sub Admin"].includes(actual)) return true;
   if (actual === "Customer Care") {
     if (String(actor.care_scope || "branch").toLowerCase() === "national") return true;
     return Number(actor.branch_id) === Number(client.assigned_branch_id);
@@ -1511,6 +1511,80 @@ function canManagePropertyRecord(actor, property) {
   return false;
 }
 
+function isOwnerAuthority(actor) {
+  if (!actor) return false;
+  const actual = actor.actual_role_name || actor.role_name;
+  return actual === "Managing Director" || actual === "Super Admin" || actor.role_name === "Managing Director";
+}
+
+async function getEffectivePermissions(env, actor) {
+  if (!actor) return {};
+  if (isOwnerAuthority(actor)) return { __all__: "national" };
+  const map = {};
+  const { results: roleRows } = await env.DB.prepare(`
+    SELECT p.name, rp.scope FROM role_permissions rp
+    JOIN permissions p ON p.id=rp.permission_id
+    WHERE rp.role_id=?
+  `).bind(actor.role_id).all();
+  for (const row of roleRows || []) map[row.name] = row.scope || "national";
+  const { results: userRows } = await env.DB.prepare(`
+    SELECT permission_name, scope FROM user_permissions
+    WHERE user_id=? AND revoked_at IS NULL
+  `).bind(actor.id).all();
+  for (const row of userRows || []) {
+    if (map[row.permission_name] !== "national") map[row.permission_name] = row.scope || "national";
+  }
+  return map;
+}
+
+async function hasPermission(env, actor, permission) {
+  if (!actor) return false;
+  if (isOwnerAuthority(actor)) return true;
+  if (Number(actor.commission_access || 0) === 1 &&
+      (permission === "commission.totals.view" || permission === "commission.rules.view" ||
+       permission === "commission.rules.manage" || permission.startsWith("commission.entries.") ||
+       permission === "referral.commission.manage")) {
+    return true;
+  }
+  const permissions = await getEffectivePermissions(env, actor);
+  return Boolean(permissions[permission]);
+}
+
+function permissionScopeAllows(actor, permissionScope, targetBranchId) {
+  if (!permissionScope) return false;
+  if (isOwnerAuthority(actor)) return true;
+  if (permissionScope === "national") return true;
+  if (permissionScope === "branch") {
+    return targetBranchId !== undefined && targetBranchId !== null
+      ? Number(actor.branch_id) === Number(targetBranchId)
+      : true;
+  }
+  return false;
+}
+
+const FINANCIAL_APPROVAL_CATALOG = [
+  { key: "manual_payment", label: "Manually record or credit a client payment", method: "POST", endpoint: "/api/finance/payments", permission: "finance.payments.record" },
+  { key: "verify_payment", label: "Verify a pending payment and release credit", method: "POST", endpoint: "/api/finance/payments/:id/verify", permission: "finance.payments.verify" },
+  { key: "fail_payment", label: "Mark a pending payment failed", method: "POST", endpoint: "/api/finance/payments/:id/fail", permission: "finance.payments.verify" },
+  { key: "adjust_payment", label: "Refund or reverse a verified payment", method: "POST", endpoint: "/api/finance/payments/:id/adjust", permission: "finance.payments.adjust" },
+  { key: "generate_commission", label: "Generate commission entries", method: "POST", endpoint: "/api/commissions/generate", permission: "commission.entries.generate" },
+  { key: "submit_commission", label: "Submit commission for approval", method: "POST", endpoint: "/api/commissions/:id/submit", permission: "commission.entries.generate" },
+  { key: "review_commission", label: "Approve or reject commission", method: "POST", endpoint: "/api/commissions/:id/approve|reject", permission: "commission.entries.approve" },
+  { key: "pay_commission", label: "Pay out commission", method: "POST", endpoint: "/api/commissions/:id/payments", permission: "commission.entries.pay" },
+  { key: "adjust_commission", label: "Adjust commission", method: "POST", endpoint: "/api/commissions/:id/adjustments", permission: "commission.entries.adjust" },
+  { key: "referral_commission", label: "Recalculate, pay or adjust referral commission", method: "POST", endpoint: "/api/referral-commissions/:id/recalculate|payments|adjustments", permission: "referral.commission.manage" },
+  { key: "referral_backfill", label: "Backfill referral commissions", method: "POST", endpoint: "/api/referral-commissions/backfill", permission: "referral.commission.manage" },
+  { key: "commission_rules", label: "Create or edit commission plans and rates", method: "POST/PUT", endpoint: "/api/commission-plans", permission: "commission.rules.manage" },
+  { key: "client_price", label: "Change client agreed price, property or sale type", method: "PUT", endpoint: "/api/clients/:id", permission: "clients.financial.edit" },
+  { key: "client_plan", label: "Create or edit a client payment plan/schedule after purchase", method: "POST/PUT", endpoint: "/api/installments", permission: "clients.financial.edit" },
+  { key: "client_balance", label: "Top up, waive or change a client balance", method: "POST", endpoint: "/api/clients/:id/financial-change-requests", permission: "finance.approvals.perform" },
+  { key: "property_price", label: "Create or update a property sale price", method: "POST/PUT", endpoint: "/api/properties", permission: "properties.manage" },
+  { key: "property_plans", label: "Create or update property payment plans", method: "PUT", endpoint: "/api/properties/:id/payment-plans", permission: "properties.manage" },
+  { key: "listing_approval", label: "Approve a property listing", method: "POST", endpoint: "/api/properties/:id/approve", permission: "properties.listing.approve" },
+  { key: "provider_config", label: "Change payment provider config or default provider", method: "POST", endpoint: "/api/finance/providers|provider-config", permission: "finance.providers.manage" },
+  { key: "reconciliation", label: "Run payment reconciliation and change payment status", method: "POST", endpoint: "/api/finance/reconciliation", permission: "finance.reconciliation.run" }
+];
+
 async function getAppSetting(env, key, fallback = null) {
   const row = await env.DB.prepare("SELECT setting_value FROM app_settings WHERE setting_key=?").bind(key).first();
   return row && row.setting_value !== null && row.setting_value !== undefined ? row.setting_value : fallback;
@@ -1769,7 +1843,7 @@ function canViewOwnCommission(actor) {
 function canViewReferralCommissions(actor) {
   if (!actor) return false;
   const actualRole = actor.actual_role_name || actor.role_name;
-  if (["Managing Director", "Super Admin", "Head Accountant", "Finance Officer", "Branch Manager", "Project Manager", "Team Lead", "Marketer"].includes(actualRole)) return true;
+  if (["Managing Director", "Super Admin", "Head Accountant", "Finance Officer", "Branch Manager", "Project Manager", "Team Lead", "Marketer", "Sub Admin", "GSM", "Accountant"].includes(actualRole)) return true;
   return Number(actor.commission_access || 0) === 1;
 }
 
@@ -2433,6 +2507,9 @@ function referralCommissionScopeSql(scope, alias = "a") {
   if (["Managing Director", "Super Admin", "Head Accountant", "Finance Officer"].includes(actualRole)) {
     return { clause: "1=1", binds: [] };
   }
+  if (["Sub Admin", "GSM", "Accountant"].includes(actualRole)) {
+    return { clause: "1=1", binds: [] };
+  }
   if (["Branch Manager", "Project Manager"].includes(actualRole)) {
     return { clause: `${alias}.branch_id = ?`, binds: [scope.branchId] };
   }
@@ -2448,6 +2525,9 @@ function referralCommissionScopeSql(scope, alias = "a") {
 
 function commissionScopeSql(scope, alias = "ce") {
   if (scope.commissionAccess) return { clause: "1=1", binds: [] };
+  if (["Sub Admin", "GSM", "Accountant"].includes(scope.actualRole || scope.role)) {
+    return { clause: "1=1", binds: [] };
+  }
   if (["Marketer", "Team Lead", "Project Manager", "Branch Manager"].includes(scope.actualRole || scope.role)) {
     return { clause: `${alias}.recipient_user_id = ?`, binds: [scope.actorId] };
   }
@@ -6224,6 +6304,416 @@ async function handleFetch(request, env) {
       }
     }
 
+    // =========================================================================
+    // CONFIGURABLE PERMISSIONS
+    // =========================================================================
+    if (path === "/api/permissions/catalog" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isOwnerAuthority(actor)) return json({ error: "Only the MD/Super Admin can view the permission matrix" }, 403);
+      const { results: permissions } = await env.DB.prepare("SELECT id, name FROM permissions ORDER BY name").all();
+      const { results: roles } = await env.DB.prepare("SELECT id, name FROM roles ORDER BY id").all();
+      const { results: roleGrants } = await env.DB.prepare(`
+        SELECT rp.role_id, p.name AS permission_name, rp.scope
+        FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+        ORDER BY rp.role_id, p.name
+      `).all();
+      const { results: users } = await env.DB.prepare(`
+        SELECT u.id, u.full_name, u.email, r.name AS role_name, u.branch_id, b.name AS branch_name
+        FROM users u JOIN roles r ON r.id=u.role_id LEFT JOIN branches b ON b.id=u.branch_id
+        ORDER BY u.id
+      `).all();
+      const { results: userGrants } = await env.DB.prepare(`
+        SELECT user_id, permission_name, scope, created_at
+        FROM user_permissions WHERE revoked_at IS NULL ORDER BY user_id, permission_name
+      `).all();
+      return json({ permissions, roles, role_grants: roleGrants, users, user_grants: userGrants });
+    }
+
+    if (path === "/api/permissions/effective" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const userId = Number(url.searchParams.get("user_id") || actor.id);
+      if (!isOwnerAuthority(actor) && userId !== Number(actor.id)) {
+        return json({ error: "You can only view your own effective permissions" }, 403);
+      }
+      const target = await env.DB.prepare(`
+        SELECT u.id, u.full_name, u.email, u.role_id, u.branch_id, r.name AS role_name
+        FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?
+      `).bind(userId).first();
+      if (!target) return json({ error: "User not found" }, 404);
+      const permissions = isOwnerAuthority(target)
+        ? { __all__: "national" }
+        : await getEffectivePermissions(env, target);
+      return json({
+        user: target,
+        is_owner_authority: isOwnerAuthority(target),
+        permissions: Object.entries(permissions).map(([name, scope]) => ({ permission: name, scope }))
+      });
+    }
+
+    if (path === "/api/permissions/history" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isOwnerAuthority(actor)) return json({ error: "Only the MD/Super Admin can view permission history" }, 403);
+      const { results } = await env.DB.prepare(`
+        SELECT l.*, u.full_name AS actor_name
+        FROM permission_change_log l LEFT JOIN users u ON u.id=l.actor_user_id
+        ORDER BY l.id DESC LIMIT 200
+      `).all();
+      return json({ history: results });
+    }
+
+    if ((path === "/api/permissions/grant" || path === "/api/permissions/revoke") && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isOwnerAuthority(actor)) return json({ error: "Only the MD/Super Admin can change permissions" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const targetType = String(body.target_type || "").trim();
+      const targetId = Number(body.target_id);
+      const permissionName = String(body.permission_name || "").trim();
+      const scope = String(body.scope || "national").trim().toLowerCase();
+      const reason = String(body.reason || "").trim();
+      if (!["role", "user"].includes(targetType)) return json({ error: "Target type must be role or user" }, 400);
+      if (!Number.isInteger(targetId) || targetId <= 0) return json({ error: "Target id is required" }, 400);
+      if (!permissionName) return json({ error: "Permission name is required" }, 400);
+      if (!["national", "branch"].includes(scope)) return json({ error: "Scope must be national or branch" }, 400);
+      if (!reason) return json({ error: "A reason is required for every permission change" }, 400);
+      const permission = await env.DB.prepare("SELECT id FROM permissions WHERE name=?").bind(permissionName).first();
+      if (!permission) return json({ error: "Unknown permission" }, 400);
+      const action = path.endsWith("/grant") ? "grant" : "revoke";
+
+      if (targetType === "role") {
+        const role = await env.DB.prepare("SELECT id, name FROM roles WHERE id=?").bind(targetId).first();
+        if (!role) return json({ error: "Role not found" }, 404);
+        if (action === "revoke" && ["Managing Director", "Super Admin"].includes(role.name)) {
+          return json({ error: "The owner role cannot be reduced" }, 403);
+        }
+        if (action === "grant") {
+          await env.DB.prepare(`
+            INSERT INTO role_permissions (role_id, permission_id, scope) VALUES (?, ?, ?)
+            ON CONFLICT(role_id, permission_id) DO UPDATE SET scope=excluded.scope
+          `).bind(role.id, permission.id, scope).run();
+        } else {
+          await env.DB.prepare("DELETE FROM role_permissions WHERE role_id=? AND permission_id=?")
+            .bind(role.id, permission.id).run();
+        }
+      } else {
+        const target = await env.DB.prepare(`
+          SELECT u.id, u.full_name, u.role_id, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?
+        `).bind(targetId).first();
+        if (!target) return json({ error: "User not found" }, 404);
+        if (action === "revoke" && ["Managing Director", "Super Admin"].includes(target.role_name)) {
+          return json({ error: "The owner account cannot be reduced" }, 403);
+        }
+        if (action === "grant") {
+          await env.DB.prepare(`
+            INSERT INTO user_permissions (user_id, permission_name, scope, granted_by, reason)
+            VALUES (?, ?, ?, ?, ?)
+          `).bind(target.id, permissionName, scope, actor.id, reason).run();
+        } else {
+          await env.DB.prepare(`
+            UPDATE user_permissions SET revoked_at=datetime('now'), revoked_by=?, revoke_reason=?
+            WHERE user_id=? AND permission_name=? AND revoked_at IS NULL
+          `).bind(actor.id, reason, target.id, permissionName).run();
+        }
+      }
+      await env.DB.prepare(`
+        INSERT INTO permission_change_log (actor_user_id, target_type, target_id, permission_name, action, scope, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(actor.id, targetType, targetId, permissionName, action, scope, reason).run();
+      await audit(env, actor.id, `permission.${action}`, targetType, String(targetId), {
+        permission: permissionName, scope, reason
+      }, null);
+      return json({ ok: true, action, permission: permissionName, scope });
+    }
+
+    if (path === "/api/financial-approvals" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!await hasPermission(env, actor, "finance.approvals.view")) {
+        return json({ error: "Financial approval visibility is not permitted" }, 403);
+      }
+      const canPerform = await hasPermission(env, actor, "finance.approvals.perform");
+      const { results: pendingPayments } = await env.DB.prepare(`
+        SELECT p.id, p.transaction_ref, p.amount_kobo, p.provider, p.created_at, c.full_name AS client_name,
+               c.client_reference, b.name AS branch_name
+        FROM payments p JOIN clients c ON c.id=p.client_id LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        WHERE p.status='pending' AND p.is_demo=0 ORDER BY p.id DESC LIMIT 50
+      `).all();
+      const { results: pendingCommissions } = await env.DB.prepare(`
+        SELECT ce.id, ce.commission_ref, ce.commission_kobo, ce.status, ce.created_at,
+               u.full_name AS recipient_name, c.full_name AS client_name
+        FROM commission_entries ce JOIN users u ON u.id=ce.recipient_user_id
+        JOIN clients c ON c.id=ce.client_id
+        WHERE ce.status='Pending Approval' ORDER BY ce.id DESC LIMIT 50
+      `).all();
+      const { results: pendingRequests } = await env.DB.prepare(`
+        SELECT r.*, c.full_name AS client_name, c.client_reference, u.full_name AS requested_by_name
+        FROM client_financial_change_requests r JOIN clients c ON c.id=r.client_id
+        LEFT JOIN users u ON u.id=r.requested_by
+        WHERE r.status='pending' ORDER BY r.id DESC LIMIT 50
+      `).all();
+      const { results: pendingListings } = await env.DB.prepare(`
+        SELECT id, reference, title, workflow_status, branch_id, created_at
+        FROM properties WHERE workflow_status='pending_approval' AND is_archived=0 ORDER BY id DESC LIMIT 50
+      `).all();
+      return json({
+        catalog: FINANCIAL_APPROVAL_CATALOG.map(item => ({ ...item, can_perform: canPerform })),
+        read_only: !canPerform,
+        pending: {
+          payments: pendingPayments,
+          commissions: pendingCommissions,
+          client_change_requests: pendingRequests,
+          property_listings: pendingListings
+        }
+      });
+    }
+
+    if (path === "/api/accountant/earnings" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!await hasPermission(env, actor, "finance.records.view")) return json({ error: "Financial records permission is required" }, 403);
+      const from = dateOnly(url.searchParams.get("from")) || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+      const to = dateOnly(url.searchParams.get("to")) || todayOnly();
+      const branchId = url.searchParams.get("branch_id") ? Number(url.searchParams.get("branch_id")) : null;
+      const branchClause = branchId ? " AND c.assigned_branch_id=?" : "";
+      const branchBinds = branchId ? [branchId] : [];
+      const { results: payments } = await env.DB.prepare(`
+        SELECT p.id, p.transaction_ref, p.amount_kobo, p.currency, p.method, p.status, p.provider,
+               p.provider_reference, p.payment_mode, p.verified_at, p.created_at,
+               c.full_name AS client_name, c.client_reference, c.assigned_branch_id,
+               b.name AS branch_name, m.full_name AS marketer_name, a.full_name AS assignee_name,
+               prop.title AS property_title, prop.reference AS property_reference
+        FROM payments p
+        JOIN clients c ON c.id=p.client_id
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        LEFT JOIN users m ON m.id=c.original_marketer_id
+        LEFT JOIN users a ON a.id=(SELECT ca.relationship_manager_id FROM client_assignments ca
+          WHERE ca.client_id=c.id AND ca.is_primary=1 ORDER BY ca.assigned_at DESC LIMIT 1)
+        LEFT JOIN properties prop ON prop.id=p.property_id
+        WHERE p.is_demo=0 AND date(p.created_at) BETWEEN date(?) AND date(?)${branchClause}
+        ORDER BY p.id DESC LIMIT 5000
+      `).bind(from, to, ...branchBinds).all();
+      const rows = (payments || []).map(payment => ({
+        ...payment,
+        gross_kobo: Number(payment.amount_kobo || 0),
+        fees_kobo: 0,
+        stamp_duty_kobo: 0,
+        net_settled_kobo: Number(payment.amount_kobo || 0),
+        fees_captured: false
+      }));
+      const verified = rows.filter(row => row.status === "verified");
+      const pending = rows.filter(row => row.status === "pending");
+      const reversed = rows.filter(row => ["reversed", "refunded"].includes(row.status));
+      const totalVerified = verified.reduce((sum, row) => sum + row.net_settled_kobo, 0);
+      const totalPending = pending.reduce((sum, row) => sum + row.gross_kobo, 0);
+      const totalReversed = reversed.reduce((sum, row) => sum + row.gross_kobo, 0);
+      const { results: branchRows } = await env.DB.prepare(`
+        SELECT b.id, b.name,
+          COALESCE(SUM(CASE WHEN p.status='verified' THEN p.amount_kobo ELSE 0 END),0) AS collected_kobo,
+          COALESCE(SUM(CASE WHEN p.status='pending' THEN p.amount_kobo ELSE 0 END),0) AS pending_kobo,
+          COALESCE(SUM(CASE WHEN p.status IN ('reversed','refunded') THEN p.amount_kobo ELSE 0 END),0) AS reversed_kobo,
+          COALESCE(SUM(CASE WHEN p.status='verified' THEN p.amount_kobo ELSE 0 END),0) AS expected_kobo
+        FROM branches b
+        LEFT JOIN clients c ON c.assigned_branch_id=b.id AND c.is_deleted=0
+        LEFT JOIN payments p ON p.client_id=c.id AND p.is_demo=0 AND date(p.created_at) BETWEEN date(?) AND date(?)
+        GROUP BY b.id, b.name ORDER BY b.name
+      `).bind(from, to).all();
+      const { results: outstandingRows } = await env.DB.prepare(`
+        SELECT COALESCE(SUM(MAX(0, COALESCE(c.agreed_purchase_price,0) - (
+          SELECT COALESCE(SUM(p.amount_kobo),0) FROM payments p
+          WHERE p.client_id=c.id AND p.status='verified' AND p.is_demo=0
+        ))),0) AS outstanding_kobo
+        FROM clients c WHERE c.is_deleted=0
+      `).first();
+      const { results: commissionRows } = await env.DB.prepare(`
+        SELECT COALESCE(u.full_name,'Unassigned') AS marketer_name,
+          COALESCE(SUM(CASE WHEN a.status='Configuration Required' THEN 0 ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo) END),0) AS earned_kobo,
+          COALESCE(SUM(a.paid_kobo),0) AS paid_kobo,
+          COALESCE(SUM(CASE WHEN a.status='Configuration Required' THEN 0 ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo - a.paid_kobo) END),0) AS outstanding_kobo
+        FROM referral_commission_accounts a LEFT JOIN users u ON u.id=a.marketer_id
+        GROUP BY u.full_name ORDER BY earned_kobo DESC
+      `).all();
+      const canSeeCommission = await hasPermission(env, actor, "commission.totals.view");
+      const branchComparison = (branchRows || []).map(row => ({
+        branch_id: row.id,
+        branch_name: row.name,
+        collected_kobo: Number(row.collected_kobo || 0),
+        pending_kobo: Number(row.pending_kobo || 0),
+        reversed_kobo: Number(row.reversed_kobo || 0),
+        expected_kobo: Number(row.expected_kobo || 0),
+        difference_kobo: Number(row.expected_kobo || 0) - Number(row.collected_kobo || 0)
+      }));
+      return json({
+        period: { from, to },
+        payments: rows,
+        summary: {
+          total_payments: rows.length,
+          verified_count: verified.length,
+          pending_count: pending.length,
+          reversed_count: reversed.length,
+          collected_kobo: totalVerified,
+          pending_kobo: totalPending,
+          reversed_kobo: totalReversed,
+          outstanding_kobo: Number(outstandingRows ? outstandingRows.outstanding_kobo : 0),
+          fees_captured: false,
+          settlement_difference_kobo: 0
+        },
+        branch_comparison: branchComparison,
+        ...(canSeeCommission ? {
+          commission: {
+            rows: (commissionRows || []).map(row => ({
+              marketer_name: row.marketer_name,
+              earned_kobo: Number(row.earned_kobo || 0),
+              paid_kobo: Number(row.paid_kobo || 0),
+              outstanding_kobo: Number(row.outstanding_kobo || 0)
+            })),
+            total_earned_kobo: (commissionRows || []).reduce((s, r) => s + Number(r.earned_kobo || 0), 0),
+            total_paid_kobo: (commissionRows || []).reduce((s, r) => s + Number(r.paid_kobo || 0), 0),
+            total_outstanding_kobo: (commissionRows || []).reduce((s, r) => s + Number(r.outstanding_kobo || 0), 0)
+          }
+        } : {})
+      });
+    }
+
+    if (path === "/api/accountant/export" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!await hasPermission(env, actor, "finance.payments.export")) return json({ error: "Payment export permission is required" }, 403);
+      const from = dateOnly(url.searchParams.get("from")) || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+      const to = dateOnly(url.searchParams.get("to")) || todayOnly();
+      const { results } = await env.DB.prepare(`
+        SELECT p.transaction_ref, c.client_reference, c.full_name AS client_name,
+               prop.reference AS property_reference, p.amount_kobo, p.currency, p.method, p.status,
+               p.provider, p.provider_reference, p.verified_at, p.created_at, b.name AS branch_name,
+               m.full_name AS marketer_name
+        FROM payments p JOIN clients c ON c.id=p.client_id
+        LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        LEFT JOIN users m ON m.id=c.original_marketer_id
+        LEFT JOIN properties prop ON prop.id=p.property_id
+        WHERE p.is_demo=0 AND date(p.created_at) BETWEEN date(?) AND date(?)
+        ORDER BY p.id DESC
+      `).bind(from, to).all();
+      const escape = value => `"${String(value === undefined || value === null ? "" : value).replace(/"/g, '""')}"`;
+      const lines = [
+        ["Reference", "Client Ref", "Client", "Property", "Gross NGN", "Currency", "Method", "Status", "Provider", "Provider Ref", "Branch", "Marketer", "Verified", "Created"].map(escape).join(",")
+      ];
+      for (const row of results || []) {
+        lines.push([
+          row.transaction_ref, row.client_reference, row.client_name, row.property_reference,
+          Number(row.amount_kobo || 0) / 100, row.currency, row.method, row.status, row.provider,
+          row.provider_reference, row.branch_name, row.marketer_name, row.verified_at, row.created_at
+        ].map(escape).join(","));
+      }
+      return new Response(lines.join("\n"), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="accountant-payments-${from}-to-${to}.csv"`,
+          "Cache-Control": "private, no-store"
+        }
+      });
+    }
+
+    if (path === "/api/accountant/statement" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!await hasPermission(env, actor, "finance.records.view")) return json({ error: "Financial records permission is required" }, 403);
+      const branchId = url.searchParams.get("branch_id") ? Number(url.searchParams.get("branch_id")) : null;
+      const from = dateOnly(url.searchParams.get("from")) || todayOnly();
+      const to = dateOnly(url.searchParams.get("to")) || todayOnly();
+      if (!branchId) return json({ error: "Branch is required for a branch statement" }, 400);
+      const branch = await env.DB.prepare("SELECT id, name FROM branches WHERE id=?").bind(branchId).first();
+      if (!branch) return json({ error: "Branch not found" }, 404);
+      const { results: payments } = await env.DB.prepare(`
+        SELECT p.transaction_ref, p.amount_kobo, p.status, p.verified_at, p.created_at,
+               c.full_name AS client_name, c.client_reference
+        FROM payments p JOIN clients c ON c.id=p.client_id
+        WHERE c.assigned_branch_id=? AND p.is_demo=0 AND date(p.created_at) BETWEEN date(?) AND date(?)
+        ORDER BY p.id DESC
+      `).bind(branchId, from, to).all();
+      const collected = (payments || []).filter(p => p.status === "verified").reduce((s, p) => s + Number(p.amount_kobo || 0), 0);
+      return json({
+        branch,
+        period: { from, to },
+        payments: payments || [],
+        collected_kobo: collected,
+        generated_at: new Date().toISOString()
+      });
+    }
+
+    if (path === "/api/targets" && (request.method === "GET" || request.method === "POST")) {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!await hasPermission(env, actor, "targets.manage")) return json({ error: "Targets permission is required" }, 403);
+      if (request.method === "GET") {
+        const { results } = await env.DB.prepare(`
+          SELECT t.*, u.full_name AS created_by_name, b.name AS branch_name
+          FROM targets t LEFT JOIN users u ON u.id=t.created_by
+          LEFT JOIN branches b ON b.id=t.target_id AND t.target_type='branch'
+          ORDER BY t.period_start DESC, t.id DESC LIMIT 500
+        `).all();
+        return json({ targets: results });
+      }
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const targetType = String(body.target_type || "branch").trim();
+      const targetId = body.target_id ? Number(body.target_id) : null;
+      const metric = String(body.metric || "revenue").trim();
+      const periodType = String(body.period_type || "month").trim();
+      const periodStart = dateOnly(body.period_start);
+      const periodEnd = dateOnly(body.period_end);
+      const amountKobo = toKobo(body.amount || 0);
+      if (!["branch", "staff", "role"].includes(targetType)) return json({ error: "Invalid target type" }, 400);
+      if (!["revenue", "clients", "leads", "collections"].includes(metric)) return json({ error: "Invalid target metric" }, 400);
+      if (!["day", "week", "month", "quarter", "year", "custom"].includes(periodType)) return json({ error: "Invalid target period" }, 400);
+      if (!periodStart || !periodEnd || periodStart > periodEnd) return json({ error: "Valid target period is required" }, 400);
+      if (!Number.isInteger(amountKobo) || amountKobo <= 0) return json({ error: "Target amount must be positive" }, 400);
+      if (!isOwnerAuthority(actor) && actor.role_name === "Branch Manager" && targetType === "branch" && Number(targetId) !== Number(actor.branch_id)) {
+        return json({ error: "Cross-branch forbidden" }, 403);
+      }
+      const res = await env.DB.prepare(`
+        INSERT INTO targets (target_type, target_id, metric, period_type, period_start, period_end, amount_kobo, notes, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(targetType, targetId, metric, periodType, periodStart, periodEnd, amountKobo,
+        String(body.notes || "").slice(0, 1000) || null, actor.id).run();
+      await audit(env, actor.id, "target.create", "target", String(res.meta.last_row_id), {
+        target_type: targetType, target_id: targetId, metric, period_type: periodType,
+        period_start: periodStart, period_end: periodEnd, amount_kobo: amountKobo
+      }, targetType === "branch" ? targetId : null);
+      return json({ ok: true, id: res.meta.last_row_id });
+    }
+
+    const targetMatch = path.match(/^\/api\/targets\/(\d+)$/);
+    if (targetMatch && (request.method === "PUT" || request.method === "DELETE")) {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!await hasPermission(env, actor, "targets.manage")) return json({ error: "Targets permission is required" }, 403);
+      const target = await env.DB.prepare("SELECT * FROM targets WHERE id=?").bind(targetMatch[1]).first();
+      if (!target) return json({ error: "Target not found" }, 404);
+      if (request.method === "DELETE") {
+        await env.DB.prepare("DELETE FROM targets WHERE id=?").bind(target.id).run();
+        await audit(env, actor.id, "target.delete", "target", String(target.id), { previous: target }, null);
+        return json({ ok: true });
+      }
+      const body = await request.json().catch(() => ({}));
+      const amountKobo = body.amount !== undefined ? toKobo(body.amount) : Number(target.amount_kobo || 0);
+      if (!Number.isInteger(amountKobo) || amountKobo <= 0) return json({ error: "Target amount must be positive" }, 400);
+      await env.DB.prepare(`
+        UPDATE targets SET amount_kobo=?, notes=?, period_start=?, period_end=?, period_type=?, metric=?, updated_at=datetime('now')
+        WHERE id=?
+      `).bind(amountKobo, body.notes !== undefined ? String(body.notes || "").slice(0, 1000) : target.notes,
+        dateOnly(body.period_start) || target.period_start, dateOnly(body.period_end) || target.period_end,
+        body.period_type || target.period_type, body.metric || target.metric, target.id).run();
+      await audit(env, actor.id, "target.update", "target", String(target.id), {
+        before: target, amount_kobo: amountKobo
+      }, target.target_type === "branch" ? target.target_id : null);
+      return json({ ok: true });
+    }
+
     if (path === "/api/admin/app-settings" && (request.method === "GET" || request.method === "PUT")) {
       const auth = await adminActor("settings.manage");
       if (auth.error) return auth.error;
@@ -6941,7 +7431,7 @@ async function handleFetch(request, env) {
     if (path === "/api/users" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager", "Finance Officer", "Team Lead", "Marketer"].includes(actor.role_name)) {
+      if (!["Managing Director", "Sub Admin", "GSM", "Branch Manager", "Finance Officer", "Team Lead", "Marketer"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
       }
       let role = url.searchParams.get("role");
@@ -7863,7 +8353,7 @@ async function handleFetch(request, env) {
     // =========================================================================
     function clientScope(actor) {
       const role = actor.role_name;
-      if (role === "Managing Director" || role === "Finance Officer") return { clause: "", binds: [] };
+      if (role === "Managing Director" || role === "Finance Officer" || role === "Sub Admin" || role === "Accountant") return { clause: "", binds: [] };
       if (role === "Customer Care") return careScopeSql(actor, "c");
       if (role === "Branch Manager") return { clause: "c.assigned_branch_id = ?", binds: [actor.branch_id] };
       if (role === "Team Lead") return { clause: "(c.team_lead_id = ? OR c.original_marketer_id = ? OR c.created_by = ? OR c.referred_by_staff_id = ?)", binds: [actor.id, actor.id, actor.id, actor.id] };
@@ -7886,6 +8376,7 @@ async function handleFetch(request, env) {
     function canManageClient(actor, client) {
       const role = actor.role_name;
       if (role === "Managing Director") return true;
+      if (role === "Sub Admin" || role === "Accountant") return true;
       if (role === "Customer Care") {
         if (String(actor.care_scope || "branch").toLowerCase() === "national") return true;
         return Number(client.assigned_branch_id) === Number(actor.branch_id);
@@ -8203,6 +8694,153 @@ async function handleFetch(request, env) {
     }
 
 
+    if (path === "/api/clients/unassigned" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!await hasPermission(env, actor, "clients.assign")) return json({ error: "Forbidden" }, 403);
+      const branchFilter = !isOwnerAuthority(actor) && actor.role_name === "Branch Manager"
+        ? " AND c.assigned_branch_id=?" : "";
+      const stmt = env.DB.prepare(`
+        SELECT c.id, c.client_reference, c.full_name, c.phone_number, c.assigned_branch_id,
+               b.name AS branch_name,
+               (SELECT ca.relationship_manager_id FROM client_assignments ca
+                 WHERE ca.client_id=c.id AND ca.is_primary=1 ORDER BY ca.assigned_at DESC LIMIT 1) AS relationship_manager_id
+        FROM clients c LEFT JOIN branches b ON b.id=c.assigned_branch_id
+        WHERE c.is_deleted=0${branchFilter}
+          AND NOT EXISTS (
+            SELECT 1 FROM client_assignments ca
+            WHERE ca.client_id=c.id AND ca.is_primary=1 AND ca.relationship_manager_id IS NOT NULL
+          )
+        ORDER BY c.id DESC LIMIT 200
+      `);
+      const { results } = branchFilter ? await stmt.bind(actor.branch_id).all() : await stmt.all();
+      return json({ clients: results });
+    }
+
+    const financialChangeRequestMatch = path.match(/^\/api\/clients\/(\d+)\/financial-change-requests$/);
+    if (financialChangeRequestMatch) {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const client = await env.DB.prepare("SELECT id, full_name, client_reference, assigned_branch_id, agreed_purchase_price FROM clients WHERE id=? AND is_deleted=0")
+        .bind(financialChangeRequestMatch[1]).first();
+      if (!client) return json({ error: "Client not found" }, 404);
+      if (!canManageClient(actor, client)) return json({ error: "Forbidden" }, 403);
+      if (request.method === "GET") {
+        if (!await hasPermission(env, actor, "finance.records.view") && !await hasPermission(env, actor, "clients.financial.edit")) {
+          return json({ error: "Forbidden" }, 403);
+        }
+        const { results } = await env.DB.prepare(`
+          SELECT r.*, u.full_name AS requested_by_name, a.full_name AS approved_by_name
+          FROM client_financial_change_requests r
+          LEFT JOIN users u ON u.id=r.requested_by
+          LEFT JOIN users a ON a.id=r.approved_by
+          WHERE r.client_id=? ORDER BY r.id DESC
+        `).bind(client.id).all();
+        return json({ requests: results });
+      }
+      if (request.method === "POST") {
+        if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+        if (!await hasPermission(env, actor, "clients.edit.details")) return json({ error: "Forbidden" }, 403);
+        const body = await request.json().catch(() => ({}));
+        const changeType = String(body.change_type || "").trim();
+        const reason = String(body.reason || "").trim();
+        if (!["price", "plan", "schedule", "balance"].includes(changeType)) {
+          return json({ error: "Change type must be price, plan, schedule or balance" }, 400);
+        }
+        if (!reason) return json({ error: "A reason is required for a financial change request" }, 400);
+        if (!body.payload || typeof body.payload !== "object" || Array.isArray(body.payload)) {
+          return json({ error: "A payload object is required" }, 400);
+        }
+        const res = await env.DB.prepare(`
+          INSERT INTO client_financial_change_requests (client_id, requested_by, change_type, payload_json, reason)
+          VALUES (?, ?, ?, ?, ?)
+        `).bind(client.id, actor.id, changeType, JSON.stringify(body.payload), reason).run();
+        await audit(env, actor.id, "client.financial_change.request", "client", String(client.id), {
+          request_id: res.meta.last_row_id, change_type: changeType, reason,
+          payload: body.payload
+        }, client.assigned_branch_id);
+        return json({ ok: true, id: res.meta.last_row_id, status: "pending" });
+      }
+    }
+
+    const financialChangeActionMatch = path.match(/^\/api\/financial-change-requests\/(\d+)\/(approve|reject)$/);
+    if (financialChangeActionMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!await hasPermission(env, actor, "finance.approvals.perform")) return json({ error: "Financial approval permission is required" }, 403);
+      const requestRow = await env.DB.prepare(`
+        SELECT r.*, c.full_name AS client_name, c.client_reference, c.agreed_purchase_price, c.assigned_branch_id
+        FROM client_financial_change_requests r JOIN clients c ON c.id=r.client_id
+        WHERE r.id=?
+      `).bind(financialChangeActionMatch[1]).first();
+      if (!requestRow) return json({ error: "Request not found" }, 404);
+      if (requestRow.status !== "pending") return json({ error: "Only pending requests can be reviewed" }, 409);
+      const body = await request.json().catch(() => ({}));
+      if (financialChangeActionMatch[2] === "reject") {
+        const reason = String(body.reason || "").trim();
+        if (!reason) return json({ error: "Rejection reason is required" }, 400);
+        await env.DB.prepare(`
+          UPDATE client_financial_change_requests SET status='rejected', approved_by=?, approved_at=datetime('now'),
+            rejection_reason=?, updated_at=datetime('now') WHERE id=?
+        `).bind(actor.id, reason, requestRow.id).run();
+        await audit(env, actor.id, "client.financial_change.reject", "client", String(requestRow.client_id), {
+          request_id: requestRow.id, change_type: requestRow.change_type, reason
+        }, requestRow.assigned_branch_id);
+        return json({ ok: true, status: "rejected" });
+      }
+      let payload = {};
+      try { payload = JSON.parse(requestRow.payload_json || "{}"); } catch { payload = {}; }
+      const before = { agreed_purchase_price: requestRow.agreed_purchase_price };
+      if (requestRow.change_type === "price") {
+        const price = Number(payload.agreed_purchase_price !== undefined ? payload.agreed_purchase_price : payload.price);
+        if (!Number.isFinite(price) || price < 0) return json({ error: "Valid agreed price is required" }, 400);
+        await env.DB.prepare("UPDATE clients SET agreed_purchase_price=?, updated_at=datetime('now') WHERE id=?")
+          .bind(price, requestRow.client_id).run();
+        await upsertClientPropertyAllocation(env, requestRow.client_id, payload.property_id || null, price, "Active");
+      } else if (requestRow.change_type === "balance") {
+        const amount = Number(payload.amount);
+        if (!Number.isFinite(amount) || amount === 0) return json({ error: "A non-zero balance adjustment is required" }, 400);
+        const next = Math.max(0, Number(requestRow.agreed_purchase_price || 0) + amount);
+        await env.DB.prepare("UPDATE clients SET agreed_purchase_price=?, updated_at=datetime('now') WHERE id=?")
+          .bind(next, requestRow.client_id).run();
+      } else {
+        const schedule = await env.DB.prepare(
+          "SELECT * FROM payment_schedules WHERE client_id=? ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, id DESC LIMIT 1"
+        ).bind(requestRow.client_id).first();
+        if (!schedule) return json({ error: "No payment schedule exists to change" }, 409);
+        const totalKobo = payload.total_amount !== undefined ? toKobo(payload.total_amount) : Number(schedule.total_kobo || 0);
+        const depositKobo = payload.deposit_amount !== undefined ? toKobo(payload.deposit_amount) : Number(schedule.deposit_kobo || 0);
+        const installmentKobo = payload.installment_amount !== undefined ? toKobo(payload.installment_amount) : Number(schedule.installment_kobo || 0);
+        const frequencyDays = payload.frequency_days !== undefined ? Number(payload.frequency_days) : Number(schedule.frequency_days || 30);
+        const count = payload.number_of_installments !== undefined ? Number(payload.number_of_installments) : schedule.number_of_installments;
+        const planType = normalizePlanType(payload.plan_type || schedule.plan_type, "part_payment");
+        if (!Number.isFinite(totalKobo) || totalKobo <= 0 || !Number.isFinite(installmentKobo) || installmentKobo <= 0) {
+          return json({ error: "Valid total and instalment amounts are required" }, 400);
+        }
+        await env.DB.prepare(`
+          UPDATE payment_schedules SET total_amount=?, total_kobo=?, deposit_amount=?, deposit_kobo=?,
+            installment_amount=?, installment_kobo=?, frequency_days=?, number_of_installments=?,
+            plan_type=?, updated_at=datetime('now') WHERE id=?
+        `).bind(fromKobo(totalKobo), totalKobo, fromKobo(depositKobo), depositKobo,
+          fromKobo(installmentKobo), installmentKobo, frequencyDays, count || null, planType, schedule.id).run();
+        await env.DB.prepare(`
+          UPDATE clients SET agreed_purchase_price=?, payment_plan_total_kobo=?, payment_plan_deposit_kobo=?,
+            payment_plan_installment_kobo=?, payment_plan_number_of_installments=?, payment_plan_type=?,
+            updated_at=datetime('now') WHERE id=?
+        `).bind(fromKobo(totalKobo), totalKobo, depositKobo, installmentKobo, count || null, planType, requestRow.client_id).run();
+      }
+      await env.DB.prepare(`
+        UPDATE client_financial_change_requests SET status='approved', approved_by=?, approved_at=datetime('now'),
+          updated_at=datetime('now') WHERE id=?
+      `).bind(actor.id, requestRow.id).run();
+      await audit(env, actor.id, "client.financial_change.approve", "client", String(requestRow.client_id), {
+        request_id: requestRow.id, change_type: requestRow.change_type, before, payload,
+        actor_role: actor.actual_role_name || actor.role_name
+      }, requestRow.assigned_branch_id);
+      return json({ ok: true, status: "approved" });
+    }
+
     const clientDetailMatch = path.match(/^\/api\/clients\/(\d+)$/);
     if (clientDetailMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
@@ -8316,12 +8954,32 @@ async function handleFetch(request, env) {
           AND al.action IN ('client.password_reset.admin','client.password_reset.self','client.password_reset.completed')
         ORDER BY al.id DESC LIMIT 20
       `).bind(String(client.id)).all();
+      const { results: editHistory } = await env.DB.prepare(`
+        SELECT al.id, al.action, al.created_at, al.metadata, u.full_name AS actor_name
+        FROM audit_logs al LEFT JOIN users u ON u.id=al.actor_user_id
+        WHERE al.target_type='client' AND al.target_id=?
+          AND al.action IN ('client.update','client.phone_change','client.assign','client.reassign')
+        ORDER BY al.id DESC LIMIT 100
+      `).bind(String(client.id)).all();
+      const { results: financialChangeRequests } = await env.DB.prepare(`
+        SELECT r.*, u.full_name AS requested_by_name, a.full_name AS approved_by_name
+        FROM client_financial_change_requests r
+        LEFT JOIN users u ON u.id=r.requested_by
+        LEFT JOIN users a ON a.id=r.approved_by
+        WHERE r.client_id=? ORDER BY r.id DESC LIMIT 50
+      `).bind(client.id).all();
       return json({
         client,
         properties: portfolio.properties,
         financials: portfolio.financials,
         payment_plan: paymentPlan,
         payment_account: paymentAccount,
+        financial_change_requests: financialChangeRequests,
+        edit_history: (editHistory || []).map(row => {
+          let metadata = null;
+          try { metadata = row.metadata ? JSON.parse(row.metadata) : null; } catch { metadata = null; }
+          return { ...row, metadata };
+        }),
         password_reset_history: (passwordResetHistory || []).map(row => {
           let metadata = null;
           try { metadata = row.metadata ? JSON.parse(row.metadata) : null; } catch { metadata = null; }
@@ -8340,7 +8998,7 @@ async function handleFetch(request, env) {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager", "Team Lead", "Marketer"].includes(actor.role_name)) {
+      if (!["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Sub Admin"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
       }
       const id = clientDetailMatch[1];
@@ -8348,6 +9006,14 @@ async function handleFetch(request, env) {
       if (!client) return json({ error: "Not found" }, 404);
       if (!canManageClient(actor, client)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
+      const editReason = String(body.reason || "").trim();
+      if (actor.role_name === "Sub Admin" && !editReason) {
+        return json({ error: "A reason is required for Sub Admin client edits" }, 400);
+      }
+      const financialFields = ["agreed_purchase_price", "interested_property_id", "sale_type"];
+      if (financialFields.some(field => body[field] !== undefined) && !await hasPermission(env, actor, "clients.financial.edit")) {
+        return json({ error: "Financial changes to a client require an approved change request. Submit a request instead." }, 403);
+      }
       if (actor.role_name === "Marketer" && Object.keys(body || {}).some(key => key !== "phone_number")) {
         return json({ error: "Marketers may only correct a client phone number" }, 403);
       }
@@ -8412,7 +9078,10 @@ async function handleFetch(request, env) {
           client.status
         );
       }
-      await audit(env, actor.id, "client.update", "client", id, { before, after }, client.assigned_branch_id);
+      await audit(env, actor.id, "client.update", "client", id, {
+        before, after, reason: editReason || null, actor_role: actor.actual_role_name || actor.role_name,
+        ip: clientIp(request), user_agent: String(request.headers.get("User-Agent") || "").slice(0, 300)
+      }, client.assigned_branch_id);
       return json({ ok: true });
     }
 
@@ -8527,6 +9196,10 @@ async function handleFetch(request, env) {
         return json({ error: "Only customer care or the owner can change a client phone number" }, 403);
       }
       const body = await request.json().catch(() => ({}));
+      const changeReason = String(body.reason || "").trim();
+      if ((actor.actual_role_name || actor.role_name) === "Sub Admin" && !changeReason) {
+        return json({ error: "A reason is required for a Sub Admin phone change" }, 400);
+      }
       const nextPhone = normalizeNigerianPhone(body.phone_number);
       if (!nextPhone) return json({ error: "Enter a valid Nigerian phone number" }, 400);
       if (nextPhone === normalizeNigerianPhone(client.phone_number)) {
@@ -8549,11 +9222,24 @@ async function handleFetch(request, env) {
       await audit(env, actor.id, "client.phone_change", "client", String(client.id), {
         before: client.phone_number ? maskDestination("sms", normalizeNigerianPhone(client.phone_number) || client.phone_number) : null,
         after: maskDestination("sms", nextPhone),
-        reason: String(body.reason || "").slice(0, 500),
+        reason: changeReason.slice(0, 500),
         actor_role: actor.actual_role_name || actor.role_name,
         ip: clientIp(request),
         user_agent: String(request.headers.get("User-Agent") || "").slice(0, 300)
       }, client.assigned_branch_id);
+      if (await smsDeliveryReady(env)) {
+        const template = await getSmsTemplate(env, "client_phone_changed");
+        await enqueueSms(env, {
+          clientId: client.id,
+          templateKey: "client_phone_changed",
+          phone: nextPhone,
+          body: renderSmsTemplate(
+            template ? template.body : "Your Bliss Legacy login phone number was changed to {phone}. If this was not you, contact customer care immediately.",
+            { phone: nextPhone }
+          ),
+          idempotencyKey: `client-phone-changed:${client.id}:${Date.now()}`
+        }).catch(() => {});
+      }
       return json({ ok: true, phone_number: nextPhone, phone_changed_at: new Date().toISOString() });
     }
 
@@ -8633,37 +9319,49 @@ async function handleFetch(request, env) {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!["Managing Director", "Branch Manager"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!["Managing Director", "Branch Manager", "Sub Admin"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
       const id = clientAssignMatch[1];
       const client = await env.DB.prepare("SELECT c.*, (SELECT ca.relationship_manager_id FROM client_assignments ca WHERE ca.client_id=c.id AND ca.is_primary=1 ORDER BY ca.assigned_at DESC LIMIT 1) AS current_relationship_manager_id FROM clients c WHERE c.id=? AND c.is_deleted=0").bind(id).first();
       if (!client) return json({ error: "Not found" }, 404);
       if (!canManageClient(actor, client)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
       const { relationship_manager_id, branch_id, team_lead_id, reason } = body || {};
-      if (!relationship_manager_id || !branch_id) return json({ error: "Relationship manager and branch are required" }, 400);
+      if (!branch_id) return json({ error: "Branch is required" }, 400);
       if (actor.role_name === "Branch Manager" && Number(branch_id) !== actor.branch_id) {
         return json({ error: "Cross-branch forbidden" }, 403);
       }
-      const manager = await env.DB.prepare("SELECT id, branch_id FROM users WHERE id=? AND is_active=1").bind(relationship_manager_id).first();
-      if (!manager) return json({ error: "Relationship manager not found or inactive" }, 404);
-      if (manager.branch_id !== null && Number(manager.branch_id) !== Number(branch_id)) {
-        return json({ error: "Relationship manager does not belong to this branch" }, 400);
+      if (actor.role_name === "Sub Admin" && !String(reason || "").trim()) {
+        return json({ error: "A reason is required for a Sub Admin branch or assignment change" }, 400);
+      }
+      let manager = null;
+      if (relationship_manager_id) {
+        manager = await env.DB.prepare("SELECT id, branch_id FROM users WHERE id=? AND is_active=1").bind(relationship_manager_id).first();
+        if (!manager) return json({ error: "Relationship manager not found or inactive" }, 404);
+        if (manager.branch_id !== null && Number(manager.branch_id) !== Number(branch_id)) {
+          return json({ error: "Relationship manager does not belong to this branch" }, 400);
+        }
       }
       const branch = await env.DB.prepare("SELECT id FROM branches WHERE id=?").bind(branch_id).first();
       if (!branch) return json({ error: "Branch not found" }, 400);
       const current = await env.DB.prepare("SELECT * FROM client_assignments WHERE client_id=? AND is_primary=1 ORDER BY assigned_at DESC LIMIT 1").bind(id).first();
       await env.DB.prepare("UPDATE client_assignments SET is_primary=0 WHERE client_id=?").bind(id).run();
-      await env.DB.prepare("INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by, is_primary) VALUES (?, ?, ?, ?, ?, 1)")
-        .bind(id, relationship_manager_id, branch_id, team_lead_id || null, actor.id).run();
+      if (relationship_manager_id) {
+        await env.DB.prepare("INSERT INTO client_assignments (client_id, relationship_manager_id, branch_id, team_lead_id, assigned_by, is_primary) VALUES (?, ?, ?, ?, ?, 1)")
+          .bind(id, relationship_manager_id, branch_id, team_lead_id || null, actor.id).run();
+      }
       await env.DB.prepare("UPDATE clients SET assigned_branch_id=?, team_lead_id=?, updated_at=datetime('now') WHERE id=?")
         .bind(branch_id, team_lead_id || null, id).run();
       await env.DB.prepare(`INSERT INTO client_assignment_history (client_id, previous_manager_id, new_manager_id, previous_branch_id, new_branch_id, previous_team_lead_id, new_team_lead_id, authorized_by, reason)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(id, current ? current.relationship_manager_id : null, relationship_manager_id,
+        .bind(id, current ? current.relationship_manager_id : null, relationship_manager_id || null,
           current ? current.branch_id : client.assigned_branch_id, branch_id,
           current ? current.team_lead_id : client.team_lead_id, team_lead_id || null, actor.id, reason || null).run();
-      await audit(env, actor.id, "client.assign", "client", id, { new_manager: relationship_manager_id, new_branch: branch_id }, branch_id);
-      return json({ ok: true });
+      await audit(env, actor.id, "client.assign", "client", id, {
+        new_manager: relationship_manager_id || null, new_branch: branch_id,
+        reason: String(reason || "").trim(), actor_role: actor.actual_role_name || actor.role_name,
+        ip: clientIp(request)
+      }, branch_id);
+      return json({ ok: true, unassigned: !relationship_manager_id });
     }
 
     // ---- Client reassignment (Phase 4, MD only) ----
@@ -10098,6 +10796,9 @@ async function handleFetch(request, env) {
       if (!["Managing Director", "Finance Officer", "Branch Manager"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
       }
+      if (!await hasPermission(env, actor, "finance.payments.record")) {
+        return json({ error: "Manual payment entry requires the finance.payments.record permission" }, 403);
+      }
 
       const body = await request.json();
       const { client_id, property_id, amount, method, transaction_ref, is_demo, currency } = body || {};
@@ -10166,6 +10867,9 @@ async function handleFetch(request, env) {
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) {
         return json({ error: "Forbidden: Only Managing Director or Finance Officer can verify payments" }, 403);
+      }
+      if (!await hasPermission(env, actor, "finance.payments.verify")) {
+        return json({ error: "Payment verification permission is required" }, 403);
       }
 
       const paymentId = verifyMatch[1];
@@ -10255,6 +10959,9 @@ async function handleFetch(request, env) {
       if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) {
         return json({ error: "Forbidden: Only Managing Director or Finance Officer can adjust payments" }, 403);
       }
+      if (!await hasPermission(env, actor, "finance.payments.adjust")) {
+        return json({ error: "Payment adjustment permission is required" }, 403);
+      }
 
       const paymentId = adjustMatch[1];
       const body = await request.json();
@@ -10308,6 +11015,9 @@ async function handleFetch(request, env) {
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) {
         return json({ error: "Forbidden: Only Managing Director or Finance Officer can fail payments" }, 403);
+      }
+      if (!await hasPermission(env, actor, "finance.payments.verify")) {
+        return json({ error: "Payment verification permission is required" }, 403);
       }
       const paymentId = failMatch[1];
       const body = await request.json().catch(() => ({}));
@@ -10374,6 +11084,9 @@ async function handleFetch(request, env) {
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
+      }
+      if (!await hasPermission(env, actor, "finance.providers.manage")) {
+        return json({ error: "Provider configuration permission is required" }, 403);
       }
       const body = await request.json();
       const providerKey = String(body.provider_key || "").trim().toLowerCase();
@@ -10494,6 +11207,9 @@ async function handleFetch(request, env) {
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
+      }
+      if (!await hasPermission(env, actor, "finance.providers.manage")) {
+        return json({ error: "Provider configuration permission is required" }, 403);
       }
 
       const body = await request.json();
@@ -11084,6 +11800,7 @@ async function handleFetch(request, env) {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Finance Officer"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "finance.reconciliation.run")) return json({ error: "Reconciliation permission is required" }, 403);
       const result = await reconcileAlatpayPayments(env);
       await audit(env, actor.id, "provider.reconcile", "alatpay", null, result, null);
       return json({ ok: !result.error, ...result });
@@ -11095,6 +11812,7 @@ async function handleFetch(request, env) {
       if (!actor || !["Managing Director", "Finance Officer"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
       }
+      if (!await hasPermission(env, actor, "finance.reconciliation.run")) return json({ error: "Reconciliation permission is required" }, 403);
       const body = await request.json();
       const { transactions } = body || {};
       if (!Array.isArray(transactions)) return json({ error: "Transactions array required" }, 400);
@@ -11264,6 +11982,9 @@ async function handleFetch(request, env) {
       if (!["Managing Director", "Branch Manager", "Finance Officer"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
       }
+      if (!await hasPermission(env, actor, "clients.financial.edit")) {
+        return json({ error: "Post-purchase plan changes require an approved financial change request" }, 403);
+      }
       const scheduleId = installmentMatch[1];
       const schedule = await env.DB.prepare(
         "SELECT s.*, c.assigned_branch_id FROM payment_schedules s JOIN clients c ON c.id=s.client_id WHERE s.id=?"
@@ -11348,8 +12069,15 @@ async function handleFetch(request, env) {
       if (!["Managing Director", "Branch Manager", "Finance Officer"].includes(actor.role_name)) {
         return json({ error: "Forbidden" }, 403);
       }
-
       const body = await request.json();
+      if (!await hasPermission(env, actor, "clients.financial.edit")) {
+        const activeSchedule = await env.DB.prepare(
+          "SELECT id FROM payment_schedules WHERE client_id=? AND status='active' LIMIT 1"
+        ).bind(body.client_id).first();
+        if (activeSchedule) {
+          return json({ error: "Post-purchase plan changes require an approved financial change request" }, 403);
+        }
+      }
       const {
         client_id, property_id, total_amount, deposit_amount, installment_amount,
         frequency_days, frequency, next_due_date, notes
@@ -12367,9 +13095,9 @@ async function handleFetch(request, env) {
       if (!validPassword(password)) return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
       const actorActualRole = actor.actual_role_name || actor.role_name;
       const allowed = actorActualRole === "Super Admin"
-        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "Super Admin"]
+        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "Super Admin", "Sub Admin", "GSM", "Accountant"]
         : actor.role_name === "Managing Director"
-          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"]
+          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "Sub Admin", "GSM", "Accountant"]
           : ["Team Lead", "Marketer", "Finance Officer"];
       if (!allowed.includes(role_name)) return json({ error: "Forbidden role" }, 403);
       let resolvedBranch = branch_id || null;
@@ -13709,7 +14437,7 @@ async function handleFetch(request, env) {
     if (path === "/api/commission-options" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.view")) return json({ error: "Commission rules permission is required" }, 403);
       const categories = await env.DB.prepare("SELECT id, name FROM property_categories ORDER BY name").all();
       const branches = await env.DB.prepare("SELECT id, name FROM branches ORDER BY name").all();
       const teams = await env.DB.prepare(`
@@ -13732,7 +14460,7 @@ async function handleFetch(request, env) {
     if (path === "/api/commission-plans" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.view")) return json({ error: "Commission rules permission is required" }, 403);
       const { results: plans } = await env.DB.prepare(`
         SELECT p.*, u.full_name AS created_by_name,
           (SELECT COUNT(*) FROM commission_plan_rules r WHERE r.plan_id=p.id AND r.is_active=1) AS rule_count
@@ -13757,7 +14485,7 @@ async function handleFetch(request, env) {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.view")) return json({ error: "Commission rules permission is required" }, 403);
       const body = await request.json().catch(() => ({}));
       const validated = await validateCommissionPlanBody(env, body);
       if (validated.error) return json({ error: validated.error }, 400);
@@ -13800,7 +14528,7 @@ async function handleFetch(request, env) {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.manage")) return json({ error: "Commission rules management permission is required" }, 403);
       const body = await request.json();
       const validated = await validateCommissionPlanBody(env, body);
       if (validated.error) return json({ error: validated.error }, 400);
@@ -13839,7 +14567,7 @@ async function handleFetch(request, env) {
     if (commissionPlanMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.view")) return json({ error: "Commission rules permission is required" }, 403);
       const plan = await env.DB.prepare("SELECT * FROM commission_plans WHERE id=?").bind(commissionPlanMatch[1]).first();
       if (!plan) return json({ error: "Commission plan not found" }, 404);
       const rules = await env.DB.prepare(`
@@ -13860,7 +14588,7 @@ async function handleFetch(request, env) {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.manage")) return json({ error: "Commission rules management permission is required" }, 403);
       const existing = await env.DB.prepare("SELECT * FROM commission_plans WHERE id=?").bind(commissionPlanMatch[1]).first();
       if (!existing) return json({ error: "Commission plan not found" }, 404);
       const body = await request.json();
@@ -13930,7 +14658,7 @@ async function handleFetch(request, env) {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.manage")) return json({ error: "Commission rules management permission is required" }, 403);
       const body = await request.json();
       if (body.is_active === undefined) return json({ error: "Active state is required" }, 400);
       const active = isTruthy(body.is_active) ? 1 : 0;
@@ -13946,7 +14674,7 @@ async function handleFetch(request, env) {
     if (path === "/api/referral-commissions/rules" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.view")) return json({ error: "Commission rules permission is required" }, 403);
       const { results } = await env.DB.prepare(
         "SELECT rule_key, label, structure, min_months, max_months, stage_amount_kobo, stage1_commission_cap_kobo, stage2_commission_cap_kobo, max_commission_kobo, flat_rate_bps FROM referral_commission_rules WHERE is_active=1 ORDER BY id"
       ).all();
@@ -13957,6 +14685,9 @@ async function handleFetch(request, env) {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!canViewReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const referralActorRole = actor.actual_role_name || actor.role_name;
+      if (referralActorRole !== "Marketer" && !await hasPermission(env, actor, "commission.totals.view")) return json({ error: "Commission totals are not permitted" }, 403);
+      const rulesView = await hasPermission(env, actor, "commission.rules.view");
       const scope = await resolvePhase6Scope(env, actor);
       const scoped = referralCommissionScopeSql(scope, "a");
       const clauses = [scoped.clause];
@@ -14025,13 +14756,15 @@ async function handleFetch(request, env) {
 
       const actualRole = actor.actual_role_name || actor.role_name;
       const marketerView = actualRole === "Marketer";
+      const totalsOnlyView = marketerView || !rulesView;
       return json({
         entries: rows.map(row => {
-          if (marketerView) {
+          if (totalsOnlyView) {
             return {
               id: row.id,
               client_name: row.client_name,
               client_reference: row.client_reference,
+              ...(marketerView ? {} : { marketer_name: row.marketer_name, branch_name: row.branch_name }),
               plan_type: marketerPlanLabel(row.structure, row.plan_type),
               total_paid_kobo: Number(row.total_paid_kobo || 0),
               commission_earned_kobo: Number(row.net_commission_kobo || 0),
@@ -14050,7 +14783,7 @@ async function handleFetch(request, env) {
             carry_forward_kobo: Number(row.carry_forward_kobo || 0)
           };
         }),
-        summary: marketerView
+        summary: totalsOnlyView
           ? {
             total_clients: Number(summaryRow ? summaryRow.total_clients : 0),
             earned_kobo: Number(summaryRow ? summaryRow.earned_kobo : 0),
@@ -14077,7 +14810,7 @@ async function handleFetch(request, env) {
     if (path === "/api/referral-commissions/export" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.rules.view")) return json({ error: "Commission rules permission is required" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
       const scoped = referralCommissionScopeSql(scope, "a");
       const clauses = [scoped.clause];
@@ -14133,6 +14866,9 @@ async function handleFetch(request, env) {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!canViewReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const referralDetailRole = actor.actual_role_name || actor.role_name;
+      if (referralDetailRole !== "Marketer" && !await hasPermission(env, actor, "commission.totals.view")) return json({ error: "Commission totals are not permitted" }, 403);
+      const rulesView = await hasPermission(env, actor, "commission.rules.view");
       const scope = await resolvePhase6Scope(env, actor);
       const scoped = referralCommissionScopeSql(scope, "a");
       const account = await env.DB.prepare(`
@@ -14165,12 +14901,13 @@ async function handleFetch(request, env) {
         WHERE a.account_id=? ORDER BY a.created_at DESC, a.id DESC
       `).bind(account.id).all();
       const actualRole = actor.actual_role_name || actor.role_name;
-      if (actualRole === "Marketer") {
+      if (actualRole === "Marketer" || !rulesView) {
         return json({
           account: {
             id: account.id,
             client_name: account.client_name,
             client_reference: account.client_reference,
+            ...(actualRole === "Marketer" ? {} : { marketer_name: account.marketer_name, branch_name: account.branch_name }),
             plan_type: marketerPlanLabel(account.structure, account.plan_type),
             total_paid_kobo: Number(account.total_paid_kobo || 0),
             commission_earned_kobo: Number(account.net_commission_kobo || 0),
@@ -14206,6 +14943,7 @@ async function handleFetch(request, env) {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!canManageReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "referral.commission.manage")) return json({ error: "Referral commission permission is required" }, 403);
       const body = await request.json().catch(() => ({}));
       const runKey = `referral:backfill:${Date.now().toString(36)}:${crypto.randomUUID().slice(0, 8)}`;
       if (isTruthy(body.dry_run)) {
@@ -14229,6 +14967,7 @@ async function handleFetch(request, env) {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!canManageReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "referral.commission.manage")) return json({ error: "Referral commission permission is required" }, 403);
       const account = await env.DB.prepare(`
         SELECT a.*, c.full_name AS client_name, c.client_reference, u.full_name AS marketer_name
         FROM referral_commission_accounts a
@@ -14356,9 +15095,13 @@ async function handleFetch(request, env) {
     if (path === "/api/commissions" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      const fullAccess = canAccessCommissions(actor);
+      const fullAccess = canAccessCommissions(actor) || ["Sub Admin", "GSM", "Accountant"].includes(actor.actual_role_name || actor.role_name);
       const ownView = !fullAccess && canViewOwnCommission(actor);
       if (!fullAccess && !ownView) return json({ error: "Forbidden" }, 403);
+      if (fullAccess && !await hasPermission(env, actor, "commission.totals.view")) {
+        return json({ error: "Commission totals are not permitted" }, 403);
+      }
+      const rulesView = await hasPermission(env, actor, "commission.rules.view");
       const scope = await resolvePhase6Scope(env, actor);
       const clauses = [];
       const binds = [];
@@ -14416,14 +15159,17 @@ async function handleFetch(request, env) {
       `).bind(...binds, limit, offset).all();
       const count = await env.DB.prepare(`SELECT COUNT(*) AS c FROM commission_entries ce ${whereSql}`).bind(...binds).first();
       const summary = await getCommissionSummary(env, scope);
-      return json({ entries, summary, pagination: { page, limit, total: count ? count.c : 0 } });
+      const safeEntries = rulesView
+        ? entries
+        : entries.map(({ rate_bps, basis, plan_name, ...rest }) => rest);
+      return json({ entries: safeEntries, summary, pagination: { page, limit, total: count ? count.c : 0 } });
     }
 
     if (path === "/api/commissions/generate" && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!await hasPermission(env, actor, "commission.entries.generate")) return json({ error: "Commission generation permission is required" }, 403);
       const body = await request.json();
       try {
         const result = await generateCommissionEntries(env, actor, body || {});
@@ -14540,8 +15286,14 @@ async function handleFetch(request, env) {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const action = commissionActionMatch[2];
+      const actionPermission = action === "submit" ? "commission.entries.generate"
+        : (action === "approve" || action === "reject") ? "commission.entries.approve"
+          : action === "payments" ? "commission.entries.pay"
+            : "commission.entries.adjust";
+      if (!await hasPermission(env, actor, actionPermission)) {
+        return json({ error: "Commission permission is required" }, 403);
+      }
       const entry = await env.DB.prepare(`
         SELECT ce.*, cp.name AS plan_name, cp.separation_of_duties
         FROM commission_entries ce JOIN commission_plans cp ON cp.id=ce.plan_id WHERE ce.id=?
