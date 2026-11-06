@@ -3,3 +3,6 @@ node_modules
 .dev.vars
 *.log
 .DS_Store
+
+# Local D1 backup exports
+backup-*.sql

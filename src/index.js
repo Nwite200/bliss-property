@@ -6,6 +6,11 @@ const WEMA_PENDING_MESSAGE =
 const WEMA_NO_SCHEDULE_MESSAGE =
   "Your next payment information will appear here once your payment schedule has been configured.";
 const MIN_PASSWORD_LENGTH = 8;
+const LOGIN_ACCOUNT_MAX_FAILURES = 5;
+const LOGIN_IP_MAX_FAILURES = 10;
+const LOGIN_FAILURE_WINDOW_MINUTES = 15;
+const LOGIN_LOCK_MINUTES = 15;
+const ALERT_WEBHOOK_TIMEOUT_MS = 8000;
 const SUPPORTED_CURRENCY = "NGN";
 const WEBHOOK_MAX_AGE_MS = 15 * 60 * 1000;
 const WEBHOOK_FUTURE_SKEW_MS = 2 * 60 * 1000;
@@ -1141,7 +1146,7 @@ function normalizeLeadImportRow(raw) {
 }
 const STAFF_ROLES = ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"];
 const GRANULARITIES = ["day", "week", "month", "year"];
-const COMMISSION_BASES = ["contract_value", "verified_collections", "fixed"];
+const COMMISSION_BASES = ["contract_value", "verified_collections", "fixed", "referral_cumulative_tiered", "referral_percentage"];
 const COMMISSION_STATUSES = ["Draft", "Calculated", "Pending Approval", "Approved", "Partially Paid", "Paid", "Rejected", "Reversed", "Cancelled"];
 const COMMISSION_ROLES = ["Marketer", "Team Lead", "Branch Manager"];
 const SALE_TYPES = ["New Sale", "Resale", "Referral", "Other"];
@@ -1228,6 +1233,255 @@ function canChangeClientPhone(actor, client) {
     return Number(actor.branch_id) === Number(client.assigned_branch_id);
   }
   return false;
+}
+
+function loginAccountKey(identifier, phone) {
+  if (phone) return `phone:${phone}`;
+  return `id:${String(identifier || "").trim().toLowerCase()}`;
+}
+
+async function loginLockActive(env, scope, key) {
+  const row = await env.DB.prepare(
+    "SELECT locked_until FROM login_lockouts WHERE scope=? AND lock_key=?"
+  ).bind(scope, key).first();
+  return Boolean(row && row.locked_until && parseDbDate(row.locked_until) > new Date());
+}
+
+async function recordLoginFailure(env, scope, key, userId, maxFailures) {
+  const row = await env.DB.prepare(
+    "SELECT failures, first_failure_at, locked_until FROM login_lockouts WHERE scope=? AND lock_key=?"
+  ).bind(scope, key).first();
+  const now = Date.now();
+  const windowStart = row && row.first_failure_at
+    ? parseDbDate(row.first_failure_at).getTime()
+    : 0;
+  const withinWindow = row && windowStart && (now - windowStart) <= LOGIN_FAILURE_WINDOW_MINUTES * 60000;
+  const failures = withinWindow ? Number(row.failures || 0) + 1 : 1;
+  const firstFailure = withinWindow ? row.first_failure_at : new Date(now).toISOString();
+  const lockedUntil = failures >= maxFailures
+    ? new Date(now + LOGIN_LOCK_MINUTES * 60000).toISOString()
+    : (row && row.locked_until && parseDbDate(row.locked_until) > new Date() ? row.locked_until : null);
+  await env.DB.prepare(`
+    INSERT INTO login_lockouts (scope, lock_key, user_id, failures, first_failure_at, last_failure_at, locked_until)
+    VALUES (?, ?, ?, ?, ?, datetime('now'), ?)
+    ON CONFLICT(scope, lock_key) DO UPDATE SET
+      user_id=COALESCE(excluded.user_id, login_lockouts.user_id),
+      failures=excluded.failures, first_failure_at=excluded.first_failure_at,
+      last_failure_at=datetime('now'), locked_until=excluded.locked_until,
+      updated_at=datetime('now')
+  `).bind(scope, key, userId || null, failures, firstFailure, lockedUntil).run();
+  return { failures, locked: Boolean(lockedUntil && parseDbDate(lockedUntil) > new Date()), lockedUntil };
+}
+
+async function clearLoginLockouts(env, key, userId) {
+  await env.DB.prepare("DELETE FROM login_lockouts WHERE scope='account' AND lock_key=?").bind(key).run();
+  if (userId) await env.DB.prepare("DELETE FROM login_lockouts WHERE scope='account' AND user_id=?").bind(userId).run();
+}
+
+async function sendSystemAlert(env, {
+  alertType, severity = "warning", dedupeKey, title, message, metadata = null, cooldownMinutes = 30
+}) {
+  try {
+    const key = String(dedupeKey || `${alertType}:${title}`).slice(0, 300);
+    const existing = await env.DB.prepare(
+      "SELECT id, last_notified_at FROM system_alerts WHERE dedupe_key=?"
+    ).bind(key).first();
+    if (existing) {
+      await env.DB.prepare(`
+        UPDATE system_alerts SET occurrences=occurrences+1, severity=?, title=?, message=?, metadata=?,
+          last_seen_at=datetime('now'), resolved_at=NULL
+        WHERE id=?
+      `).bind(severity, String(title).slice(0, 300), String(message || "").slice(0, 2000),
+        metadata ? JSON.stringify(metadata).slice(0, 4000) : null, existing.id).run();
+    } else {
+      await env.DB.prepare(`
+        INSERT INTO system_alerts (alert_type, severity, dedupe_key, title, message, metadata)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(String(alertType).slice(0, 80), severity, key, String(title).slice(0, 300),
+        String(message || "").slice(0, 2000), metadata ? JSON.stringify(metadata).slice(0, 4000) : null).run();
+    }
+    const lastNotified = existing && existing.last_notified_at ? parseDbDate(existing.last_notified_at).getTime() : 0;
+    const shouldNotify = !lastNotified || (Date.now() - lastNotified) >= Math.max(1, cooldownMinutes) * 60000;
+    if (shouldNotify && env.ALERT_WEBHOOK_URL) {
+      try {
+        await fetch(env.ALERT_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: `[${String(severity).toUpperCase()}] ${title}\n${message || ""}`.slice(0, 3500),
+            alert_type: alertType,
+            dedupe_key: key,
+            metadata
+          })
+        }).catch(() => {});
+      } catch { /* alert transport must never break the request */ }
+      const alertRow = await env.DB.prepare("SELECT id FROM system_alerts WHERE dedupe_key=?").bind(key).first();
+      if (alertRow) {
+        await env.DB.prepare("UPDATE system_alerts SET last_notified_at=datetime('now') WHERE id=?")
+          .bind(alertRow.id).run().catch(() => {});
+      }
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function maybeAlertWebhookFailures(env, provider) {
+  try {
+    const row = await env.DB.prepare(`
+      SELECT COUNT(*) AS c FROM audit_logs
+      WHERE action='webhook.rejected' AND target_type=?
+        AND created_at >= datetime('now','-10 minutes')
+    `).bind(provider).first();
+    if (Number(row ? row.c : 0) >= 5) {
+      await sendSystemAlert(env, {
+        alertType: "webhook_validation_failures",
+        severity: "critical",
+        dedupeKey: `webhook_failures:${provider}`,
+        title: `Repeated ${provider} webhook validation failures`,
+        message: `${Number(row.c)} webhook rejections were recorded in the last 10 minutes. Check signatures, mode and provider secrets.`,
+        metadata: { provider, recent_rejections: Number(row.c) },
+        cooldownMinutes: 30
+      });
+    }
+  } catch { /* alerting must never break webhook handling */ }
+}
+
+async function checkStuckPendingPayments(env) {
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT id, transaction_ref, client_id, amount_kobo, provider, payment_mode, created_at
+      FROM payments
+      WHERE status='pending' AND is_demo=0 AND COALESCE(is_archived,0)=0
+        AND created_at <= datetime('now','-2 hours')
+      ORDER BY id DESC LIMIT 50
+    `).all();
+    if (results && results.length) {
+      await sendSystemAlert(env, {
+        alertType: "payments_stuck_pending",
+        severity: "critical",
+        dedupeKey: "payments:stuck_pending",
+        title: `${results.length} payment(s) stuck pending for over 2 hours`,
+        message: "Pending payments need reconciliation. Review the payment list and provider status.",
+        metadata: {
+          count: results.length,
+          payment_ids: results.slice(0, 20).map(row => row.id),
+          references: results.slice(0, 20).map(row => row.transaction_ref)
+        },
+        cooldownMinutes: 60
+      });
+    }
+    return { stuck: results ? results.length : 0 };
+  } catch {
+    return { stuck: 0 };
+  }
+}
+
+function sqlLiteral(value) {
+  if (value === undefined || value === null) return "NULL";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Uint8Array) {
+    return `X'${[...value].map(byte => byte.toString(16).padStart(2, "0")).join("")}'`;
+  }
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+async function runD1Backup(env) {
+  if (!env.BACKUPS) throw new Error("BACKUPS R2 binding is not configured");
+  const started = new Date().toISOString();
+  const run = await env.DB.prepare(
+    "INSERT INTO backup_runs (status, started_at) VALUES ('running', ?)"
+  ).bind(started).run();
+  const runId = run.meta.last_row_id;
+  try {
+    const objects = await env.DB.prepare(`
+      SELECT type, name, sql FROM sqlite_master
+      WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'
+      ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'trigger' THEN 2 ELSE 3 END, name
+    `).all();
+    const tables = (objects.results || []).filter(row => row.type === "table");
+    const lines = ["PRAGMA foreign_keys=OFF;", "BEGIN TRANSACTION;"];
+    for (const obj of objects.results || []) lines.push(obj.sql + ";");
+    const counts = {};
+    for (const table of tables) {
+      const name = String(table.name);
+      const rows = await env.DB.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}"`).all();
+      counts[name] = (rows.results || []).length;
+      if (!rows.results || !rows.results.length) continue;
+      const columns = Object.keys(rows.results[0]);
+      const columnList = columns.map(col => `"${col.replace(/"/g, '""')}"`).join(",");
+      for (const row of rows.results) {
+        const values = columns.map(col => sqlLiteral(row[col])).join(",");
+        lines.push(`INSERT INTO "${name.replace(/"/g, '""')}" (${columnList}) VALUES (${values});`);
+      }
+    }
+    lines.push("COMMIT;");
+    const sql = lines.join("\n");
+    const blob = new Blob([sql]);
+    const compressed = new Uint8Array(await new Response(
+      blob.stream().pipeThrough(new CompressionStream("gzip"))
+    ).arrayBuffer());
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const key = `backups/d1/${stamp}.sql.gz`;
+    await env.BACKUPS.put(key, compressed, {
+      httpMetadata: { contentType: "application/gzip" },
+      customMetadata: { started_at: started, format: "sqlite-sql-gzip" }
+    });
+    const cutoff = Date.now() - 30 * 86400000;
+    try {
+      const listing = await env.BACKUPS.list({ prefix: "backups/d1/" });
+      for (const object of listing.objects || []) {
+        const uploaded = object.uploaded instanceof Date ? object.uploaded.getTime() : new Date(object.uploaded || 0).getTime();
+        if (uploaded && uploaded < cutoff) await env.BACKUPS.delete(object.key);
+      }
+    } catch { /* retention is best effort; backup itself already succeeded */ }
+    await env.DB.prepare(`
+      UPDATE backup_runs SET status='success', finished_at=datetime('now'), r2_key=?, size_bytes=?, table_counts=?
+      WHERE id=?
+    `).bind(key, compressed.byteLength, JSON.stringify(counts), runId).run();
+    return { ok: true, key, size_bytes: compressed.byteLength, table_counts: counts };
+  } catch (error) {
+    await env.DB.prepare(`
+      UPDATE backup_runs SET status='failed', finished_at=datetime('now'), error=? WHERE id=?
+    `).bind(String(error.message || "Backup failed").slice(0, 1000), runId).run().catch(() => {});
+    await sendSystemAlert(env, {
+      alertType: "backup_failed", severity: "critical", dedupeKey: "backup:d1:daily",
+      title: "D1 scheduled backup failed", message: error.message || "Backup failed",
+      cooldownMinutes: 60
+    });
+    throw error;
+  }
+}
+
+function isPlaceholderPropertyTitle(title) {
+  return /starter listing|edit before publishing|placeholder|demo listing|sample listing/i.test(String(title || ""));
+}
+
+function derivePlanDurationMonths({ planType, durationMonths, numberOfInstallments, frequencyDays }) {
+  const explicit = Number(durationMonths);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.round(explicit);
+  const normalized = normalizePlanType(planType, "part_payment");
+  if (normalized === "outright") return 0;
+  const count = Number(numberOfInstallments);
+  const days = Number(frequencyDays);
+  if (Number.isFinite(count) && count > 0 && Number.isFinite(days) && days > 0) {
+    return Math.max(1, Math.round((count * days) / 30));
+  }
+  return null;
+}
+
+async function propertyHasEightMonthPlan(env, propertyId) {
+  const { results } = await env.DB.prepare(
+    "SELECT plan_type, duration_months, number_of_installments FROM property_payment_plans WHERE property_id=? AND is_enabled=1"
+  ).bind(propertyId).all();
+  return (results || []).some(plan => derivePlanDurationMonths({
+    planType: plan.plan_type,
+    durationMonths: plan.duration_months,
+    numberOfInstallments: plan.number_of_installments,
+    frequencyDays: planIntervalDays(plan.plan_type)
+  }) === 8);
 }
 
 function normalizeTemperature(value, fallback = null) {
@@ -1596,12 +1850,59 @@ function referralStructureLabel(structure, planType, months) {
   return structure || "Pending";
 }
 
+function marketerPlanLabel(structure, planType) {
+  if (structure === "two_stage") return "Long-term";
+  if (structure === "flat") return planType === "outright" ? "Outright" : "Short-term";
+  return "Pending";
+}
+
 async function getReferralCommissionRules(env) {
-  const { results } = await env.DB.prepare(
+  const { results } = await env.DB.prepare(`
+    SELECT p.id AS plan_id, p.name AS plan_name, p.calculation_basis, p.min_duration_months,
+           p.max_duration_months, p.outright_applies, p.current_version_no, p.sale_type,
+           r.id AS rule_id, r.role_name, r.rate_bps, r.fixed_amount_kobo, r.rule_type,
+           r.stage_amount_kobo, r.stage1_cap_kobo, r.stage2_cap_kobo, r.max_cap_kobo
+    FROM commission_plans p
+    JOIN commission_plan_rules r ON r.plan_id=p.id AND r.is_active=1
+    WHERE p.is_active=1 AND p.plan_family='referral'
+      AND COALESCE(r.sales_type, p.sale_type, 'Referral')='Referral'
+    ORDER BY p.id, r.id
+  `).all();
+  if (results.length) {
+    const map = {};
+    for (const row of results) {
+      if (row.role_name !== "Marketer") continue;
+      const base = {
+        ...row,
+        plan_version_no: Number(row.current_version_no || 1),
+        stage_amount_kobo: Number(row.stage_amount_kobo || 0),
+        stage1_commission_cap_kobo: Number(row.stage1_cap_kobo || 0),
+        stage2_commission_cap_kobo: Number(row.stage2_cap_kobo || 0),
+        max_commission_kobo: Number(row.max_cap_kobo || 0)
+      };
+      if (row.calculation_basis === "referral_cumulative_tiered" || row.rule_type === "cumulative_tiered_cap") {
+        map.long_term = {
+          ...base, rule_key: "long_term", structure: "two_stage",
+          flat_rate_bps: 0
+        };
+      } else {
+        map.short_term = {
+          ...base, rule_key: "short_term", structure: "flat",
+          flat_rate_bps: Number(row.rate_bps || 0)
+        };
+        if (Number(row.outright_applies) === 1) {
+          map.outright = { ...map.short_term, rule_key: "outright" };
+        }
+      }
+    }
+    if (map.long_term || map.short_term || map.outright) return map;
+  }
+  // Legacy fallback for databases that have not yet loaded the configurable plans.
+  const { results: legacy } = await env.DB.prepare(
     "SELECT * FROM referral_commission_rules WHERE is_active=1 ORDER BY id"
   ).all();
   const map = {};
-  for (const row of results) map[row.rule_key] = row;
+  for (const row of legacy) map[row.rule_key] = { ...row, rule_snapshot_json: null };
   return map;
 }
 
@@ -1678,8 +1979,8 @@ async function resolveReferralCommissionPlan(env, client) {
     return {
       ...base,
       structure: "configuration_required",
-      ruleKey: "exact_8",
-      flagReason: "An 8-month payment plan has no approved referral commission structure",
+      ruleKey: null,
+      flagReason: "An 8-month payment plan has no approved referral commission structure. The owner must choose the structure before publishing.",
       label: referralStructureLabel("configuration_required", planType, months)
     };
   }
@@ -1756,7 +2057,7 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
 
   const rules = await getReferralCommissionRules(env);
   const plan = await resolveReferralCommissionPlan(env, client);
-  const rule = plan.ruleKey ? rules[plan.ruleKey] : null;
+  const liveRule = plan.ruleKey ? rules[plan.ruleKey] : null;
   const { results: payments } = await env.DB.prepare(`
     SELECT id, amount_kobo, verified_at
     FROM payments
@@ -1765,10 +2066,21 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
     ORDER BY verified_at, id
   `).bind(client.id).all();
   const totalPaidKobo = payments.reduce((sum, payment) => sum + Number(payment.amount_kobo || 0), 0);
-  const calc = calculateReferralCommissionKobo(plan.structure, rule, totalPaidKobo);
   const existing = await env.DB.prepare(
     "SELECT * FROM referral_commission_accounts WHERE client_id=?"
   ).bind(client.id).first();
+  const storedSnapshot = existing ? safeJsonParse(existing.rule_snapshot_json) : null;
+  // Existing clients keep the rule version they were calculated with. New
+  // clients use the currently active plan version. This prevents a rule edit
+  // from retroactively changing past commission.
+  const effectiveRule = storedSnapshot && storedSnapshot.structure === plan.structure ? storedSnapshot : liveRule;
+  const calc = calculateReferralCommissionKobo(plan.structure, effectiveRule, totalPaidKobo);
+  const planVersionNo = effectiveRule && effectiveRule.plan_version_no
+    ? Number(effectiveRule.plan_version_no)
+    : (liveRule ? Number(liveRule.plan_version_no || 1) : null);
+  const ruleSnapshotJson = effectiveRule
+    ? JSON.stringify({ ...effectiveRule, structure: plan.structure, rule_key: plan.ruleKey })
+    : null;
   const recipient = await resolveCommissionRecipient(env, client, "Marketer");
   // Preserve an existing attribution if the marketer is temporarily inactive.
   const marketerId = recipient ? recipient.userId : (existing ? existing.marketer_id : null);
@@ -1781,11 +2093,12 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
   const adjusted = existing ? Number(existing.adjusted_kobo || 0) : 0;
   const paid = existing ? Number(existing.paid_kobo || 0) : 0;
   const net = calc.totalKobo + adjusted;
+  const carryForward = Math.min(0, net - paid);
   let status = "Pending";
   if (plan.structure === "configuration_required") status = "Configuration Required";
-  else if (net <= 0) {
-    status = existing && ["Earned", "Partially Paid", "Paid"].includes(existing.status) ? "Reversed" : "Pending";
-  } else if (!marketerId) status = "Pending";
+  else if (net <= 0) status = "Reversed";
+  else if (carryForward < 0) status = "Reversed";
+  else if (!marketerId) status = "Pending";
   else if (paid >= net) status = "Paid";
   else if (paid > 0) status = "Partially Paid";
   else status = "Earned";
@@ -1796,7 +2109,8 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
     marketerId, branchId, teamId, plan.planType, plan.months, plan.structure, plan.ruleKey,
     totalPaidKobo, calc.qualifyingKobo, calc.stage1PaidKobo, calc.stage2PaidKobo,
     calc.stage1CommissionKobo, calc.stage2CommissionKobo, calc.totalKobo,
-    adjusted, paid, status, flagReason, lastPaymentId
+    adjusted, paid, status, flagReason, lastPaymentId,
+    planVersionNo, ruleSnapshotJson, carryForward
   ];
 
   let accountId;
@@ -1806,8 +2120,9 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
         (client_id, marketer_id, branch_id, team_id, plan_type, plan_duration_months, structure, rule_key,
          total_paid_kobo, qualifying_paid_kobo, stage1_paid_kobo, stage2_paid_kobo,
          stage1_commission_kobo, stage2_commission_kobo, total_commission_kobo,
-         adjusted_kobo, paid_kobo, status, flag_reason, last_payment_id, last_calculated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         adjusted_kobo, paid_kobo, status, flag_reason, last_payment_id,
+         plan_version_no, rule_snapshot_json, carry_forward_kobo, last_calculated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).bind(client.id, ...values).run();
     accountId = inserted.meta.last_row_id;
   } else {
@@ -1818,6 +2133,7 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
         total_paid_kobo=?, qualifying_paid_kobo=?, stage1_paid_kobo=?, stage2_paid_kobo=?,
         stage1_commission_kobo=?, stage2_commission_kobo=?, total_commission_kobo=?,
         adjusted_kobo=?, paid_kobo=?, status=?, flag_reason=?, last_payment_id=?,
+        plan_version_no=?, rule_snapshot_json=?, carry_forward_kobo=?,
         last_calculated_at=datetime('now'), updated_at=datetime('now')
       WHERE id=?
     `).bind(...values, accountId).run();
@@ -1831,12 +2147,14 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
   );
   const needsFlagEvent = plan.structure === "configuration_required" && (!existing || existing.status !== "Configuration Required");
   const shouldRecord = !existing || delta !== 0 || structureChanged || needsFlagEvent ||
+    Number(existing.carry_forward_kobo || 0) !== Number(carryForward || 0) ||
     Boolean(trigger.forceEvent) || ["reversal", "adjustment"].includes(trigger.eventType);
 
   if (shouldRecord) {
     const defaultSourceKey = `referral:client:${client.id}:calc:${Date.now().toString(36)}:${crypto.randomUUID().slice(0, 8)}`;
     const sourceKey = trigger.sourceKey || defaultSourceKey;
     let eventType = trigger.eventType || (delta > 0 ? "accrual" : delta < 0 ? "reversal" : "recalculation");
+    if (eventType === "recalculation" && delta < 0) eventType = "reversal";
     if (plan.structure === "configuration_required" && needsFlagEvent) eventType = "flagged";
     const eventRef = "RCE-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 8).toUpperCase();
     const eventRes = await env.DB.prepare(`
@@ -1854,7 +2172,8 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
         plan_duration_months: plan.months, stage1_paid_kobo: calc.stage1PaidKobo,
         stage2_paid_kobo: calc.stage2PaidKobo, stage1_commission_kobo: calc.stage1CommissionKobo,
         stage2_commission_kobo: calc.stage2CommissionKobo, total_commission_kobo: calc.totalKobo,
-        adjusted_kobo: adjusted, paid_kobo: paid, status
+        adjusted_kobo: adjusted, paid_kobo: paid, status, plan_version_no: planVersionNo,
+        carry_forward_kobo: carryForward
       }),
       actorId || null
     ).run();
@@ -1909,6 +2228,8 @@ async function recalculateReferralCommissionForClient(env, clientId, actorId, tr
     net_commission_kobo: net,
     paid_kobo: paid,
     outstanding_kobo: Math.max(0, net - paid),
+    carry_forward_kobo: carryForward,
+    plan_version_no: planVersionNo,
     status,
     flag_reason: flagReason,
     delta_kobo: delta
@@ -1925,10 +2246,10 @@ async function backfillReferralCommissions(env, actorId, options = {}) {
     FROM clients c
     LEFT JOIN referral_commission_accounts a ON a.client_id=c.id
     WHERE c.is_deleted=0 AND c.client_reference NOT LIKE 'DEMO-%'
-      AND EXISTS (SELECT 1 FROM payments p
+      AND (a.id IS NOT NULL OR EXISTS (SELECT 1 FROM payments p
         WHERE p.client_id=c.id AND p.status='verified' AND p.is_demo=0 AND p.currency='NGN'
-          AND COALESCE(p.is_internal_test,0)=0 AND COALESCE(p.is_archived,0)=0)
-      ${onlyStale ? "AND (a.id IS NULL OR a.last_calculated_at IS NULL OR datetime(a.last_calculated_at) < datetime((SELECT MAX(p2.verified_at) FROM payments p2 WHERE p2.client_id=c.id AND p2.status='verified' AND p2.is_demo=0 AND p2.currency='NGN' AND COALESCE(p2.is_internal_test,0)=0 AND COALESCE(p2.is_archived,0)=0)))" : ""}
+          AND COALESCE(p.is_internal_test,0)=0 AND COALESCE(p.is_archived,0)=0))
+      ${onlyStale ? "AND (a.id IS NULL OR a.last_calculated_at IS NULL OR (SELECT MAX(p2.verified_at) FROM payments p2 WHERE p2.client_id=c.id AND p2.status='verified' AND p2.is_demo=0 AND p2.currency='NGN' AND COALESCE(p2.is_internal_test,0)=0 AND COALESCE(p2.is_archived,0)=0) IS NULL OR datetime(a.last_calculated_at) < datetime((SELECT MAX(p2.verified_at) FROM payments p2 WHERE p2.client_id=c.id AND p2.status='verified' AND p2.is_demo=0 AND p2.currency='NGN' AND COALESCE(p2.is_internal_test,0)=0 AND COALESCE(p2.is_archived,0)=0)))" : ""}
     ORDER BY c.id LIMIT ?
   `).bind(limit).all();
 
@@ -2099,14 +2420,21 @@ async function createCommissionPlanVersion(env, planId, versionNo, plan, rules, 
     sales_type: rule.sales_type || null,
     branch_id: rule.branch_id || null,
     team_id: rule.team_id || null,
-    is_active: Number(rule.is_active === undefined ? 1 : rule.is_active)
+    is_active: Number(rule.is_active === undefined ? 1 : rule.is_active),
+    rule_type: rule.rule_type || "percentage",
+    stage_amount_kobo: Number(rule.stage_amount_kobo || 0),
+    stage1_cap_kobo: Number(rule.stage1_cap_kobo || 0),
+    stage2_cap_kobo: Number(rule.stage2_cap_kobo || 0),
+    max_cap_kobo: Number(rule.max_cap_kobo || 0)
   }));
   const res = await env.DB.prepare(`
     INSERT OR IGNORE INTO commission_plan_versions
       (plan_id, version_no, name, description, calculation_basis, effective_from, effective_to,
        commissionable_mode, commissionable_first_months, commissionable_percent_bps,
-       commissionable_cap_kobo, rules_json, change_reason, created_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+       commissionable_cap_kobo, rules_json, change_reason, created_by, created_at,
+       plan_family, sale_type, min_duration_months, max_duration_months, outright_applies)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+      ?, ?, ?, ?, ?)
   `).bind(
     planId, versionNo, plan.name, plan.description || null, plan.calculation_basis,
     plan.effective_from || null, plan.effective_to || null,
@@ -2114,7 +2442,11 @@ async function createCommissionPlanVersion(env, planId, versionNo, plan, rules, 
     Number(plan.commissionable_first_months === undefined ? 2 : plan.commissionable_first_months),
     Number(plan.commissionable_percent_bps === undefined ? 10000 : plan.commissionable_percent_bps),
     Number(plan.commissionable_cap_kobo || 0), JSON.stringify(snapshot),
-    changeReason || null, actorId
+    changeReason || null, actorId,
+    plan.plan_family || "standard", plan.sale_type || null,
+    plan.min_duration_months === undefined ? null : plan.min_duration_months,
+    plan.max_duration_months === undefined ? null : plan.max_duration_months,
+    Number(plan.outright_applies || 0)
   ).run();
   return res.meta ? res.meta.last_row_id : null;
 }
@@ -2172,7 +2504,7 @@ async function generateCommissionEntries(env, actor, body) {
   if (body.from && !from) throw new Error("Invalid from date");
   if (body.to && !to) throw new Error("Invalid to date");
 
-  const planClauses = ["p.is_active=1"];
+  const planClauses = ["p.is_active=1", "COALESCE(p.plan_family,'standard')='standard'"];
   const planBinds = [];
   if (planId) { planClauses.push("p.id=?"); planBinds.push(planId); }
   const { results: plans } = await env.DB.prepare(`
@@ -2395,6 +2727,12 @@ async function markCommissionGenerationFailure(env, payment, message) {
   await audit(env, null, "commission.generation_failed", "payment", String(payment.id), {
     error: text, client_id: payment.client_id
   }, null);
+  await sendSystemAlert(env, {
+    alertType: "commission_entry_failed", severity: "critical", dedupeKey: `commission_failed:payment:${payment.id}`,
+    title: "Commission entry generation failed",
+    message: `Commission generation failed for payment ${payment.id}. It will be retried automatically.`,
+    metadata: { payment_id: payment.id, client_id: payment.client_id, error: text }, cooldownMinutes: 60
+  });
 }
 
 async function retryCommissionGeneration(env) {
@@ -3448,14 +3786,23 @@ async function ensureScheduleItems(env, schedule) {
 }
 
 function propertyPlanSnapshot(plan) {
+  const planType = normalizePlanType(plan.plan_type);
+  const frequencyDays = plan.frequency_days || planIntervalDays(planType);
+  const derivedDuration = derivePlanDurationMonths({
+    planType,
+    durationMonths: plan.duration_months,
+    numberOfInstallments: plan.number_of_installments,
+    frequencyDays
+  });
   return {
     property_payment_plan_id: plan.id,
-    plan_type: normalizePlanType(plan.plan_type),
+    plan_type: planType,
     total_price_kobo: Number(plan.total_price_kobo || 0),
     deposit_kobo: Number(plan.deposit_kobo || 0),
     installment_kobo: Number(plan.installment_kobo || 0),
-    duration_months: plan.duration_months === null || plan.duration_months === undefined ? null : Number(plan.duration_months),
+    duration_months: derivedDuration,
     number_of_installments: plan.number_of_installments === null || plan.number_of_installments === undefined ? null : Number(plan.number_of_installments),
+    frequency_days: frequencyDays,
     first_payment_rule: plan.first_payment_rule || null,
     balance_difference_kobo: Number(plan.balance_difference_kobo || 0),
     locked_at: new Date().toISOString()
@@ -5364,6 +5711,22 @@ async function handleFetch(request, env) {
       const ident = identifierRaw.toLowerCase();
       const phoneIdent = normalizeNigerianPhone(identifierRaw);
       const throttleKey = phoneIdent ? `phone:${phoneIdent}` : ident;
+      const loginIp = clientIp(request);
+      const accountKey = loginAccountKey(identifierRaw, phoneIdent);
+
+      // Per-IP and per-account lockouts. Account lockouts intentionally return
+      // the same generic credentials error so they never reveal whether an
+      // account exists. Per-IP lockouts apply regardless of existence.
+      const ipLocked = await loginLockActive(env, "ip", loginIp);
+      if (ipLocked) {
+        await audit(env, null, "login.ip_lockout", "login", loginIp, { reason: "active_lockout" });
+        return json({ error: "Too many login attempts. Please try again later." }, 429);
+      }
+      const accountLocked = await loginLockActive(env, "account", accountKey);
+      if (accountLocked) {
+        await audit(env, null, "login.lockout", "login", phoneIdent ? maskDestination("sms", phoneIdent) : ident, { reason: "active_lockout" });
+        return json({ error: "Invalid credentials" }, 401);
+      }
 
       // Basic brute-force throttling backed by the immutable audit log.
       const recentFailures = await env.DB.prepare(
@@ -5403,12 +5766,38 @@ async function handleFetch(request, env) {
       }
 
       if (!user) {
+        const accountFailure = await recordLoginFailure(env, "account", accountKey, null, LOGIN_ACCOUNT_MAX_FAILURES);
+        const ipFailure = await recordLoginFailure(env, "ip", loginIp, null, LOGIN_IP_MAX_FAILURES);
+        if (accountFailure.locked) {
+          await audit(env, null, "login.lockout", "login", phoneIdent ? maskDestination("sms", phoneIdent) : ident, {
+            scope: "account", failures: accountFailure.failures, locked_until: accountFailure.lockedUntil
+          });
+        }
+        if (ipFailure.locked) {
+          await audit(env, null, "login.ip_lockout", "login", loginIp, {
+            scope: "ip", failures: ipFailure.failures, locked_until: ipFailure.lockedUntil
+          });
+          return json({ error: "Too many login attempts. Please try again later." }, 429);
+        }
         await audit(env, null, "login.failure", "user", throttleKey, { reason: "not_found" });
         return json({ error: "Invalid credentials" }, 401);
       }
 
       const ok = await verifyPassword(password, user.password_hash);
       if (!ok) {
+        const accountFailure = await recordLoginFailure(env, "account", accountKey, user.id, LOGIN_ACCOUNT_MAX_FAILURES);
+        const ipFailure = await recordLoginFailure(env, "ip", loginIp, user.id, LOGIN_IP_MAX_FAILURES);
+        if (accountFailure.locked) {
+          await audit(env, null, "login.lockout", "login", phoneIdent ? maskDestination("sms", phoneIdent) : ident, {
+            scope: "account", user_id: user.id, failures: accountFailure.failures, locked_until: accountFailure.lockedUntil
+          });
+        }
+        if (ipFailure.locked) {
+          await audit(env, null, "login.ip_lockout", "login", loginIp, {
+            scope: "ip", failures: ipFailure.failures, locked_until: ipFailure.lockedUntil
+          });
+          return json({ error: "Too many login attempts. Please try again later." }, 429);
+        }
         await audit(env, user.id, "login.failure", "user", throttleKey, { reason: "bad_password" });
         return json({ error: "Invalid credentials" }, 401);
       }
@@ -5432,6 +5821,7 @@ async function handleFetch(request, env) {
       }
 
       // Rotate away any pre-existing browser session to prevent fixation.
+      await clearLoginLockouts(env, accountKey, user.id);
       const priorSession = parseCookies(request)[SESSION_COOKIE];
       if (priorSession) await env.DB.prepare("DELETE FROM sessions WHERE id=?").bind(priorSession).run();
       const sess = await createSession(env, user.id);
@@ -5611,6 +6001,70 @@ async function handleFetch(request, env) {
         clients,
         pagination: { page, limit, total: Number(count ? count.c : 0) }
       });
+    }
+
+    if (path === "/api/admin/system-alerts" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (!["Super Admin", "Managing Director", "Head Accountant"].includes(actualRole) && Number(actor.commission_access || 0) !== 1) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const openOnly = String(url.searchParams.get("status") || "open") !== "all";
+      const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") || "100", 10)));
+      const { results } = await env.DB.prepare(`
+        SELECT a.*, u.full_name AS acknowledged_by_name
+        FROM system_alerts a LEFT JOIN users u ON u.id=a.acknowledged_by
+        ${openOnly ? "WHERE a.resolved_at IS NULL" : ""}
+        ORDER BY a.last_seen_at DESC, a.id DESC LIMIT ?
+      `).bind(limit).all();
+      return json({ alerts: results });
+    }
+
+    const alertAckMatch = path.match(/^\/api\/admin\/system-alerts\/(\d+)\/acknowledge$/);
+    if (alertAckMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (!["Super Admin", "Managing Director", "Head Accountant"].includes(actualRole) && Number(actor.commission_access || 0) !== 1) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      await env.DB.prepare(
+        "UPDATE system_alerts SET acknowledged_by=?, acknowledged_at=datetime('now'), resolved_at=datetime('now') WHERE id=?"
+      ).bind(actor.id, alertAckMatch[1]).run();
+      await audit(env, actor.id, "system_alert.acknowledge", "system_alert", alertAckMatch[1], null, null);
+      return json({ ok: true });
+    }
+
+    if (path === "/api/admin/backups" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (!["Super Admin", "Managing Director", "Head Accountant"].includes(actualRole)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      const { results } = await env.DB.prepare(
+        "SELECT * FROM backup_runs ORDER BY id DESC LIMIT 100"
+      ).all();
+      return json({ backups: results, retention_days: 30, destination: "R2 BACKUPS binding / backups/d1/" });
+    }
+
+    if (path === "/api/admin/backups/run" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (!["Super Admin", "Managing Director"].includes(actualRole)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      try {
+        const result = await runD1Backup(env);
+        await audit(env, actor.id, "backup.run", "backup", result.key || null, result, null);
+        return json({ ok: true, ...result });
+      } catch (error) {
+        return json({ error: error.message || "Backup failed" }, 500);
+      }
     }
 
     if (path === "/api/admin/app-settings" && (request.method === "GET" || request.method === "PUT")) {
@@ -6304,6 +6758,29 @@ async function handleFetch(request, env) {
     // =========================================================================
     // STAFF USERS & ORG MANAGEMENT
     // =========================================================================
+    const userUnlockMatch = path.match(/^\/api\/users\/(\d+)\/unlock$/);
+    if (userUnlockMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (!["Super Admin", "Managing Director"].includes(actualRole)) {
+        return json({ error: "Only the MD or Super Admin can unlock an account" }, 403);
+      }
+      const target = await env.DB.prepare(
+        "SELECT u.id, u.email, u.full_name, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?"
+      ).bind(userUnlockMatch[1]).first();
+      if (!target) return json({ error: "User not found" }, 404);
+      const cleared = await env.DB.prepare(
+        "DELETE FROM login_lockouts WHERE scope='account' AND user_id=?"
+      ).bind(target.id).run();
+      await audit(env, actor.id, "user.unlock", "user", String(target.id), {
+        target_email: target.email, target_role: target.role_name,
+        cleared_rows: cleared.meta ? cleared.meta.changes : 0
+      }, null);
+      return json({ ok: true, user_id: target.id, unlocked: true });
+    }
+
     if (path === "/api/users" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
@@ -6879,10 +7356,17 @@ async function handleFetch(request, env) {
       if (body.is_published !== undefined || body.workflow_status !== undefined) {
         const wantsPublished = body.is_published !== undefined ? isTruthy(body.is_published) : body.workflow_status === "published";
         if (wantsPublished) {
+          const nextTitle = body.title !== undefined ? String(body.title) : String(existing.title || "");
+          if (isPlaceholderPropertyTitle(nextTitle)) {
+            return json({ error: "This listing still has a placeholder title. Replace the title and complete the listing before publishing." }, 409);
+          }
           const enabledPlans = await propertyEnabledPlanCount(env, existing.id);
           if (!enabledPlans) return json({ error: "Add and enable at least one payment plan before publishing" }, 409);
-          const approvalRequired = String(await getAppSetting(env, "branch_manager_listing_approval", "1")) !== "0";
-          if (actualRole === "Branch Manager" && approvalRequired) {
+          if (await propertyHasEightMonthPlan(env, existing.id)) {
+            return json({ error: "This property has an enabled 8-month plan. The owner must approve the 8-month commission structure before it can be published." }, 409);
+          }
+          const isOwner = ["Super Admin", "Managing Director"].includes(actualRole);
+          if (!isOwner) {
             workflow = "pending_approval";
             sets.push("is_published=?", "workflow_status=?", "submitted_at=datetime('now')");
             vals.push(0, workflow);
@@ -6929,8 +7413,14 @@ async function handleFetch(request, env) {
       const action = propWorkflowMatch[2];
       if (action === "approve") {
         if (!["Super Admin", "Managing Director"].includes(actualRole)) return json({ error: "Only the MD or Super Admin can approve a listing" }, 403);
+        if (isPlaceholderPropertyTitle(property.title)) {
+          return json({ error: "This listing still has a placeholder title. Replace the title and complete the listing before approval." }, 409);
+        }
         const enabledPlans = await propertyEnabledPlanCount(env, property.id);
         if (!enabledPlans) return json({ error: "Add and enable at least one payment plan before approving" }, 409);
+        if (await propertyHasEightMonthPlan(env, property.id)) {
+          return json({ error: "This property has an enabled 8-month plan. The owner must approve the 8-month commission structure before approval." }, 409);
+        }
         await env.DB.prepare(`
           UPDATE properties SET is_published=1, workflow_status='published', approved_by=?, approved_at=datetime('now'),
             updated_by=?, updated_at=datetime('now') WHERE id=?
@@ -9898,11 +10388,13 @@ async function handleFetch(request, env) {
       const routeMode = alatpayWebhookMatch[1] || currentMode;
       if (routeMode !== currentMode) {
         await audit(env, null, "webhook.rejected", "alatpay", null, { reason: "mode_mismatch", route_mode: routeMode, current_mode: currentMode });
+        await maybeAlertWebhookFailures(env, "alatpay");
         return json({ error: "Webhook mode does not match this deployment" }, 404);
       }
       const settings = await getAlatpaySettings(env, routeMode);
       if (!settings.webhookSecret) {
         await audit(env, null, "webhook.rejected", "alatpay", null, { reason: "webhook_secret_missing", mode: routeMode });
+        await maybeAlertWebhookFailures(env, "alatpay");
         return json({ error: `ALATPay ${routeMode} webhook secret is not configured` }, 503);
       }
       const rawText = await request.text();
@@ -9913,6 +10405,7 @@ async function handleFetch(request, env) {
       const expected = await hmacBase64(settings.webhookSecret, rawText, "SHA-256");
       if (!secureCompare(supplied, expected)) {
         await audit(env, null, "webhook.rejected", "alatpay", null, { reason: "bad_signature", mode: routeMode });
+        await maybeAlertWebhookFailures(env, "alatpay");
         return json({ error: "Invalid webhook signature" }, 401);
       }
 
@@ -9955,6 +10448,12 @@ async function handleFetch(request, env) {
         remote = await alatpayRequest(env, `/alatpaytransaction/api/v1/transactions/${encodeURIComponent(transactionId)}`, { mode: routeMode });
       } catch (error) {
         await recordEvent("verification_failed", orderId || transactionId, null);
+        await sendSystemAlert(env, {
+          alertType: "credit_failed", severity: "critical", dedupeKey: "credit_failed:alatpay:verification",
+          title: "ALATPay credit verification failed",
+          message: "A webhook could not verify the transaction with ALATPay. The payment was not credited.",
+          metadata: { provider: "alatpay", reference: orderId || transactionId }, cooldownMinutes: 30
+        });
         return json({ error: "Unable to verify ALATPay transaction status" }, error.status || 503);
       }
       const remoteData = remote.data || remote;
@@ -9971,6 +10470,12 @@ async function handleFetch(request, env) {
       }
       if (remoteAmountKobo !== payloadAmountKobo) {
         await recordEvent("amount_mismatch", remoteOrderId || transactionId, null, { remote_amount: remoteAmountKobo, payload_amount: payloadAmountKobo });
+        await sendSystemAlert(env, {
+          alertType: "credit_failed", severity: "warning", dedupeKey: "credit_failed:alatpay:amount",
+          title: "ALATPay credit amount mismatch",
+          message: "The webhook amount did not match the provider status. The payment was not credited.",
+          metadata: { provider: "alatpay", reference: remoteOrderId || transactionId }, cooldownMinutes: 30
+        });
         return json({ error: "ALATPay webhook amount does not match provider status" }, 409);
       }
       if (remoteCurrency !== SUPPORTED_CURRENCY) {
@@ -10035,10 +10540,22 @@ async function handleFetch(request, env) {
       const expectedAmountKobo = Number(payment.amount_kobo || toKobo(payment.amount));
       if (!isStatic && expectedAmountKobo !== remoteAmountKobo) {
         await recordEvent("amount_mismatch", reference, payment.id, { expected_amount: expectedAmountKobo, remote_amount: remoteAmountKobo });
+        await sendSystemAlert(env, {
+          alertType: "credit_failed", severity: "warning", dedupeKey: "credit_failed:alatpay:pending_amount",
+          title: "ALATPay pending payment amount mismatch",
+          message: "A dynamic payment amount did not match the pending payment. The payment was not credited.",
+          metadata: { provider: "alatpay", reference, payment_id: payment.id }, cooldownMinutes: 30
+        });
         return json({ error: "ALATPay amount does not match the pending payment" }, 409);
       }
       if (isStatic && expectedAmountKobo !== remoteAmountKobo && payment.status !== "pending") {
         await recordEvent("amount_mismatch", reference, payment.id, { existing_amount: expectedAmountKobo, remote_amount: remoteAmountKobo });
+        await sendSystemAlert(env, {
+          alertType: "credit_failed", severity: "warning", dedupeKey: "credit_failed:alatpay:static_amount",
+          title: "ALATPay static-wallet amount mismatch",
+          message: "A static-wallet payment amount did not match the recorded payment. The payment was not credited.",
+          metadata: { provider: "alatpay", reference, payment_id: payment.id }, cooldownMinutes: 30
+        });
         return json({ error: "ALATPay amount does not match the recorded static-wallet payment" }, 409);
       }
       if (["pending", "processing", "initiated", "new"].includes(remoteStatus)) {
@@ -10116,11 +10633,13 @@ async function handleFetch(request, env) {
       }
       if (!conf.webhook_secret) {
         await audit(env, null, "webhook.rejected", "wema_alat", null, { reason: "missing_secret" });
+        await maybeAlertWebhookFailures(env, "wema_alat");
         return json({ error: "Webhook verification is not configured" }, 503);
       }
       const supplied = request.headers.get("X-Webhook-Secret") || "";
       if (!secureCompare(supplied, conf.webhook_secret)) {
         await audit(env, null, "webhook.rejected", "wema_alat", null, { reason: "bad_signature" });
+        await maybeAlertWebhookFailures(env, "wema_alat");
         return json({ error: "Invalid webhook signature" }, 401);
       }
 
@@ -10277,6 +10796,7 @@ async function handleFetch(request, env) {
         verification = await adapter.verifyWebhook(env, request, body, rawText);
       } catch (error) {
         await audit(env, null, "webhook.rejected", providerKey, null, { reason: error.message });
+        await maybeAlertWebhookFailures(env, providerKey);
         return json({ error: error.message || "Webhook verification failed" }, error.status || 503);
       }
       const event = adapter.normalizeEvent(body, verification);
@@ -12878,12 +13398,16 @@ async function handleFetch(request, env) {
     // =========================================================================
     // PHASE 7: COMMISSIONS, WORKFLOW, PAYMENTS AND FINANCIAL REPORTS
     // =========================================================================
-    async function normalizeCommissionRules(env, basis, rules) {
+    async function normalizeCommissionRules(env, basis, rules, planFamily = "standard") {
       if (!Array.isArray(rules) || !rules.length) return { error: "At least one commission rule is required" };
       const normalized = [];
       for (const raw of rules) {
         const roleName = raw.role_name;
         if (!COMMISSION_ROLES.includes(roleName)) return { error: "Commission rule role is invalid" };
+        if (planFamily === "referral" && roleName !== "Marketer") {
+          return { error: "Referral commission is configured for the Marketer role only until the owner approves other roles" };
+        }
+        const ruleType = raw.rule_type || (basis === "referral_cumulative_tiered" ? "cumulative_tiered_cap" : "percentage");
         const rateBps = raw.rate_bps !== undefined
           ? Number(raw.rate_bps)
           : Math.round(Number(raw.rate_percent || 0) * 100);
@@ -12892,8 +13416,29 @@ async function handleFetch(request, env) {
           : toKobo(raw.fixed_amount || 0);
         if (!Number.isInteger(rateBps) || rateBps < 0 || rateBps > 10000) return { error: "Commission rate must be between 0 and 100%" };
         if (!Number.isInteger(fixedKobo) || fixedKobo < 0) return { error: "Fixed commission amount is invalid" };
-        if (basis === "fixed" && fixedKobo <= 0) return { error: "Fixed commission plans require a positive fixed amount" };
-        if (basis !== "fixed" && rateBps <= 0) return { error: "Percentage commission plans require a positive rate" };
+        const stageAmount = raw.stage_amount_kobo !== undefined ? Number(raw.stage_amount_kobo) : toKobo(raw.stage_amount || 0);
+        const stage1Cap = raw.stage1_cap_kobo !== undefined ? Number(raw.stage1_cap_kobo) : toKobo(raw.stage1_cap || 0);
+        const stage2Cap = raw.stage2_cap_kobo !== undefined ? Number(raw.stage2_cap_kobo) : toKobo(raw.stage2_cap || 0);
+        const maxCap = raw.max_cap_kobo !== undefined ? Number(raw.max_cap_kobo) : toKobo(raw.max_cap || 0);
+        for (const amount of [stageAmount, stage1Cap, stage2Cap, maxCap]) {
+          if (!Number.isInteger(amount) || amount < 0) return { error: "Commission tier amounts must be non-negative integers in kobo" };
+        }
+        if (basis === "referral_cumulative_tiered") {
+          if (ruleType !== "cumulative_tiered_cap") return { error: "Long-term referral plans require the cumulative tiered cap rule type" };
+          if (stageAmount <= 0 || stage1Cap <= 0 || stage2Cap <= 0 || maxCap <= 0) {
+            return { error: "Cumulative tiered cap rules require stage amount, both stage caps and a maximum cap" };
+          }
+          if (maxCap > stage1Cap + stage2Cap) return { error: "Maximum cap cannot exceed the sum of both stage caps" };
+          if (rateBps !== 0 || fixedKobo !== 0) return { error: "Cumulative tiered cap rules must not also set a rate or fixed amount" };
+        } else if (basis === "referral_percentage") {
+          if (ruleType !== "percentage") return { error: "Short-term and outright referral plans require the percentage rule type" };
+          if (rateBps <= 0) return { error: "Percentage referral plans require a positive rate" };
+          if (stageAmount || stage1Cap || stage2Cap || maxCap) return { error: "Percentage referral plans cannot use tier caps" };
+        } else if (basis === "fixed") {
+          if (fixedKobo <= 0) return { error: "Fixed commission plans require a positive fixed amount" };
+        } else if (rateBps <= 0) {
+          return { error: "Percentage commission plans require a positive rate" };
+        }
         const categoryId = raw.property_category_id ? Number(raw.property_category_id) : null;
         if (categoryId) {
           const category = await env.DB.prepare("SELECT id FROM property_categories WHERE id=?").bind(categoryId).first();
@@ -12910,18 +13455,24 @@ async function handleFetch(request, env) {
           if (!team) return { error: "Team not found" };
           if (branchId && Number(team.branch_id) !== branchId) return { error: "Team does not belong to the selected branch" };
         }
-        const salesType = raw.sales_type || null;
+        const salesType = raw.sales_type || (planFamily === "referral" ? "Referral" : null);
         if (salesType && !SALE_TYPES.includes(salesType)) return { error: "Sales type is invalid" };
+        if (planFamily === "referral" && salesType !== "Referral") return { error: "Referral commission plans must use the Referral sale type" };
         normalized.push({
           id: raw.id ? Number(raw.id) : null,
           role_name: roleName,
-          rate_bps: basis === "fixed" ? 0 : rateBps,
+          rate_bps: basis === "fixed" || basis === "referral_cumulative_tiered" ? 0 : rateBps,
           fixed_amount_kobo: basis === "fixed" ? fixedKobo : 0,
           property_category_id: categoryId,
           sales_type: salesType,
           branch_id: branchId,
           team_id: teamId,
-          is_active: raw.is_active === undefined ? 1 : (isTruthy(raw.is_active) ? 1 : 0)
+          is_active: raw.is_active === undefined ? 1 : (isTruthy(raw.is_active) ? 1 : 0),
+          rule_type: ruleType,
+          stage_amount_kobo: stageAmount,
+          stage1_cap_kobo: stage1Cap,
+          stage2_cap_kobo: stage2Cap,
+          max_cap_kobo: maxCap
         });
       }
       return { rules: normalized };
@@ -12931,13 +13482,25 @@ async function handleFetch(request, env) {
       const name = String(body.name || "").trim();
       if (!name) return { error: "Commission plan name is required" };
       const basis = body.calculation_basis;
-      if (!COMMISSION_BASES.includes(basis)) return { error: "Calculation basis must be contract_value, verified_collections or fixed" };
+      if (!COMMISSION_BASES.includes(basis)) return { error: "Calculation basis is invalid" };
+      const planFamily = body.plan_family || "standard";
+      if (!["standard", "referral"].includes(planFamily)) return { error: "Plan family must be standard or referral" };
       const effectiveFrom = body.effective_from ? dateOnly(body.effective_from) : null;
       const effectiveTo = body.effective_to ? dateOnly(body.effective_to) : null;
       if (body.effective_from && !effectiveFrom) return { error: "Invalid effective start date" };
       if (body.effective_to && !effectiveTo) return { error: "Invalid effective end date" };
       if (effectiveFrom && effectiveTo && effectiveFrom > effectiveTo) return { error: "Effective start date must be before the end date" };
-      const ruleResult = await normalizeCommissionRules(env, basis, body.rules);
+      const minDuration = body.min_duration_months === undefined || body.min_duration_months === null || body.min_duration_months === ""
+        ? null : Number(body.min_duration_months);
+      const maxDuration = body.max_duration_months === undefined || body.max_duration_months === null || body.max_duration_months === ""
+        ? null : Number(body.max_duration_months);
+      if (minDuration !== null && (!Number.isInteger(minDuration) || minDuration < 0)) return { error: "Minimum duration is invalid" };
+      if (maxDuration !== null && (!Number.isInteger(maxDuration) || maxDuration < 0)) return { error: "Maximum duration is invalid" };
+      if (minDuration !== null && maxDuration !== null && minDuration > maxDuration) return { error: "Minimum duration cannot exceed maximum duration" };
+      const saleType = body.sale_type || (planFamily === "referral" ? "Referral" : null);
+      if (saleType && !SALE_TYPES.includes(saleType)) return { error: "Sale type is invalid" };
+      if (planFamily === "referral" && saleType !== "Referral") return { error: "Referral commission plans must use the Referral sale type" };
+      const ruleResult = await normalizeCommissionRules(env, basis, body.rules, planFamily);
       if (ruleResult.error) return ruleResult;
       const commissionableMode = body.commissionable_mode || "full";
       if (!COMMISSIONABLE_MODES.includes(commissionableMode)) {
@@ -12972,7 +13535,12 @@ async function handleFetch(request, env) {
           commissionable_mode: commissionableMode,
           commissionable_first_months: firstMonths,
           commissionable_percent_bps: percentBps,
-          commissionable_cap_kobo: capKobo
+          commissionable_cap_kobo: capKobo,
+          plan_family: planFamily,
+          sale_type: saleType,
+          min_duration_months: minDuration,
+          max_duration_months: maxDuration,
+          outright_applies: body.outright_applies === undefined ? 0 : (isTruthy(body.outright_applies) ? 1 : 0)
         },
         rules: ruleResult.rules
       };
@@ -13038,21 +13606,25 @@ async function handleFetch(request, env) {
         INSERT INTO commission_plans (name, description, calculation_basis, effective_from, effective_to,
           approval_required, separation_of_duties, is_active, created_by,
           commissionable_mode, commissionable_first_months, commissionable_percent_bps,
-          commissionable_cap_kobo, current_version_no)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+          commissionable_cap_kobo, current_version_no, plan_family, sale_type,
+          min_duration_months, max_duration_months, outright_applies)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
       `).bind(plan.name, plan.description, plan.calculation_basis, plan.effective_from, plan.effective_to,
         plan.approval_required, plan.separation_of_duties, plan.is_active, actor.id,
         plan.commissionable_mode, plan.commissionable_first_months, plan.commissionable_percent_bps,
-        plan.commissionable_cap_kobo).run();
+        plan.commissionable_cap_kobo, plan.plan_family, plan.sale_type,
+        plan.min_duration_months, plan.max_duration_months, plan.outright_applies).run();
       const planId = res.meta.last_row_id;
       const createdRules = [];
       for (const rule of validated.rules) {
         const ruleRes = await env.DB.prepare(`
           INSERT INTO commission_plan_rules (plan_id, role_name, rate_bps, fixed_amount_kobo,
-            property_category_id, sales_type, branch_id, team_id, is_active)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            property_category_id, sales_type, branch_id, team_id, is_active,
+            rule_type, stage_amount_kobo, stage1_cap_kobo, stage2_cap_kobo, max_cap_kobo)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(planId, rule.role_name, rule.rate_bps, rule.fixed_amount_kobo,
-          rule.property_category_id, rule.sales_type, rule.branch_id, rule.team_id, rule.is_active).run();
+          rule.property_category_id, rule.sales_type, rule.branch_id, rule.team_id, rule.is_active,
+          rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo).run();
         createdRules.push({ id: ruleRes.meta.last_row_id, ...rule });
       }
       await createCommissionPlanVersion(env, planId, 1, plan, createdRules, body.change_reason || "Initial version", actor.id);
@@ -13097,12 +13669,14 @@ async function handleFetch(request, env) {
         UPDATE commission_plans SET name=?, description=?, calculation_basis=?, effective_from=?, effective_to=?,
           approval_required=?, separation_of_duties=?, is_active=?, updated_by=?, updated_at=datetime('now'),
           commissionable_mode=?, commissionable_first_months=?, commissionable_percent_bps=?,
-          commissionable_cap_kobo=?, current_version_no=?
+          commissionable_cap_kobo=?, current_version_no=?, plan_family=?, sale_type=?,
+          min_duration_months=?, max_duration_months=?, outright_applies=?
         WHERE id=?
       `).bind(plan.name, plan.description, plan.calculation_basis, plan.effective_from, plan.effective_to,
         plan.approval_required, plan.separation_of_duties, plan.is_active, actor.id,
         plan.commissionable_mode, plan.commissionable_first_months, plan.commissionable_percent_bps,
-        plan.commissionable_cap_kobo, nextVersionNo, existing.id).run();
+        plan.commissionable_cap_kobo, nextVersionNo, plan.plan_family, plan.sale_type,
+        plan.min_duration_months, plan.max_duration_months, plan.outright_applies, existing.id).run();
       const keptRuleIds = [];
       for (const rule of validated.rules) {
         if (rule.id) {
@@ -13110,17 +13684,23 @@ async function handleFetch(request, env) {
           if (!owned) return json({ error: "Commission rule does not belong to this plan" }, 400);
           await env.DB.prepare(`
             UPDATE commission_plan_rules SET role_name=?, rate_bps=?, fixed_amount_kobo=?, property_category_id=?,
-              sales_type=?, branch_id=?, team_id=?, is_active=?, updated_at=datetime('now') WHERE id=?
+              sales_type=?, branch_id=?, team_id=?, is_active=?,
+              rule_type=?, stage_amount_kobo=?, stage1_cap_kobo=?, stage2_cap_kobo=?, max_cap_kobo=?,
+              updated_at=datetime('now') WHERE id=?
           `).bind(rule.role_name, rule.rate_bps, rule.fixed_amount_kobo, rule.property_category_id,
-            rule.sales_type, rule.branch_id, rule.team_id, rule.is_active, rule.id).run();
+            rule.sales_type, rule.branch_id, rule.team_id, rule.is_active,
+            rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo,
+            rule.id).run();
           keptRuleIds.push(rule.id);
         } else {
           const res = await env.DB.prepare(`
             INSERT INTO commission_plan_rules (plan_id, role_name, rate_bps, fixed_amount_kobo,
-              property_category_id, sales_type, branch_id, team_id, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              property_category_id, sales_type, branch_id, team_id, is_active,
+              rule_type, stage_amount_kobo, stage1_cap_kobo, stage2_cap_kobo, max_cap_kobo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(existing.id, rule.role_name, rule.rate_bps, rule.fixed_amount_kobo,
-            rule.property_category_id, rule.sales_type, rule.branch_id, rule.team_id, rule.is_active).run();
+            rule.property_category_id, rule.sales_type, rule.branch_id, rule.team_id, rule.is_active,
+            rule.rule_type, rule.stage_amount_kobo, rule.stage1_cap_kobo, rule.stage2_cap_kobo, rule.max_cap_kobo).run();
           keptRuleIds.push(res.meta.last_row_id);
         }
       }
@@ -13160,7 +13740,7 @@ async function handleFetch(request, env) {
     if (path === "/api/referral-commissions/rules" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!canViewReferralCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
       const { results } = await env.DB.prepare(
         "SELECT rule_key, label, structure, min_months, max_months, stage_amount_kobo, stage1_commission_cap_kobo, stage2_commission_cap_kobo, max_commission_kobo, flat_rate_bps FROM referral_commission_rules WHERE is_active=1 ORDER BY id"
       ).all();
@@ -13221,7 +13801,8 @@ async function handleFetch(request, env) {
           COALESCE(SUM(CASE WHEN a.status='Configuration Required' THEN 1 ELSE 0 END),0) AS configuration_required,
           COALESCE(SUM(CASE WHEN a.flag_reason IS NOT NULL THEN 1 ELSE 0 END),0) AS flagged,
           COALESCE(SUM(CASE WHEN a.structure='two_stage' THEN 1 ELSE 0 END),0) AS long_term,
-          COALESCE(SUM(CASE WHEN a.structure='flat' THEN 1 ELSE 0 END),0) AS short_term
+          COALESCE(SUM(CASE WHEN a.structure='flat' THEN 1 ELSE 0 END),0) AS short_term,
+          COALESCE(SUM(a.carry_forward_kobo),0) AS carry_forward_kobo
         FROM referral_commission_accounts a JOIN clients c ON c.id=a.client_id
         ${whereSql}
       `).bind(...binds).first();
@@ -13236,18 +13817,47 @@ async function handleFetch(request, env) {
         GROUP BY a.structure ORDER BY a.structure
       `).bind(...binds).all();
 
+      const actualRole = actor.actual_role_name || actor.role_name;
+      const marketerView = actualRole === "Marketer";
       return json({
-        entries: rows.map(row => ({
-          ...row,
-          structure_label: referralStructureLabel(row.structure, row.plan_type, row.plan_duration_months),
-          net_commission_kobo: Number(row.net_commission_kobo || 0),
-          outstanding_kobo: Number(row.outstanding_kobo || 0)
-        })),
-        summary: {
+        entries: rows.map(row => {
+          if (marketerView) {
+            return {
+              id: row.id,
+              client_name: row.client_name,
+              client_reference: row.client_reference,
+              plan_type: marketerPlanLabel(row.structure, row.plan_type),
+              total_paid_kobo: Number(row.total_paid_kobo || 0),
+              commission_earned_kobo: Number(row.net_commission_kobo || 0),
+              paid_kobo: Number(row.paid_kobo || 0),
+              outstanding_kobo: Number(row.outstanding_kobo || 0),
+              carry_forward_kobo: Number(row.carry_forward_kobo || 0),
+              status: row.status
+            };
+          }
+          return {
+            ...row,
+            structure_label: referralStructureLabel(row.structure, row.plan_type, row.plan_duration_months),
+            plan_type_label: marketerPlanLabel(row.structure, row.plan_type),
+            net_commission_kobo: Number(row.net_commission_kobo || 0),
+            outstanding_kobo: Number(row.outstanding_kobo || 0),
+            carry_forward_kobo: Number(row.carry_forward_kobo || 0)
+          };
+        }),
+        summary: marketerView
+          ? {
+            total_clients: Number(summaryRow ? summaryRow.total_clients : 0),
+            earned_kobo: Number(summaryRow ? summaryRow.earned_kobo : 0),
+            paid_kobo: Number(summaryRow ? summaryRow.paid_kobo : 0),
+            outstanding_kobo: Number(summaryRow ? summaryRow.outstanding_kobo : 0),
+            carry_forward_kobo: Number(summaryRow ? summaryRow.carry_forward_kobo : 0)
+          }
+          : {
           total_clients: Number(summaryRow ? summaryRow.total_clients : 0),
           earned_kobo: Number(summaryRow ? summaryRow.earned_kobo : 0),
           paid_kobo: Number(summaryRow ? summaryRow.paid_kobo : 0),
           outstanding_kobo: Number(summaryRow ? summaryRow.outstanding_kobo : 0),
+          carry_forward_kobo: Number(summaryRow ? summaryRow.carry_forward_kobo : 0),
           configuration_required: Number(summaryRow ? summaryRow.configuration_required : 0),
           flagged: Number(summaryRow ? summaryRow.flagged : 0),
           long_term: Number(summaryRow ? summaryRow.long_term : 0),
@@ -13294,12 +13904,35 @@ async function handleFetch(request, env) {
         FROM referral_commission_adjustments a LEFT JOIN users u ON u.id=a.created_by
         WHERE a.account_id=? ORDER BY a.created_at DESC, a.id DESC
       `).bind(account.id).all();
+      const actualRole = actor.actual_role_name || actor.role_name;
+      if (actualRole === "Marketer") {
+        return json({
+          account: {
+            id: account.id,
+            client_name: account.client_name,
+            client_reference: account.client_reference,
+            plan_type: marketerPlanLabel(account.structure, account.plan_type),
+            total_paid_kobo: Number(account.total_paid_kobo || 0),
+            commission_earned_kobo: Number(account.net_commission_kobo || 0),
+            paid_kobo: Number(account.paid_kobo || 0),
+            outstanding_kobo: Number(account.outstanding_kobo || 0),
+            carry_forward_kobo: Number(account.carry_forward_kobo || 0),
+            status: account.status
+          },
+          events: [],
+          payments: [],
+          adjustments: [],
+          can_manage: false
+        });
+      }
       return json({
         account: {
           ...account,
           structure_label: referralStructureLabel(account.structure, account.plan_type, account.plan_duration_months),
+          plan_type_label: marketerPlanLabel(account.structure, account.plan_type),
           net_commission_kobo: Number(account.net_commission_kobo || 0),
-          outstanding_kobo: Number(account.outstanding_kobo || 0)
+          outstanding_kobo: Number(account.outstanding_kobo || 0),
+          carry_forward_kobo: Number(account.carry_forward_kobo || 0)
         },
         events,
         payments,
@@ -13908,6 +14541,23 @@ async function handleFetch(request, env) {
     } catch (error) {
       if (error instanceof SyntaxError) return json({ error: "Invalid JSON request body" }, 400);
       console.error("Unhandled request error", error);
+      try {
+        const requestPath = new URL(request.url).pathname;
+        await audit(env, null, "worker.exception", "worker", requestPath, {
+          message: String(error && error.message || error).slice(0, 800)
+        }, null);
+        const recent = await env.DB.prepare(
+          "SELECT COUNT(*) AS c FROM audit_logs WHERE action='worker.exception' AND created_at >= datetime('now','-10 minutes')"
+        ).first();
+        if (Number(recent ? recent.c : 0) >= 10) {
+          await sendSystemAlert(env, {
+            alertType: "worker_exception_spike", severity: "critical", dedupeKey: "worker:exception_spike",
+            title: "Worker exception rate is elevated",
+            message: `${Number(recent.c)} unhandled Worker exceptions were recorded in the last 10 minutes.`,
+            metadata: { recent_exceptions: Number(recent.c) }, cooldownMinutes: 15
+          });
+        }
+      } catch { /* never mask the original request error */ }
       return json({ error: "Internal server error" }, 500);
     }
 }
@@ -13963,6 +14613,8 @@ export default {
       await backfillReferralCommissions(env, null, { limit: 100, onlyStale: true, reason: "Scheduled referral commission reconciliation" }).catch(() => {});
       await expireTestAccounts(env);
       await expireMonthlyMarketerAccess(env);
+      await checkStuckPendingPayments(env);
+      await runD1Backup(env).catch(() => {});
       const settings = await getSmsSettings(env);
       if (settings.enabled && settings.provider !== "mock") {
         try {

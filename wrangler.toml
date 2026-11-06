@@ -20,6 +20,10 @@ migrations_dir = "migrations"
 binding = "FILES"
 bucket_name = "bliss-legacy-staging-file"
 
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "bliss-legacy-staging-backups"
+
 [[kv_namespaces]]
 binding = "CACHE"
 id = "42bc72e5a1dd42f18e4469c8f7c8a7f1"
@@ -80,6 +84,10 @@ migrations_dir = "migrations"
 [[env.production.r2_buckets]]
 binding = "FILES"
 bucket_name = "bliss-legacy-production-files"
+
+[[env.production.r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "bliss-legacy-production-backups"
 
 [[env.production.queues.producers]]
 binding = "TASKS"

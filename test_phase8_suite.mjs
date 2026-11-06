@@ -76,8 +76,9 @@ db.exec(`
   DELETE FROM commission_attributions;
   DELETE FROM commission_generation_failures;
   DELETE FROM commission_entries;
-  DELETE FROM commission_plan_rules;
-  DELETE FROM commission_plans;
+  DELETE FROM commission_plan_versions WHERE plan_id IN (SELECT id FROM commission_plans WHERE COALESCE(plan_family,'standard')='standard');
+  DELETE FROM commission_plan_rules WHERE plan_id IN (SELECT id FROM commission_plans WHERE COALESCE(plan_family,'standard')='standard');
+  DELETE FROM commission_plans WHERE COALESCE(plan_family,'standard')='standard';
   DELETE FROM sms_messages;
   DELETE FROM sms_optouts;
   DELETE FROM client_verification_otps;
@@ -1846,7 +1847,9 @@ await test('referral commission applies two-stage and flat rules, caps at 35,000
   assert(reversedAccount.total_commission_kobo === 3500000, 'reversing the payment above the cap must not reduce the capped commission');
 
   const marketerView = await request('/api/referral-commissions', { headers: { Cookie: mkt1Cookie } });
-  assert(marketerView.status === 200 && marketerView.data.entries.every(row => row.marketer_id === mkt1Id), 'marketer referral view leaked another marketer');
+  assert(marketerView.status === 200, 'marketer referral view failed');
+  assert(marketerView.data.entries.every(row => !('marketer_id' in row) && !('rule_key' in row) && !('rate_bps' in row) && !('stage1_commission_kobo' in row)), 'marketer referral view leaked rate/rule fields');
+  assert(marketerView.data.entries.every(row => !String(row.client_name || '').includes('Referral Short Term')), 'marketer referral view leaked another marketer');
   const careView = await request('/api/referral-commissions', { headers: { Cookie: careNationalCookie } });
   assert(careView.status === 403, 'customer care must not see referral commissions');
   const configView = await request('/api/referral-commissions?status=Configuration%20Required', { headers: { Cookie: mdCookie } });
@@ -2345,6 +2348,360 @@ await test('BVN is never stored in full or written to logs during signup', async
 
 setSmsEnabled(false);
 
+console.log('\n--- 15. Lockout, alerting, backup and publish guards ---');
+
+function p24CommissionClient(ref, months = 12, planType = 'monthly', marketerId = mkt1Id) {
+  const phone = nextTestPhone();
+  return Number(db.prepare(`INSERT INTO clients
+    (client_reference, full_name, phone_number, email_address, status, sale_type,
+     assigned_branch_id, created_by, original_marketer_id, agreed_purchase_price,
+     payment_plan_type, payment_plan_duration_months)
+    VALUES (?, ?, ?, ?, 'Active Buyer', 'New Sale', ?, ?, ?, 20000000, ?, ?)`)
+    .run(ref, ref.replace(/-/g, ' '), phone, `${ref.toLowerCase()}@example.com`, ikeja, marketerId, marketerId, planType, months).lastInsertRowid);
+}
+function p24Payment(clientId, ref, kobo, dayOffset = 0) {
+  return Number(db.prepare(`INSERT INTO payments
+    (client_id, transaction_ref, amount, amount_kobo, currency, method, status, verified_at, is_demo)
+    VALUES (?, ?, ?, ?, 'NGN', 'Bank Transfer', 'verified', datetime('now', ?), 0)`)
+    .run(clientId, ref, kobo / 100, kobo, `-${dayOffset} days`).lastInsertRowid);
+}
+async function p24Backfill() {
+  return request('/api/referral-commissions/backfill', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+}
+
+await test('login lockout locks accounts and IPs, audits, unlocks and never blocks webhooks', async () => {
+  const lockedEmail = 'lockout.p24@bliss.com';
+  const lockedId = upsertUser(lockedEmail, 'Phase 24 Lockout Staff', 'Marketer', ikeja);
+  db.prepare("DELETE FROM login_lockouts").run();
+  for (let i = 0; i < 5; i++) {
+    const res = await request('/api/login', {
+      method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.201' },
+      body: { email: lockedEmail, password: 'wrong-password' }
+    });
+    assert(res.status === 401, `failed login ${i + 1} expected 401, got ${res.status}`);
+  }
+  const lockRow = db.prepare("SELECT * FROM login_lockouts WHERE scope='account' AND lock_key='id:' || ?").get(lockedEmail);
+  assert(lockRow && lockRow.locked_until, 'account lockout row missing');
+  const correctWhileLocked = await request('/api/login', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.201' },
+    body: { email: lockedEmail, password: 'password123' }
+  });
+  assert(correctWhileLocked.status === 401 && correctWhileLocked.data.error === 'Invalid credentials', 'locked account must return the generic error without revealing existence');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action='login.lockout'").get().c >= 1, 'account lockout was not audited');
+  const unlock = await request(`/api/users/${lockedId}/unlock`, { method: 'POST', headers: { Cookie: mdCookie }, body: {} });
+  assert(unlock.status === 200, 'MD account unlock failed');
+  const afterUnlock = await request('/api/login', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.201' },
+    body: { email: lockedEmail, password: 'password123' }
+  });
+  assert(afterUnlock.status === 200, 'login should work after admin unlock');
+
+  db.prepare("DELETE FROM login_lockouts").run();
+  for (let i = 0; i < 10; i++) {
+    await request('/api/login', {
+      method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.202' },
+      body: { email: `missing-${i}.p24@example.com`, password: 'wrong-password' }
+    });
+  }
+  const ipLimited = await request('/api/login', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.202' },
+    body: { email: 'missing-final.p24@example.com', password: 'wrong-password' }
+  });
+  assert(ipLimited.status === 429, 'per-IP login limit must return 429');
+  const webhookWhileIpLocked = await request('/api/webhooks/alatpay/test', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.202', 'Content-Type': 'application/json' },
+    body: {}, env: makeEnv({ PAYMENT_MODE: 'test', ALATPAY_TEST_SECRET_KEY: 'x', ALATPAY_TEST_BUSINESS_ID: 'b', ALATPAY_TEST_WEBHOOK_SECRET: 'wh' })
+  });
+  assert(webhookWhileIpLocked.status === 401, 'login lockout must not block the ALATPay webhook');
+});
+
+await test('system alerts fire for repeated webhook failures and stuck payments', async () => {
+  db.prepare("DELETE FROM system_alerts WHERE dedupe_key LIKE 'webhook_failures:%' OR dedupe_key='payments:stuck_pending'").run();
+  const alertEnv = makeEnv({
+    PAYMENT_MODE: 'test', ALATPAY_TEST_SECRET_KEY: 'x', ALATPAY_TEST_BUSINESS_ID: 'b',
+    ALATPAY_TEST_WEBHOOK_SECRET: 'wh', ALATPAY_TEST_BASE_URL: 'https://alatpay.test',
+    ALERT_WEBHOOK_URL: 'https://alerts.example/hook'
+  });
+  const originalFetch = globalThis.fetch;
+  const alertCalls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    if (String(input) === 'https://alerts.example/hook') {
+      alertCalls.push(JSON.parse(init.body || '{}'));
+      return new Response('ok', { status: 200 });
+    }
+    return originalFetch(input, init);
+  };
+  try {
+    for (let i = 0; i < 5; i++) {
+      await request('/api/webhooks/alatpay/test', {
+        method: 'POST', headers: { 'x-signature': 'invalid', 'CF-Connecting-IP': `203.0.113.${210 + i}` },
+        body: { Value: { Data: { Id: `bad-${i}`, Amount: 1, Currency: 'NGN', Status: 'completed' } } },
+        env: alertEnv
+      });
+    }
+    const webhookAlert = db.prepare("SELECT * FROM system_alerts WHERE dedupe_key='webhook_failures:alatpay'").get();
+    assert(webhookAlert && webhookAlert.occurrences >= 1, 'repeated webhook failure alert missing');
+    assert(alertCalls.some(call => /webhook/i.test(call.text || '')), 'webhook alert was not sent to the configured channel');
+
+    db.prepare(`INSERT INTO payments (client_id, transaction_ref, amount, amount_kobo, currency, method, status, is_demo, created_at)
+      VALUES (?, 'P24-STUCK-PENDING', 1000, 100000, 'NGN', 'Bank Transfer', 'pending', 0, datetime('now','-3 hours'))`)
+      .run(adaId);
+    const backupStore = new Map();
+    const backupMock = {
+      async put(key, bytes) { backupStore.set(key, { bytes, uploaded: new Date() }); },
+      async list({ prefix = '' } = {}) { return { objects: [...backupStore.entries()].filter(([k]) => k.startsWith(prefix)).map(([key, v]) => ({ key, uploaded: v.uploaded })) }; },
+      async delete(key) { backupStore.delete(key); },
+      async get(key) { return backupStore.get(key) || null; }
+    };
+    await worker.scheduled({}, makeEnv({ BACKUPS: backupMock }), { waitUntil() {} });
+    const stuckAlert = db.prepare("SELECT * FROM system_alerts WHERE dedupe_key='payments:stuck_pending'").get();
+    assert(stuckAlert, 'stuck pending payment alert missing');
+    assert(db.prepare("SELECT COUNT(*) AS c FROM backup_runs WHERE status='success'").get().c >= 1, 'scheduled backup did not complete');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+await test('scheduled D1 backup writes a restorable gzip export and retention removes old files', async () => {
+  const store = new Map();
+  const backups = {
+    async put(key, bytes) { store.set(key, { bytes, uploaded: new Date() }); },
+    async list({ prefix = '' } = {}) { return { objects: [...store.entries()].filter(([k]) => k.startsWith(prefix)).map(([key, v]) => ({ key, uploaded: v.uploaded })) }; },
+    async delete(key) { store.delete(key); },
+    async get(key) { return store.get(key) || null; }
+  };
+  store.set('backups/d1/old-backup.sql.gz', { bytes: new Uint8Array([1]), uploaded: new Date(Date.now() - 40 * 86400000) });
+  const res = await request('/api/admin/backups/run', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}, env: makeEnv({ BACKUPS: backups })
+  });
+  assert(res.status === 200 && /^backups\/d1\/.+\.sql\.gz$/.test(res.data.key || ''), `backup run failed: ${res.status} ${JSON.stringify(res.data)}`);
+  assert(!store.has('backups/d1/old-backup.sql.gz'), 'backup retention did not delete the 40-day-old file');
+  const gz = store.get(res.data.key).bytes;
+  const sql = await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  assert(/CREATE TABLE/i.test(sql), 'backup does not contain schema');
+  const restored = new DatabaseSync(':memory:');
+  restored.exec('PRAGMA foreign_keys=OFF;');
+  restored.exec(sql);
+  for (const table of ['clients', 'payments', 'properties']) {
+    const source = db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get().c;
+    const copy = restored.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get().c;
+    assert(source === copy, `restore count mismatch for ${table}: ${source} vs ${copy}`);
+  }
+  restored.close();
+});
+
+await test('backup failure raises a critical system alert', async () => {
+  db.prepare("DELETE FROM system_alerts WHERE dedupe_key='backup:d1:daily'").run();
+  const failing = {
+    async put() { throw new Error('simulated R2 outage'); },
+    async list() { return { objects: [] }; },
+    async delete() {},
+    async get() { return null; }
+  };
+  const res = await request('/api/admin/backups/run', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}, env: makeEnv({ BACKUPS: failing })
+  });
+  assert(res.status === 500, 'failed backup should return 500');
+  assert(db.prepare("SELECT * FROM system_alerts WHERE dedupe_key='backup:d1:daily'").get(), 'backup failure alert missing');
+});
+
+await test('placeholder titles and 8-month plans cannot be published, and non-owners need approval', async () => {
+  const category = Number(db.prepare("INSERT INTO property_categories (name) VALUES ('Phase 24 Guard Category')").run().lastInsertRowid);
+  const propertyId = Number(db.prepare(`INSERT INTO properties
+    (reference, title, description, category_id, sale_price, state, city, address, branch_id, status, is_published, workflow_status, created_by)
+    VALUES ('BLP-P24-GUARD', 'Starter listing - Guard (edit before publishing)', 'Guard test', ?, 10000000, 'Lagos', 'Ikeja', 'Guard Road', ?, 'Available', 0, 'draft', ?)`)
+    .run(category, ikeja, mdId).lastInsertRowid);
+  const planId = Number(db.prepare(`INSERT INTO property_payment_plans
+    (property_id, plan_type, total_price_kobo, deposit_kobo, installment_kobo, duration_months, number_of_installments, is_enabled, created_by)
+    VALUES (?, 'monthly', 10000000, 0, 1250000, 8, 8, 1, ?)`).run(propertyId, mdId).lastInsertRowid);
+  const placeholderPublish = await request(`/api/properties/${propertyId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
+  });
+  assert(placeholderPublish.status === 409 && /placeholder/i.test(placeholderPublish.data.error || ''), 'placeholder title must be blocked');
+  const normalTitle = await request(`/api/properties/${propertyId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { title: 'Phase 24 Guard Property' }
+  });
+  assert(normalTitle.status === 200, 'property title update failed');
+  const eightMonthPublish = await request(`/api/properties/${propertyId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
+  });
+  assert(eightMonthPublish.status === 409 && /8-month/i.test(eightMonthPublish.data.error || ''), '8-month plan must block publishing');
+  db.prepare('UPDATE property_payment_plans SET duration_months=9, number_of_installments=9 WHERE id=?').run(planId);
+  const published = await request(`/api/properties/${propertyId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
+  });
+  assert(published.status === 200, 'owner publish after fixing the 8-month plan failed');
+  await request(`/api/properties/${propertyId}`, { method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: false } });
+  const placeholderAgain = await request(`/api/properties/${propertyId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { title: 'Starter listing - Guard Again (edit before publishing)' }
+  });
+  assert(placeholderAgain.status === 200, 'placeholder title update failed');
+  const blockedAgain = await request(`/api/properties/${propertyId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
+  });
+  assert(blockedAgain.status === 409, 'placeholder title must remain blocked after unpublishing');
+
+  db.prepare("INSERT INTO app_settings (setting_key, setting_value) VALUES ('branch_manager_listing_approval','0') ON CONFLICT(setting_key) DO UPDATE SET setting_value='0'").run();
+  const bmProperty = Number(db.prepare(`INSERT INTO properties
+    (reference, title, description, category_id, sale_price, state, city, address, branch_id, status, is_published, workflow_status, created_by)
+    VALUES ('BLP-P24-BM-APPROVAL', 'Phase 24 BM Approval', 'Approval test', ?, 9000000, 'Lagos', 'Ikeja', 'Approval Road', ?, 'Available', 0, 'draft', ?)`)
+    .run(category, ikeja, mdId).lastInsertRowid);
+  db.prepare(`INSERT INTO property_payment_plans
+    (property_id, plan_type, total_price_kobo, deposit_kobo, installment_kobo, duration_months, number_of_installments, is_enabled, created_by)
+    VALUES (?, 'monthly', 9000000, 0, 1500000, 6, 6, 1, ?)`).run(bmProperty, mdId);
+  const bmPublish = await request(`/api/properties/${bmProperty}`, {
+    method: 'PUT', headers: { Cookie: bm1Cookie }, body: { is_published: true }
+  });
+  assert(bmPublish.status === 200 && bmPublish.data.workflow_status === 'pending_approval', 'branch manager publish must always go to owner approval');
+  assert(Number(db.prepare('SELECT is_published FROM properties WHERE id=?').get(bmProperty).is_published) === 0, 'branch manager publish must not go live');
+  db.prepare("UPDATE app_settings SET setting_value='1' WHERE setting_key='branch_manager_listing_approval'").run();
+});
+
+console.log('\n--- 16. Configurable referral commission structures ---');
+
+await test('cumulative long-term commission matches the exact tier examples', async () => {
+  const cases = [
+    ['BLC-P24-C30', 3000000, 1000000],
+    ['BLC-P24-C60', 6000000, 2000000],
+    ['BLC-P24-C90', 9000000, 2750000],
+    ['BLC-P24-C120', 12000000, 3500000],
+    ['BLC-P24-C180', 18000000, 3500000]
+  ];
+  for (const [ref, kobo, expected] of cases) {
+    const clientId = p24CommissionClient(ref, 12);
+    p24Payment(clientId, `${ref}-PAY`, kobo);
+    await p24Backfill();
+    const account = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(clientId);
+    assert(account && account.total_commission_kobo === expected, `${ref}: expected ${expected} kobo, got ${account ? account.total_commission_kobo : 'missing'}`);
+    if (kobo >= 12000000) assert(account.qualifying_paid_kobo === 12000000, `${ref}: qualifying total must stop at 120,000 NGN`);
+    assert(account.structure === 'two_stage', `${ref}: long-term plan not classified as two-stage`);
+  }
+});
+
+await test('cumulative commission after each instalment is 10k, 20k, 30k, 35k and exact', async () => {
+  const clientId = p24CommissionClient('BLC-P24-INSTALMENTS', 12);
+  const steps = [
+    [3000000, 1000000],
+    [3000000, 2000000],
+    [4000000, 3000000],
+    [2000000, 3500000]
+  ];
+  for (let i = 0; i < steps.length; i++) {
+    p24Payment(clientId, `BLC-P24-INST-${i + 1}`, steps[i][0], 10 - i);
+    await p24Backfill();
+    const account = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(clientId);
+    assert(account && account.total_commission_kobo === steps[i][1], `instalment ${i + 1}: expected ${steps[i][1]} kobo, got ${account ? account.total_commission_kobo : 'missing'}`);
+  }
+  const final = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(clientId);
+  assert(final.total_commission_kobo === 3500000, 'final cumulative commission must be exactly 35,000 NGN');
+});
+
+await test('short-term and outright commission is 10% at 100k, 500k and 2.5m', async () => {
+  for (const [ref, kobo, expected] of [
+    ['BLC-P24-S100', 10000000, 1000000],
+    ['BLC-P24-S500', 50000000, 5000000],
+    ['BLC-P24-S2500', 250000000, 25000000]
+  ]) {
+    const clientId = p24CommissionClient(ref, 6, 'monthly');
+    p24Payment(clientId, `${ref}-PAY`, kobo);
+    await p24Backfill();
+    const account = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(clientId);
+    assert(account && account.structure === 'flat' && account.total_commission_kobo === expected, `${ref}: expected 10% = ${expected}, got ${account ? account.total_commission_kobo : 'missing'}`);
+  }
+  const outrightId = p24CommissionClient('BLC-P24-OUTRIGHT', 0, 'outright');
+  p24Payment(outrightId, 'BLC-P24-OUTRIGHT-PAY', 250000000);
+  await p24Backfill();
+  const outright = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(outrightId);
+  assert(outright && outright.structure === 'flat' && outright.total_commission_kobo === 25000000, 'outright 2.5m must earn 250,000 NGN');
+});
+
+await test('plan duration is derived for 150 daily, 26 weekly and 12 monthly instalments', async () => {
+  const cases = [
+    ['BLC-P24-DUR-DAILY', 'daily', 150, 1, 5],
+    ['BLC-P24-DUR-WEEKLY', 'weekly', 26, 7, 6],
+    ['BLC-P24-DUR-MONTHLY', 'monthly', 12, 30, 12]
+  ];
+  for (const [ref, planType, count, frequency, expectedMonths] of cases) {
+    const clientId = p24CommissionClient(ref, null, planType);
+    db.prepare(`INSERT INTO payment_schedules
+      (client_id, total_amount, deposit_amount, installment_amount, frequency_days, next_due_date,
+       created_by, status, total_kobo, deposit_kobo, installment_kobo, plan_type, number_of_installments)
+      VALUES (?, 60000, 0, 1000, ?, date('now'), ?, 'active', 6000000, 0, 100000, ?, ?)`)
+      .run(clientId, frequency, mdId, planType, count);
+    p24Payment(clientId, `${ref}-PAY`, 6000000);
+    await p24Backfill();
+    const account = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(clientId);
+    assert(account && account.plan_duration_months === expectedMonths, `${ref}: expected ${expectedMonths} months, got ${account ? account.plan_duration_months : 'missing'}`);
+  }
+});
+
+await test('8-month plans are flagged, duplicate recalculation is idempotent, and reversals post carry-forward', async () => {
+  const eightId = p24CommissionClient('BLC-P24-EIGHT-MONTH', 8);
+  p24Payment(eightId, 'BLC-P24-EIGHT-PAY', 6000000);
+  await p24Backfill();
+  const eight = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(eightId);
+  assert(eight && eight.status === 'Configuration Required' && eight.total_commission_kobo === 0, '8-month plan must be flagged with zero commission');
+
+  const duplicateId = p24CommissionClient('BLC-P24-DUPLICATE', 6);
+  p24Payment(duplicateId, 'BLC-P24-DUP-PAY', 10000000);
+  await p24Backfill();
+  const firstEvents = db.prepare('SELECT COUNT(*) AS c FROM referral_commission_events WHERE client_id=?').get(duplicateId).c;
+  await p24Backfill();
+  const duplicate = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(duplicateId);
+  const secondEvents = db.prepare('SELECT COUNT(*) AS c FROM referral_commission_events WHERE client_id=?').get(duplicateId).c;
+  assert(duplicate.total_commission_kobo === 1000000 && secondEvents === firstEvents, 'recalculation must not duplicate commission or events');
+
+  const reversalId = p24CommissionClient('BLC-P24-REVERSAL', 12);
+  const reversalPayment = p24Payment(reversalId, 'BLC-P24-REV-PAY', 12000000);
+  await p24Backfill();
+  db.prepare("UPDATE payments SET status='reversed' WHERE id=?").run(reversalPayment);
+  await p24Backfill();
+  const reversed = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(reversalId);
+  assert(reversed.status === 'Reversed' && reversed.total_commission_kobo === 0, 'reversal after earning must post a reversal');
+  assert(db.prepare("SELECT COUNT(*) AS c FROM referral_commission_events WHERE client_id=? AND event_type='reversal'").get(reversalId).c >= 1, 'reversal event missing');
+
+  const paidId = p24CommissionClient('BLC-P24-REV-PAID', 12);
+  const paidPayment = p24Payment(paidId, 'BLC-P24-REV-PAID-PAY', 12000000);
+  await p24Backfill();
+  const paidAccount = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(paidId);
+  const paidRes = await request(`/api/referral-commissions/${paidAccount.id}/payments`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: { amount: 20000, method: 'Bank Transfer' }
+  });
+  assert(paidRes.status === 200, 'referral payout setup failed');
+  db.prepare("UPDATE payments SET status='reversed' WHERE id=?").run(paidPayment);
+  await p24Backfill();
+  const carried = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(paidId);
+  assert(carried.carry_forward_kobo === -2000000, `expected -20,000 NGN carry-forward, got ${carried.carry_forward_kobo}`);
+  assert(carried.status === 'Reversed', 'paid-then-reversed commission should be Reversed');
+  p24Payment(paidId, 'BLC-P24-REV-PAID-NEXT', 6000000);
+  await p24Backfill();
+  const recovered = db.prepare('SELECT * FROM referral_commission_accounts WHERE client_id=?').get(paidId);
+  assert(recovered.total_commission_kobo === 2000000 && recovered.carry_forward_kobo === 0, 'next commission must absorb the negative carry-forward');
+});
+
+await test('marketer responses hide rates and non-authorised roles cannot read or edit rules', async () => {
+  const marketerView = await request('/api/referral-commissions', { headers: { Cookie: mkt1Cookie } });
+  assert(marketerView.status === 200, 'marketer dashboard failed');
+  assert(marketerView.data.entries.every(row => !('rate_bps' in row) && !('rule_key' in row) && !('stage1_commission_kobo' in row) && !('marketer_id' in row)), 'marketer dashboard leaked rule/rate fields');
+  const marketerRules = await request('/api/referral-commissions/rules', { headers: { Cookie: mkt1Cookie } });
+  assert(marketerRules.status === 403, 'marketer must not read commission rules');
+  const plans = await request('/api/commission-plans', { headers: { Cookie: mdCookie } });
+  assert(plans.status === 200 && plans.data.plans.some(plan => plan.plan_family === 'referral'), 'seeded referral plans missing');
+  const referralPlan = plans.data.plans.find(plan => plan.plan_family === 'referral');
+  const editAttempt = await request(`/api/commission-plans/${referralPlan.id}`, {
+    method: 'PUT', headers: { Cookie: mkt1Cookie },
+    body: { name: referralPlan.name, calculation_basis: referralPlan.calculation_basis, rules: referralPlan.rules }
+  });
+  assert(editAttempt.status === 403, 'marketer must not edit commission plans');
+  const tamper = await request(`/api/commission-plans/${referralPlan.id}`, {
+    method: 'PUT', headers: { Cookie: mdCookie },
+    body: { name: referralPlan.name, calculation_basis: referralPlan.calculation_basis, plan_family: 'referral', sale_type: 'Referral', rules: [{ role_name: 'Team Lead', rate_percent: 5, sales_type: 'Referral' }] }
+  });
+  assert(tamper.status === 400, 'referral plan must reject non-Marketer roles until the owner approves them');
+});
+
 console.log('\n--- 13. Migration reproducibility and database integrity ---');
 await test('all local migrations apply cleanly to a fresh SQLite database', async () => {
   const cleanPath = join(dirname(TEST_DB), 'phase8-clean-migrations.sqlite');
@@ -2352,12 +2709,12 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 24, `expected 24 migrations, found ${files.length}`);
+  assert(files.length === 26, `expected 26 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }
   const tables = clean.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
-  assert(tables.length >= 44, `expected at least 44 tables, found ${tables.length}`);
+  assert(tables.length >= 47, `expected at least 47 tables, found ${tables.length}`);
   const integrity = clean.prepare('PRAGMA integrity_check').get();
   assert(Object.values(integrity)[0] === 'ok', 'clean migration database integrity check failed');
   const fk = clean.prepare('PRAGMA foreign_key_check').all();
