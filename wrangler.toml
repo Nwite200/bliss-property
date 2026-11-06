@@ -20,7 +20,7 @@ bucket_name = "bliss-legacy-staging-files"
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "c8968754a05a4b38b29320e79b8ee3ba"
+id = "42bc72e5a1dd42f18e4469c8f7c8a7f1"
 
 [[queues.producers]]
 binding = "TASKS"
