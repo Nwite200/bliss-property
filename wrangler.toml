@@ -11,7 +11,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "bliss-legacy-staging-db"
-database_id = "294d118f-96c1-4878-ad56-a33d0b866958"
+database_id = "57cbf77c-f99e-4bf7-9a29-0a3e18a8b89a"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
