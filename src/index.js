@@ -4768,9 +4768,8 @@ export class ChatRoom {
   }
 }
 
-export default {
-  async fetch(request, env) {
-    try {
+async function handleFetch(request, env) {
+  try {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -13289,6 +13288,18 @@ export default {
     // Unknown API routes must never fall through to static assets.
     if (path.startsWith("/api/")) return json({ error: "Not found" }, 404);
 
+    // Staging (and any non-production environment) must never be indexed.
+    if (env.ENVIRONMENT !== "production" && path === "/robots.txt") {
+      return new Response("User-agent: *\nDisallow: /\n", {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Robots-Tag": "noindex, nofollow"
+        }
+      });
+    }
+
     // Static Assets Fallback
     return env.ASSETS.fetch(request);
     } catch (error) {
@@ -13296,6 +13307,21 @@ export default {
       console.error("Unhandled request error", error);
       return json({ error: "Internal server error" }, 500);
     }
+}
+
+export default {
+  async fetch(request, env) {
+    const response = await handleFetch(request, env);
+    if (env.ENVIRONMENT !== "production" && response.status !== 101) {
+      const headers = new Headers(response.headers);
+      headers.set("X-Robots-Tag", "noindex, nofollow");
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers
+      });
+    }
+    return response;
   },
 
   // Cloudflare Queues consumer: notification delivery and SMS retries.
