@@ -8,8 +8,9 @@
 
   const el = id => document.getElementById(id);
   const money = kobo => S.money(kobo);
-  const canManage = () => me && ["Managing Director", "Super Admin", "Head Accountant", "Finance Officer"].includes(me.actual_role || me.role);
+  const canManage = () => me && (me.commission_access === true || ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role));
   const canFilterPeople = () => me && ["Managing Director", "Super Admin", "Head Accountant", "Finance Officer", "Branch Manager", "Project Manager"].includes(me.actual_role || me.role);
+  const isMarketer = () => me && (me.actual_role || me.role) === "Marketer";
 
   function statusTone(status) {
     if (status === "Paid") return "green";
@@ -41,20 +42,22 @@
       ["Client accounts", String(summary.total_clients || 0), "Across your authorised scope"],
       ["Commission earned", money(summary.earned_kobo || 0), "Accrued from verified payments"],
       ["Commission paid", money(summary.paid_kobo || 0), "Disbursed and recorded"],
-      ["Commission outstanding", money(summary.outstanding_kobo || 0), "Earned but not yet paid"],
-      ["Needs configuration", String(summary.configuration_required || 0), "8-month or missing plan details"]
+      ["Commission outstanding", money(summary.outstanding_kobo || 0), "Earned but not yet paid"]
     ];
+    if (!isMarketer()) items.push(["Needs configuration", String(summary.configuration_required || 0), "8-month or missing plan details"]);
     el("referralKpis").innerHTML = items.map(([label, value, meta]) => `
       <div class="kpi"><div class="label">${S.escape(label)}</div><div class="value">${value}</div><div class="delta">${S.escape(meta)}</div></div>
     `).join("");
     const byStructure = summary.by_structure || [];
-    el("refStructureBody").innerHTML = byStructure.length ? byStructure.map(row => `
-      <tr>
-        <td><strong>${S.escape(structureLabel(row))}</strong></td>
-        <td>${Number(row.client_count || 0)}</td>
-        <td>${money(row.earned_kobo || 0)}</td>
-        <td>${money(row.outstanding_kobo || 0)}</td>
-      </tr>`).join("") : '<tr><td colspan="4"><div class="empty-state">No referral commission accounts yet.</div></td></tr>';
+    if (el("refStructureBody")) {
+      el("refStructureBody").innerHTML = byStructure.length ? byStructure.map(row => `
+        <tr>
+          <td><strong>${S.escape(structureLabel(row))}</strong></td>
+          <td>${Number(row.client_count || 0)}</td>
+          <td>${money(row.earned_kobo || 0)}</td>
+          <td>${money(row.outstanding_kobo || 0)}</td>
+        </tr>`).join("") : '<tr><td colspan="4"><div class="empty-state">No referral commission accounts yet.</div></td></tr>';
+    }
   }
 
   function renderRows() {
@@ -311,7 +314,12 @@
     me = await S.initShell("referral-commissions");
     if (!me) return;
     await loadOptions();
-    if (!canManage()) el("backfillBtn").style.display = "none";
+    if (!canManage()) {
+      el("backfillBtn").style.display = "none";
+      if (el("refRulesCard")) el("refRulesCard").hidden = true;
+      if (el("refManagementCard")) el("refManagementCard").hidden = true;
+      if (el("refExport")) el("refExport").hidden = true;
+    }
 
     el("refApply").addEventListener("click", () => { page = 1; load(); });
     el("refReset").addEventListener("click", () => {
@@ -324,6 +332,14 @@
     });
     el("refPrev").addEventListener("click", () => { if (page > 1) { page--; load(); } });
     el("refNext").addEventListener("click", () => { page++; load(); });
+    if (el("refExport")) {
+      el("refExport").addEventListener("click", () => {
+        const params = queryParams();
+        params.delete("page");
+        params.delete("limit");
+        window.location.href = "/api/referral-commissions/export?" + params.toString();
+      });
+    }
     el("backfillBtn").addEventListener("click", async () => {
       const button = el("backfillBtn");
       button.disabled = true;

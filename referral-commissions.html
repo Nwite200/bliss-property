@@ -27,7 +27,7 @@
     <main class="dash-main">
       <section class="role-hero">
         <h1>Referral Commissions</h1>
-        <p>Automatic ELPIS referral commission tracking, from verified client payments to disbursement.</p>
+        <p>Automatic referral commission tracking, from verified client payments to disbursement.</p>
         <div class="role-hero-meta">
           <span class="badge badge-green">Payment-driven</span>
           <span class="badge badge-blue">Immutable rules</span>
@@ -39,16 +39,16 @@
         </div>
       </section>
 
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-head"><h3>ELPIS referral commission rules</h3><span class="small muted">Fixed policy — not editable by users</span></div>
+      <div class="card" style="margin-bottom:16px" id="refRulesCard">
+        <div class="card-head"><h3>Referral commission rules</h3><span class="small muted">Owner-managed and versioned</span></div>
         <div class="table-responsive">
           <table class="table">
             <thead><tr><th>Structure</th><th>Plan duration</th><th>Commission</th><th>Maximum</th></tr></thead>
             <tbody>
-              <tr><td><strong>Long-term</strong></td><td>More than 8 months</td><td>33.333% on the first ₦60,000 · 25% on the next ₦60,000</td><td><strong>₦35,000 per client</strong></td></tr>
+              <tr><td><strong>Long-term</strong></td><td>More than 8 months</td><td>₦20,000 on the first ₦60,000 · 25% on the next ₦60,000</td><td><strong>₦35,000 per client</strong></td></tr>
               <tr><td><strong>Short-term</strong></td><td>7 months or less</td><td>10% of verified qualifying payments</td><td>10% of amount paid</td></tr>
               <tr><td><strong>Outright</strong></td><td>Outright purchase</td><td>10% of the verified purchase amount</td><td>10% of amount paid</td></tr>
-              <tr><td><strong>8 months exactly</strong></td><td>8 months</td><td>Flagged for management configuration</td><td>Not yet specified</td></tr>
+              <tr><td><strong>8 months exactly</strong></td><td>8 months</td><td>Flagged for owner configuration</td><td>Not yet specified</td></tr>
             </tbody>
           </table>
         </div>
@@ -83,6 +83,7 @@
         </div>
         <button class="btn btn-green btn-sm" type="button" id="refApply">Apply filters</button>
         <button class="btn btn-ghost btn-sm" type="button" id="refReset">Reset</button>
+        <button class="btn btn-outline btn-sm" type="button" id="refExport">Export CSV</button>
       </div>
 
       <div class="card">
@@ -105,7 +106,7 @@
         </div>
       </div>
 
-      <div class="card" style="margin-top:16px">
+      <div class="card" style="margin-top:16px" id="refManagementCard">
         <div class="card-head"><h3>Management view</h3><span class="small muted">Liabilities by commission structure</span></div>
         <div class="table-responsive">
           <table class="table">

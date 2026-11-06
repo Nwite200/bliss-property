@@ -1,4 +1,4 @@
--- Phase 17: ELPIS referral commission automation.
+-- Phase 17: referral commission automation.
 --
 -- Referral commission is a separate, fixed-rule ledger from the configurable
 -- "commission plans" engine. Rules are seeded here and are intentionally not

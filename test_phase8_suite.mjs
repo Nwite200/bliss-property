@@ -1745,7 +1745,7 @@ await test('phone cleanup reports invalid/missing numbers and saves one scoped c
   assert(wrongField.status === 403, 'marketer must not edit non-phone client fields');
 });
 
-console.log('\n--- 13. ELPIS referral commission automation ---');
+console.log('\n--- 13. Referral commission automation ---');
 await test('referral commission applies two-stage and flat rules, caps at 35,000 and flags 8-month plans', async () => {
   const insertClient = (ref, name, phone, marketerId, planType, months) => Number(db.prepare(`
     INSERT INTO clients (client_reference, full_name, phone_number, email_address, status, sale_type,
@@ -2695,6 +2695,12 @@ await test('marketer responses hide rates and non-authorised roles cannot read o
     body: { name: referralPlan.name, calculation_basis: referralPlan.calculation_basis, rules: referralPlan.rules }
   });
   assert(editAttempt.status === 403, 'marketer must not edit commission plans');
+  const exportCsv = await request('/api/referral-commissions/export', { headers: { Cookie: mdCookie } });
+  assert(exportCsv.status === 200 && /text\/csv/.test(exportCsv.headers.get('content-type') || ''), 'management CSV export failed');
+  const csvText = new TextDecoder().decode(exportCsv.data);
+  assert(csvText.includes('Client') && csvText.includes('Commission Earned'), 'management CSV export is missing columns');
+  const marketerExport = await request('/api/referral-commissions/export', { headers: { Cookie: mkt1Cookie } });
+  assert(marketerExport.status === 403, 'marketer must not export the central commission dashboard');
   const tamper = await request(`/api/commission-plans/${referralPlan.id}`, {
     method: 'PUT', headers: { Cookie: mdCookie },
     body: { name: referralPlan.name, calculation_basis: referralPlan.calculation_basis, plan_family: 'referral', sale_type: 'Referral', rules: [{ role_name: 'Team Lead', rate_percent: 5, sales_type: 'Referral' }] }

@@ -1826,7 +1826,7 @@ function commissionOutstanding(entry) {
 }
 
 // ---------------------------------------------------------------------------
-// ELPIS referral commission engine
+// Referral commission engine
 // ---------------------------------------------------------------------------
 const REFERRAL_COMMISSION_STATUSES = [
   "Pending", "Earned", "Partially Paid", "Paid", "Reversed", "Configuration Required"
@@ -2678,7 +2678,7 @@ async function autoGenerateCommissionForPayment(env, payment) {
     return { ok: false, error: "No system actor" };
   }
 
-  // The ELPIS referral commission ledger is always recalculated from verified
+  // The referral commission ledger is always recalculated from verified
   // payments, so a failure in a configurable commission plan cannot block it.
   let referralResult = null;
   try {
@@ -2823,7 +2823,7 @@ async function applyPaymentCommissionAdjustments(env, payment, adjustmentType, a
     });
   }
 
-  // Recalculate the ELPIS referral ledger from verified payments. Reversed or
+  // Recalculate the referral ledger from verified payments. Reversed or
   // refunded transactions disappear from the cumulative total automatically.
   try {
     await recalculateReferralCommissionForClient(env, payment.client_id, actorId, {
@@ -13735,7 +13735,7 @@ async function handleFetch(request, env) {
     }
 
     // =========================================================================
-    // ELPIS REFERRAL COMMISSIONS
+    // REFERRAL COMMISSIONS
     // =========================================================================
     if (path === "/api/referral-commissions/rules" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
@@ -13865,6 +13865,60 @@ async function handleFetch(request, env) {
           by_structure: byStructure
         },
         pagination: { page, limit, total: Number(count ? count.c : 0) }
+      });
+    }
+
+    if (path === "/api/referral-commissions/export" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canAccessCommissions(actor)) return json({ error: "Forbidden" }, 403);
+      const scope = await resolvePhase6Scope(env, actor);
+      const scoped = referralCommissionScopeSql(scope, "a");
+      const clauses = [scoped.clause];
+      const binds = [...scoped.binds];
+      const marketerId = url.searchParams.get("marketer_id");
+      const branchId = url.searchParams.get("branch_id");
+      const status = String(url.searchParams.get("status") || "").trim();
+      const from = dateOnly(url.searchParams.get("from"));
+      const to = dateOnly(url.searchParams.get("to"));
+      if (marketerId) { clauses.push("a.marketer_id=?"); binds.push(Number(marketerId)); }
+      if (branchId) { clauses.push("a.branch_id=?"); binds.push(Number(branchId)); }
+      if (status) { clauses.push("a.status=?"); binds.push(status); }
+      if (from) { clauses.push("date(a.updated_at) >= date(?)"); binds.push(from); }
+      if (to) { clauses.push("date(a.updated_at) <= date(?)"); binds.push(to); }
+      const { results } = await env.DB.prepare(`
+        SELECT a.*, c.full_name AS client_name, c.client_reference,
+               u.full_name AS marketer_name, b.name AS branch_name,
+               CASE WHEN a.status='Configuration Required' THEN 0
+                    ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo) END AS net_commission_kobo,
+               CASE WHEN a.status='Configuration Required' THEN 0
+                    ELSE MAX(0, a.total_commission_kobo + a.adjusted_kobo - a.paid_kobo) END AS outstanding_kobo
+        FROM referral_commission_accounts a
+        JOIN clients c ON c.id=a.client_id
+        LEFT JOIN users u ON u.id=a.marketer_id
+        LEFT JOIN branches b ON b.id=a.branch_id
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY a.id
+      `).bind(...binds).all();
+      const csvEscape = value => `"${String(value === undefined || value === null ? "" : value).replace(/"/g, '""')}"`;
+      const lines = [
+        ["Client", "Client Reference", "Marketer", "Branch", "Plan Type", "Total Client Payment", "Commission Earned", "Paid", "Outstanding", "Carry Forward", "Status"].map(csvEscape).join(",")
+      ];
+      for (const row of results || []) {
+        lines.push([
+          row.client_name, row.client_reference, row.marketer_name || "Unassigned", row.branch_name || "",
+          referralStructureLabel(row.structure, row.plan_type, row.plan_duration_months),
+          row.total_paid_kobo, row.net_commission_kobo, row.paid_kobo, row.outstanding_kobo,
+          row.carry_forward_kobo, row.status
+        ].map(csvEscape).join(","));
+      }
+      return new Response(lines.join("\n"), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="referral-commissions-${todayOnly()}.csv"`,
+          "Cache-Control": "private, no-store"
+        }
       });
     }
 
