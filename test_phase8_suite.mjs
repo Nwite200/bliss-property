@@ -3021,6 +3021,8 @@ await test('targets work for GSM, Sub Admin and owner; Accountant sees totals wi
   assert(verifyAttempt.status === 403, 'Accountant must not verify payments');
   const rulesAttempt = await request('/api/commission-plans', { headers: { Cookie: accountantCookie } });
   assert(rulesAttempt.status === 403, 'Accountant must not see commission rates');
+  const financeRules = await request('/api/commission-plans', { headers: { Cookie: finCookie } });
+  assert(financeRules.status === 403, 'Finance Officer must not see commission rates without commission access');
 });
 
 console.log('\n--- 13. Migration reproducibility and database integrity ---');
@@ -3030,7 +3032,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 28, `expected 28 migrations, found ${files.length}`);
+  assert(files.length === 29, `expected 29 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }
