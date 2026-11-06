@@ -493,6 +493,133 @@ await test('terms and conditions are published, versioned, accepted and download
   assert(rolledBack.data.terms.version_no === publish.data.version_no, 'terms version activation did not roll back');
 });
 
+await test('property listing permissions, approval workflow, plan validation and test/demo controls', async () => {
+  const createProperty = (cookie, body) => request('/api/properties', {
+    method: 'POST', headers: { Cookie: cookie }, body
+  });
+  const baseProperty = {
+    title: 'Phase 19 Workflow Property', description: 'Workflow test property', property_type: 'Apartment',
+    sale_price: 1000000, state: 'Lagos', city: 'Ikeja', address: '19 Workflow Road', branch_id: ikeja
+  };
+  const mdCreate = await createProperty(mdCookie, baseProperty);
+  assert(mdCreate.status === 200 && mdCreate.data.id, `MD property creation failed: ${JSON.stringify(mdCreate.data)}`);
+  const mdPropertyId = mdCreate.data.id;
+
+  for (const [cookie, label] of [[mkt1Cookie, 'marketer'], [careNationalCookie, 'customer care'], [haCookie, 'head accountant']]) {
+    const denied = await createProperty(cookie, { ...baseProperty, title: `Denied ${label}` });
+    assert(denied.status === 403, `${label} must not create properties (got ${denied.status})`);
+  }
+  const bmCross = await createProperty(bm2Cookie, { ...baseProperty, title: 'Cross branch property', branch_id: ikeja });
+  assert(bmCross.status === 403, 'branch manager must not create a property in another branch');
+  const bmOwn = await createProperty(bm1Cookie, { ...baseProperty, title: 'BM Own Branch Property', branch_id: ikeja });
+  assert(bmOwn.status === 200, `branch manager own-branch creation failed: ${JSON.stringify(bmOwn.data)}`);
+  const bmPropertyId = bmOwn.data.id;
+
+  const publicNoPlan = await request(`/api/properties/${mdPropertyId}`);
+  assert(publicNoPlan.status === 404, 'draft property must not be public');
+
+  const goodPlan = await request(`/api/properties/${mdPropertyId}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: mdCookie },
+    body: { plans: [{ plan_type: 'part_payment', total_price: 1000000, deposit: 100000, installment: 225000, number_of_installments: 4, first_payment_rule: 'Deposit at allocation' }] }
+  });
+  assert(goodPlan.status === 200, `plan save failed: ${JSON.stringify(goodPlan.data)}`);
+  const savedPlan = goodPlan.data.plans.find(plan => plan.plan_type === 'part_payment');
+  assert(savedPlan && Number(savedPlan.balance_difference_kobo) === 0, 'plan balance validation should report zero difference');
+
+  const mdPublish = await request(`/api/properties/${mdPropertyId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
+  });
+  assert(mdPublish.status === 200 && mdPublish.data.workflow_status === 'published', 'MD publish failed');
+
+  const bmPlan = await request(`/api/properties/${bmPropertyId}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: bm1Cookie },
+    body: { plans: [{ plan_type: 'outright', total_price: 1000000, deposit: 0, installment: 1000000 }] }
+  });
+  assert(bmPlan.status === 200, 'branch manager plan save failed');
+  const bmPublish = await request(`/api/properties/${bmPropertyId}`, {
+    method: 'PUT', headers: { Cookie: bm1Cookie }, body: { is_published: true }
+  });
+  assert(bmPublish.status === 200 && bmPublish.data.workflow_status === 'pending_approval', `branch manager publish should require approval, got ${JSON.stringify(bmPublish.data)}`);
+  const pendingList = await request('/api/properties?pending_approval=1&limit=50', { headers: { Cookie: mdCookie } });
+  assert(pendingList.data.properties.some(p => Number(p.id) === Number(bmPropertyId)), 'pending approval list missing branch manager property');
+  const approve = await request(`/api/properties/${bmPropertyId}/approve`, { method: 'POST', headers: { Cookie: mdCookie }, body: {} });
+  assert(approve.status === 200 && approve.data.workflow_status === 'published', 'MD approval failed');
+
+  const noPlanProperty = await createProperty(mdCookie, { ...baseProperty, title: 'No Plan Property' });
+  const publishNoPlan = await request(`/api/properties/${noPlanProperty.data.id}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
+  });
+  assert(publishNoPlan.status === 409, 'publishing without an enabled plan must be blocked');
+
+  const differencePlan = await request(`/api/properties/${noPlanProperty.data.id}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: mdCookie },
+    body: { plans: [{ plan_type: 'part_payment', total_price: 1000000, deposit: 100000, installment: 200000, number_of_installments: 4 }] }
+  });
+  assert(differencePlan.status === 200, 'difference plan save failed');
+  const differenceSaved = differencePlan.data.plans.find(plan => plan.plan_type === 'part_payment');
+  assert(Number(differenceSaved.balance_difference_kobo) === 10000000, `expected a 100,000 NGN balance difference, got ${differenceSaved.balance_difference_kobo}`);
+
+  const testProperty = await createProperty(mdCookie, {
+    ...baseProperty, title: 'Phase 19 Internal Test Property', sale_price: 1000,
+    address: '19 Test Road', is_internal_test: true
+  });
+  assert(testProperty.status === 200, 'internal test property creation failed');
+  const testPropertyId = testProperty.data.id;
+  await request(`/api/properties/${testPropertyId}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: mdCookie },
+    body: { plans: [{ plan_type: 'outright', total_price: 1000, deposit: 0, installment: 1000 }] }
+  });
+  await request(`/api/properties/${testPropertyId}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
+  });
+  const publicList = await request('/api/properties?limit=50');
+  assert(!publicList.data.properties.some(p => Number(p.id) === Number(testPropertyId)), 'internal test property leaked into public listing');
+  const publicDetail = await request(`/api/properties/${testPropertyId}`);
+  assert(publicDetail.status === 404, 'internal test property leaked into public detail API');
+  const staffList = await request('/api/properties?limit=50&include_archived=1', { headers: { Cookie: mdCookie } });
+  assert(staffList.data.properties.some(p => Number(p.id) === Number(testPropertyId)), 'staff could not see internal test property');
+  db.prepare("INSERT OR IGNORE INTO client_properties (client_id, property_id, agreed_purchase_price, status) VALUES (?,?,?, 'Active')").run(adaId, testPropertyId, 1000);
+  const namedClientView = await request(`/api/properties/${testPropertyId}`, { headers: { Cookie: clientCookie } });
+  assert(namedClientView.status === 200, 'named test client could not view internal test property');
+
+  const demoProperty = await createProperty(mdCookie, { ...baseProperty, title: 'Phase 19 Demo Property', is_demo: true });
+  await request(`/api/properties/${demoProperty.data.id}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: mdCookie },
+    body: { plans: [{ plan_type: 'outright', total_price: 1000000, deposit: 0, installment: 1000000 }] }
+  });
+  await request(`/api/properties/${demoProperty.data.id}`, {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { is_published: true }
+  });
+  const demoHidden = await request('/api/properties?limit=50');
+  assert(!demoHidden.data.properties.some(p => Number(p.id) === Number(demoProperty.data.id)), 'demo property leaked into public listing with hide-demo ON');
+  await request('/api/admin/app-settings', {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { hide_demo_properties: false }
+  });
+  const demoShown = await request('/api/properties?limit=50');
+  assert(demoShown.data.properties.some(p => Number(p.id) === Number(demoProperty.data.id)), 'demo property was not shown after hide-demo switch OFF');
+  await request('/api/admin/app-settings', {
+    method: 'PUT', headers: { Cookie: mdCookie }, body: { hide_demo_properties: true }
+  });
+  const convert = await request(`/api/properties/${demoProperty.data.id}/convert-to-real`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(convert.status === 200, 'convert demo property to real failed');
+  const converted = db.prepare('SELECT is_demo, workflow_status FROM properties WHERE id=?').get(demoProperty.data.id);
+  assert(Number(converted.is_demo) === 0 && converted.workflow_status === 'draft', 'converted property flags incorrect');
+
+  db.prepare(`INSERT INTO payments (client_id, property_id, transaction_ref, amount, amount_kobo, currency, method, status, verified_at, is_demo, is_internal_test, revenue_staff_id, revenue_pm_id, revenue_branch_id)
+    VALUES (?, ?, 'TX-P19-TEST-EXCLUDE', 1000, 100000, 'NGN', 'Bank Transfer', 'verified', datetime('now'), 0, 1, ?, ?, ?)`)
+    .run(adaId, testPropertyId, mkt1Id, bm1Id, ikeja);
+  const revenueWithoutTest = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31', { headers: { Cookie: mdCookie } });
+  const revenueWithTest = await request('/api/revenue/overview?from=2026-01-01&to=2099-12-31&include_test=1', { headers: { Cookie: mdCookie } });
+  assert(revenueWithTest.data.total_kobo - revenueWithoutTest.data.total_kobo === 100000, 'revenue test-data exclusion did not work');
+
+  const archive = await request('/api/admin/archive-test-data', { method: 'POST', headers: { Cookie: mdCookie }, body: {} });
+  assert(archive.status === 200 && archive.data.archived.properties >= 1, 'archive test data action failed');
+  const archivedProperty = db.prepare('SELECT is_archived FROM properties WHERE id=?').get(testPropertyId);
+  assert(Number(archivedProperty.is_archived) === 1, 'test property was not archived');
+});
+
 console.log('\n--- 3. Property media and document security ---');
 let uploadedDocId;
 await test('authorised branch manager can upload a private property document', async () => {
@@ -553,8 +680,16 @@ await test('property images verify magic bytes and gate unpublished images', asy
   assert(sameBranch.status === 200 && sameBranch.headers.get('cache-control') === 'private, no-store', 'same-branch draft image should be private');
   const crossBranch = await request(`/api/files/${encodeURIComponent(key)}`, { headers: { Cookie: bm2Cookie } });
   assert(crossBranch.status === 404, 'cross-branch draft image should be hidden');
+  const draftPlan = await request(`/api/properties/${propDraft}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: bm1Cookie },
+    body: { plans: [{ plan_type: 'outright', total_price: 15000000, deposit: 0, installment: 15000000 }] }
+  });
+  assert(draftPlan.status === 200, 'draft payment plan expected 200');
   const publish = await request(`/api/properties/${propDraft}`, { method: 'PUT', headers: { Cookie: bm1Cookie }, body: { is_published: true } });
   assert(publish.status === 200, 'draft publish expected 200');
+  assert(publish.data.workflow_status === 'pending_approval', 'branch manager draft should await MD approval');
+  const approveDraft = await request(`/api/properties/${propDraft}/approve`, { method: 'POST', headers: { Cookie: mdCookie }, body: {} });
+  assert(approveDraft.status === 200, 'MD approval of draft expected 200');
   const publicImage = await request(`/api/files/${encodeURIComponent(key)}`);
   assert(publicImage.status === 200 && publicImage.headers.get('cache-control').includes('public'), 'published image should be publicly cacheable');
 });
@@ -1719,7 +1854,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 21, `expected 21 migrations, found ${files.length}`);
+  assert(files.length === 22, `expected 22 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

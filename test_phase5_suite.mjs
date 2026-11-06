@@ -987,11 +987,24 @@ await test('property CRUD is server-side RBAC protected and branch-scoped', asyn
     method: 'POST', headers: { Cookie: bmCookie },
     body: {
       title: 'Audit Phase 3 Property', description: 'Phase 3 regression fixture', sale_price: 25000000,
-      state: 'Lagos', city: 'Ikeja', address: '1 Audit Close', is_published: true
+      state: 'Lagos', city: 'Ikeja', address: '1 Audit Close'
     }
   });
   assert(created.status === 200, `BM own-branch create expected 200, got ${created.status}: ${JSON.stringify(created.data)}`);
   auditPropId = created.data.id;
+  const auditPlan = await request(`/api/properties/${auditPropId}/payment-plans`, {
+    method: 'PUT', headers: { Cookie: bmCookie },
+    body: { plans: [{ plan_type: 'outright', total_price: 25000000, deposit: 0, installment: 25000000 }] }
+  });
+  assert(auditPlan.status === 200, 'phase 3 property plan setup failed');
+  const publishAudit = await request(`/api/properties/${auditPropId}`, {
+    method: 'PUT', headers: { Cookie: bmCookie }, body: { is_published: true }
+  });
+  assert(publishAudit.status === 200, 'phase 3 property submit for approval failed');
+  const approveAudit = await request(`/api/properties/${auditPropId}/approve`, {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {}
+  });
+  assert(approveAudit.status === 200, 'phase 3 property MD approval failed');
   const row = db.prepare('SELECT branch_id, status FROM properties WHERE id=?').get(auditPropId);
   assert(row.branch_id === 1 && row.status === 'Available', 'branch and initial status are correct');
   const publicDetail = await request(`/api/properties/${auditPropId}`);
@@ -999,7 +1012,7 @@ await test('property CRUD is server-side RBAC protected and branch-scoped', asyn
 
   const hidden = await request('/api/properties', {
     method: 'POST', headers: { Cookie: mdCookie },
-    body: { title: 'Unpublished Audit Property', sale_price: 1000, is_published: false }
+    body: { title: 'Unpublished Audit Property', sale_price: 1000, is_published: false, branch_id: 1 }
   });
   assert(hidden.status === 200, 'MD can create an unpublished property');
   const hiddenDetail = await request(`/api/properties/${hidden.data.id}`);
@@ -1015,7 +1028,7 @@ await test('own-branch property updates, status history, image upload and public
   assert(crossUpdate.status === 403, `cross-branch update expected 403, got ${crossUpdate.status}`);
   const update = await request(`/api/properties/${auditPropId}`, {
     method: 'PUT', headers: { Cookie: bmCookie },
-    body: { title: 'Audit Phase 3 Updated', sale_price: 26000000, is_published: true }
+    body: { title: 'Audit Phase 3 Updated', sale_price: 26000000 }
   });
   assert(update.status === 200, `own-branch update expected 200, got ${update.status}`);
   const status = await request(`/api/properties/${auditPropId}/status`, {

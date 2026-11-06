@@ -29,9 +29,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Render 6 Branches Section
   const branchesGrid = document.getElementById('branchesGrid');
   if (branchesGrid) {
-    const configuredBranches = (c.branches && c.branches.length) ? c.branches : null;
-    const branches = configuredBranches || Bliss.branches();
-    branchesGrid.innerHTML = branches.map(b => `
+    const branches = (c.branches && c.branches.length) ? c.branches : [];
+    if (!branches.length) {
+      branchesGrid.innerHTML = '<div class="branch-card"><div class="branch-badge">Configuration required</div><h3 class="branch-title">Branch offices</h3><p class="branch-address">Branch contact details are not configured yet. Add them in System Administration.</p></div>';
+    } else {
+      branchesGrid.innerHTML = branches.map(b => `
       <div class="branch-card fade-in ${b.isHeadOffice ? 'branch-head-office' : ''}">
         <div class="branch-badge">${b.type}</div>
         <div class="branch-icon">⌖</div>
@@ -43,6 +45,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         </div>
       </div>
     `).join('');
+    }
   }
 
   // Load properties (structured to fetch from /api/properties if online, or fall back to sample data)
@@ -82,7 +85,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Blend live D1 records with the curated demonstration catalogue and cap the
   // homepage at ten listings. Land opportunities are always represented.
-  const staticProperties = Bliss.properties().map(p => ({ ...p, isDemo: true }));
+  // Curated demo listings are only used when no live property is available.
+  // Once a real listing exists, demonstration content is never merged into the
+  // public catalogue.
+  const showDemo = !window.BLIS_CONFIG || window.BLIS_CONFIG.showDemoProperties === true;
+  const staticProperties = allProperties.length === 0 && showDemo
+    ? Bliss.properties().map(p => ({ ...p, isDemo: true }))
+    : [];
   const seen = new Set(allProperties.map(p => `${String(p.name).toLowerCase()}|${String(p.location).toLowerCase()}`));
   for (const item of staticProperties) {
     const key = `${String(item.name).toLowerCase()}|${String(item.location).toLowerCase()}`;

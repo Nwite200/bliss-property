@@ -41,7 +41,7 @@ function render(clients) {
   if (!clients.length) { tbody.innerHTML = "<tr><td colspan='7' style='text-align:center;color:var(--muted)'>No clients found.</td></tr>"; return; }
   clients.forEach(c => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td><strong>${c.client_reference}</strong></td><td>${c.full_name}</td><td>${c.phone_number}</td><td>${badge(c.status)}</td><td>${c.branch_name || "-"}</td><td>${c.original_marketer_name || c.created_by_name || "-"}</td><td><a class="details-link" href="client-detail.html?id=${c.id}" style="color:var(--green-dark)">View</a></td>`;
+    tr.innerHTML = `<td><strong>${c.client_reference}</strong></td><td>${c.full_name}${c.is_internal_test ? ' <span class="badge badge-red">TEST</span>' : ''}</td><td>${c.phone_number}</td><td>${badge(c.status)}</td><td>${c.branch_name || "-"}</td><td>${c.original_marketer_name || c.created_by_name || "-"}</td><td><a class="details-link" href="client-detail.html?id=${c.id}" style="color:var(--green-dark)">View</a></td>`;
     tbody.appendChild(tr);
   });
 }

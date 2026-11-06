@@ -17,7 +17,7 @@ async function load() {
   const c = data.client;
   document.getElementById("refBadge").textContent = c.client_reference;
   document.getElementById("clientName").textContent = c.full_name;
-  document.getElementById("clientMeta").textContent = c.phone_number + (c.email_address ? " · " + c.email_address : "") + " · " + (c.branch_name || "");
+  document.getElementById("clientMeta").textContent = c.phone_number + (c.email_address ? " · " + c.email_address : "") + " · " + (c.branch_name || "") + (c.is_internal_test ? " · TEST CLIENT" : "");
   document.getElementById("detailRef").textContent = c.client_reference;
   document.getElementById("detailPhone").textContent = c.phone_number;
   document.getElementById("detailAltPhone").textContent = c.alternate_phone || "-";

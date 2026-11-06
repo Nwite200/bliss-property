@@ -55,7 +55,7 @@ Bliss.renderHeader = function(activePage) {
       <div class="topline-right">
         <span>Serving Clients Across 6 Branches Nationwide</span>
         <span class="topline-sep">•</span>
-        <a href="tel:${c.phone || '+2348000000000'}" class="topline-contact">${c.phone || '+234 800 000 0000'}</a>
+        <a href="${c.phone ? 'tel:' + c.phone : '#contact'}" class="topline-contact">${c.phone || 'Phone not configured'}</a>
       </div>
     </div>
   </div>
@@ -137,15 +137,15 @@ Bliss.renderFooter = function() {
           <div class="footer-contact-items">
             <div class="footer-contact-item">
               <span class="contact-lbl">Phone Support:</span>
-              <span class="contact-val">${c.phone || '+234 800 000 0000'}</span>
+              <span class="contact-val">${c.phone || 'Phone not configured'}</span>
             </div>
             <div class="footer-contact-item">
               <span class="contact-lbl">Email Address:</span>
-              <span class="contact-val">${c.email || 'info@blisslegacylimited.com'}</span>
+              <span class="contact-val">${c.email || 'Email not configured'}</span>
             </div>
             <div class="footer-contact-item">
               <span class="contact-lbl">Headquarters:</span>
-              <span class="contact-val">${c.address || 'Central Business District, Lagos'}</span>
+              <span class="contact-val">${c.address || 'Head office address not configured'}</span>
             </div>
           </div>
           <div class="footer-social-strip">
