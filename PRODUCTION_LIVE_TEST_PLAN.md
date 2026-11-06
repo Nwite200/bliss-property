@@ -78,6 +78,14 @@ Plans are per property today. If one property contains plots of different sizes 
 
 ## PART B — Production readiness gates
 
+### Production migration order (clean database)
+
+Run in this exact order:
+
+`0001_auth_org.sql`, `0002_properties.sql`, `0003_clients.sql`, `0004_payments.sql`, `0005_phase5_enhancements.sql`, `0006_phase5_completion.sql`, `0007_phase6_staff_dashboards.sql`, `0008_phase7_commissions_reports.sql`, `0009_client_properties.sql`, `0010_referrals_onboarding_alatpay.sql`, `0011_super_admin_notifications_chat.sql`, `0012_revenue_hierarchy_attribution.sql`, `0013_plans_defaulting_inspections_commissions_providers.sql`, `0014_property_plans_customer_care_sms_leads.sql`, `0015_client_onboarding_otp.sql`, `0016_alatpay_webhook_static_wallets_test_mode.sql`, `0017_automatic_commission_generation.sql`, `0018_test_accounts_monthly_reactivation.sql`, `0019_client_identity_referral_branch.sql`, `0020_referral_commission_automation.sql`, `0021_terms_versions_acceptances.sql`, `0022_property_listing_workflow_and_settings.sql`.
+
+No down migrations are provided. Take an export/snapshot before applying production migrations.
+
 ### Gate table
 
 | # | Gate | Status | Evidence / blocker |
