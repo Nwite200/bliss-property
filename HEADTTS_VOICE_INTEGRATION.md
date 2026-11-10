@@ -24,6 +24,7 @@ Status: **implemented, tested, and deployed to staging and production. Server in
 | `voice-server/*` | Independently deployable Node HeadTTS service and auth proxy |
 | `tests/voice/voice.test.mjs` | Voice adapter, pronunciation, routing and fallback tests |
 | `migrations/0031_headtts_voice_profiles.sql` | Voice profiles, preferences, consent and language mode |
+| `migrations/0032_performance_indexes.sql` | Dashboard/notification query indexes |
 
 ### Modified
 
@@ -121,6 +122,15 @@ pre-warm after deployment to avoid a slow first request.
 
 ---
 
+## 5b. Safe speed wins shipped with this change
+
+- Optimised the official logo from **583 KB to 84 KB** (same served path, 600×400).
+- Self-hosted the homepage hero as WebP: **370 KB → 127 KB**.
+- Self-hosted the about image as WebP: **175 KB → 97 KB**.
+- Added a hero preload and `fetchpriority="high"`.
+- Added query indexes for team-lead clients, branch clients, verified payments, branch payments, notifications and leads.
+- Lighthouse total page weight dropped from **~1.35 MB to ~590 KB** in the measured run. Mobile LCP/CLS remained variable (Lighthouse lab variance); real-device CWV validation is still required.
+
 ## 6. Nigerian Pidgin
 
 Implemented:
@@ -216,4 +226,4 @@ No paid voice API is active.
 4. Whisper-compatible Pidgin STT evaluation/deployment (not implemented).
 5. Server hosting cost and model storage/bandwidth (310 MB fp32 / 86 MB q8).
 6. Server hosting for `voice-server/`; production currently has **no** `HEADTTS_SERVER_URL` or `HEADTTS_SERVICE_TOKEN`, so `server_enabled` is false and the browser/native route is used.
-7. Migration 0031 and the new assets are deployed. Production currently runs version `1e0da034-ced0-4379-a03e-c0ba8ab0e3a0`; staging runs `05427c9d-0b8f-466e-a333-1c077ed135fd`.
+7. Migration 0031 and the new assets are deployed. Production currently runs version `ed021ea4-c07a-4dc4-ae1b-5afe91a69a3f`; staging runs `1fb84f72-42c9-42e2-a66f-2d5193e25158`.

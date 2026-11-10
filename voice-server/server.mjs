@@ -29,12 +29,13 @@ if (!existsSync(CONFIG)) {
 
 const config = JSON.parse(readFileSync(CONFIG, "utf8"));
 const PACKAGE_ROOT = join(ROOT, "node_modules", "@met4citizen", "headtts");
+const ASSET_ROOT = process.env.HEADTTS_ASSET_ROOT || join(ROOT, "..");
 const runtimeConfigPath = join(ROOT, ".cache", "headtts-node.runtime.json");
 mkdirSync(join(ROOT, ".cache"), { recursive: true });
 const runtimeConfig = JSON.parse(JSON.stringify(config));
 runtimeConfig.tts = Object.assign({}, runtimeConfig.tts, {
-  dictionaryPath: join(ROOT, "..", "assets", "vendor", "headtts", "dictionaries"),
-  voicePath: join(ROOT, "..", "assets", "voice", "voices")
+  dictionaryPath: join(ASSET_ROOT, "assets", "vendor", "headtts", "dictionaries"),
+  voicePath: join(ASSET_ROOT, "assets", "voice", "voices")
 });
 writeFileSync(runtimeConfigPath, JSON.stringify(runtimeConfig, null, 2));
 const allowedVoices = new Set(config.tts && Array.isArray(config.tts.voices) ? config.tts.voices : []);

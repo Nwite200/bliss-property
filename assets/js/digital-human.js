@@ -1403,10 +1403,14 @@
     if (!el.thread.children.length) {
       var greeting = greetingText();
       addMessage("assistant", greeting, { persona: state.persona, time: nowTime() });
-      // Do not download the neural model just to greet. The first real reply
-      // (or the Repeat button) starts HeadTTS lazily.
+      // Speak the greeting immediately with the browser's built-in voice so the
+      // agent always answers audibly. HeadTTS loads lazily for the next reply.
+      state.lastSpeech = greeting;
       state.greeted = true;
-      if (state.voiceEnabled) el.caption.textContent = "Tap Repeat to hear this greeting.";
+      if (state.voiceEnabled) {
+        el.caption.textContent = "Speaking greeting. Neural voice loads on your first reply.";
+        speakBrowser(greeting);
+      }
     }
     var pending = collectFormContext();
     if (pending && pending.fields.some(function (field) { return field.required && !field.filled; })) {

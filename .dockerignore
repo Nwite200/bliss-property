@@ -1,0 +1,8 @@
+.git
+.wrangler
+node_modules
+voice-server/node_modules
+voice-server/.cache
+*.log
+backup-*.sql
+.DS_Store

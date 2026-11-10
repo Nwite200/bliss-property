@@ -1,0 +1,11 @@
+services:
+  headtts:
+    build:
+      context: ..
+      dockerfile: voice-server/Dockerfile
+    ports:
+      - "8883:8883"
+    environment:
+      HEADTTS_SERVICE_TOKEN: ${HEADTTS_SERVICE_TOKEN:?set a 24+ character token}
+      HEADTTS_ASSET_ROOT: /app
+    restart: unless-stopped

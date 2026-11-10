@@ -14,7 +14,7 @@ Use this checklist before staging and again before production. Do not tick an it
 - [x] `git diff --check` clean.
 - [x] No secrets, local databases, logs or temporary audit files in the working tree.
 - [x] `.dev.vars` ignored and untracked.
-- [x] All thirty local migrations reproduce on a clean SQLite database.
+- [x] All thirty-two local migrations reproduce on a clean SQLite database.
 - [x] Clean migration database passes integrity and foreign-key checks.
 - [ ] Phase 8 changes committed and reviewed.
 - [ ] Phase 8 pushed to GitHub after explicit authorization.
@@ -58,7 +58,7 @@ Production secrets must be set through Wrangler secrets or the Cloudflare dashbo
 ## D. Database and migrations
 
 - [ ] Back up production D1 before migration (export or snapshot).
-- [ ] Review migrations `0001`–`0030` against the production schema, including `0030_digital_humans.sql`.
+- [ ] Review migrations `0001`–`0032` against the production schema, including `0030_digital_humans.sql`, `0031_headtts_voice_profiles.sql` and `0032_performance_indexes.sql`.
 - [ ] Apply migrations in order with `wrangler d1 migrations apply ... --remote`.
 - [ ] Verify `PRAGMA foreign_key_check` / integrity through the approved operational process.
 - [ ] Seed roles, branches and property categories using an approved operational script.

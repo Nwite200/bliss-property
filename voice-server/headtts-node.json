@@ -12,7 +12,7 @@
     "threads": 1,
     "transformersModule": "@huggingface/transformers",
     "model": "onnx-community/Kokoro-82M-v1.0-ONNX-timestamped",
-    "dtype": "fp32",
+    "dtype": "q8",
     "device": "cpu",
     "styleDim": 256,
     "frameRate": 40,
