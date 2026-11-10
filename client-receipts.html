@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <script src="assets/js/security-ui.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#00B522" />
   <title>Official Receipts | Bliss Legacy Limited</title>
@@ -238,7 +239,7 @@
     <!-- Sidebar -->
     <aside class="portal-sidebar">
       <a href="index.html">
-        <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" class="brand-logo" onerror="this.src='bliss-legacy-logo.png'">
+        <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" class="brand-logo" data-fallback-src="bliss-legacy-logo.png">
       </a>
       <span class="nav-section-title">Client Workspace</span>
       <a href="client-dashboard.html">📊 Overview</a>
@@ -298,7 +299,7 @@
         <span style="font-size:13px;font-weight:700;color:var(--charcoal)">Official Electronic Receipt</span>
         <div style="display:flex;gap:8px">
           <a href="#" id="modalDownloadBtn" class="btn btn-green btn-sm" style="text-decoration:none">⬇ Download PDF</a>
-          <button type="button" class="btn btn-outline btn-sm" onclick="window.print()">🖨️ Print</button>
+          <button type="button" class="btn btn-outline btn-sm" data-action="print">🖨️ Print</button>
           <button type="button" class="btn btn-outline btn-sm" id="closeReceiptBtn">✕ Close</button>
         </div>
       </div>
@@ -310,7 +311,7 @@
         <!-- Header -->
         <div class="receipt-header-row">
           <div>
-            <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy Limited" style="width:160px;height:auto;margin-bottom:10px;display:block" onerror="this.src='bliss-legacy-logo.png'">
+            <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy Limited" style="width:160px;height:auto;margin-bottom:10px;display:block" data-fallback-src="bliss-legacy-logo.png">
             <div style="font-size:12px;color:#4B5563;font-weight:600">Bliss Legacy Limited</div>
             <div style="font-size:11px;color:#6B7280">RC No: 1689240 | Real Estate Development & Investments</div>
             <div style="font-size:11px;color:#6B7280">Corporate Head Office: Lagos & Branch Network Nationwide</div>
@@ -456,7 +457,7 @@
             </div>
 
             <div style="display:flex;gap:8px;margin-top:4px">
-              <button type="button" class="btn btn-green btn-sm" onclick="openReceiptModal(${idx})" style="flex:1;justify-content:center">
+              <button type="button" class="btn btn-green btn-sm" data-receipt-index="${idx}" style="flex:1;justify-content:center">
                 📄 View Receipt
               </button>
               <a class="btn btn-outline btn-sm" href="${r.download_url}" download="${r.receipt_number}.pdf" style="flex:1;justify-content:center;text-decoration:none">

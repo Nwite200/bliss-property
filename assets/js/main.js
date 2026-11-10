@@ -210,7 +210,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       return `
         <article class="property-card fade-in">
           <div class="property-image-wrap">
-            <img src="${coverImg}" alt="${p.name}" loading="lazy" class="property-img" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80'">
+            <img src="${coverImg}" alt="${p.name}" loading="lazy" class="property-img" data-fallback-src="https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80">
             <div class="card-badges-top">
               <span class="status-badge status-${statusClass}">${p.status || 'Available'}</span>
               ${p.featured ? '<span class="status-badge badge-featured">Featured</span>' : ''}

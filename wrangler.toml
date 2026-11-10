@@ -58,6 +58,12 @@ PAYMENT_MODE = "test"
 [observability]
 enabled = true
 
+# Cloudflare Workers rate-limit binding for sensitive browser/webhook routes.
+[[ratelimits]]
+name = "SENSITIVE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
 # =============================================================================
 # Production environment (company account 1473f1b95ef866edf0b286046e9e81f3)
 # Bindings are listed explicitly because Wrangler environments do not inherit.
@@ -117,6 +123,11 @@ ENVIRONMENT = "production"
 DEMO_MODE_ENABLED = "0"
 DEFAULT_GRACE_DAYS = "0"
 PAYMENT_MODE = "live"
+
+[[env.production.ratelimits]]
+name = "SENSITIVE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
 
 [env.production.observability]
 enabled = true

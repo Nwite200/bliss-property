@@ -8,7 +8,7 @@ Use this checklist before staging and again before production. Do not tick an it
 
 - [x] Phase 1–7 functionality preserved.
 - [x] Phase 8 integration and security suite added.
-- [x] Full local regression suite passes: **235 passed, 0 failed, 0 skipped** (including 40 digital-human / multi-property tests).
+- [x] Full local regression suite passes: **250 passed, 0 failed, 0 skipped** (including 44 digital-human / multi-property tests).
 - [x] JavaScript syntax checks pass.
 - [x] Inline HTML scripts syntax-checked.
 - [x] `git diff --check` clean.
@@ -202,10 +202,13 @@ Production secrets must be set through Wrangler secrets or the Cloudflare dashbo
 
 ---
 
-## J. Optional hyper-realistic voice and Team Lead staffing
+## J. HeadTTS voice and Team Lead staffing
 
-- [ ] Add `ELEVENLABS_API_KEY` as a production Worker secret to enable hyper-realistic voice.
-- [ ] Optionally set per-persona `ELEVENLABS_VOICE_<PERSONA>` overrides.
-- [ ] Confirm the voice provider data-processing and billing terms.
+- [x] HeadTTS/Kokoro modules, voices and pronunciation layer added.
+- [x] Browser adapter, server adapter and fallback selector added under `assets/js/voice/`.
+- [x] Nine distinct persona voices stored in `assistant_voice_profiles`.
+- [ ] Run real-device browser WebGPU/WASM voice acceptance (Chrome, Edge, Safari, mobile).
+- [ ] Deploy and benchmark the `voice-server/` Node service, then set `HEADTTS_SERVER_URL` and `HEADTTS_SERVICE_TOKEN`.
+- [ ] Obtain native Nigerian Pidgin speaker approval for the spoken Pidgin samples.
 - [x] Team Lead can add/remove active marketers in their own branch team.
 - [x] Cross-branch, client and non-marketer additions are rejected server-side.

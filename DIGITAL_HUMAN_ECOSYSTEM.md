@@ -73,9 +73,9 @@ persona by name (“Talk to Adaora”) to return to the concierge.
 | Capability | Implementation | Notes |
 |---|---|---|
 | Speech-to-text | `SpeechRecognition` / `webkitSpeechRecognition` | Browser/OS dependent; Chrome/Edge on desktop and Android generally support it. Safari support varies. |
-| Hyper-realistic speech | ElevenLabs TTS through the Worker, when `ELEVENLABS_API_KEY` is configured | Returns MP3 audio to the assistant. Falls back to browser speech if the provider is unavailable. |
+| Neural speech | HeadTTS/Kokoro, browser WebGPU → server Node service → browser WASM → native → text | No paid voice API. Browser model is lazy-loaded; server inference is authenticated and rate-limited. |
 | Browser fallback speech | `speechSynthesis` with available system voices | Prefers voices containing `Natural`, `Neural`, `Premium` or `Enhanced`. Works offline with local voices. |
-| Male/female voice selection | ElevenLabs voice per persona, or scored browser voices | ElevenLabs public default voices are mapped per persona and can be overridden with `ELEVENLABS_VOICE_<PERSONA>`. Browser fallback reports “Nearest available voice” when an exact gender voice is unavailable. |
+| Male/female voice selection | Nine distinct Kokoro voices, or scored browser voices | Persona voice assignments are stored in `assistant_voice_profiles` and approved by an owner. Browser fallback reports “Nearest available voice” when an exact gender voice is unavailable. |
 | Speaking / listening / thinking | CSS states, captions, status label | Approximate mouth movement, not photorealistic lip sync. |
 | Interruption | Microphone start cancels speech; “Stop voice” button | Repeat uses the last response. |
 | Text-only fallback | Always available | The microphone is disabled with an explanation when unsupported or denied. |
@@ -84,31 +84,27 @@ persona by name (“Talk to Adaora”) to return to the concierge.
 The assistant never autoplays speech before a user interaction, and it does not
 announce events aloud while the user is typing or listening.
 
-### Premium voice setup
+### HeadTTS setup
 
-1. Add the provider key as a production Worker secret:
+HeadTTS is free and runs either in the browser or in the separate
+`voice-server/` Node service. It is not bundled into the Cloudflare Worker.
 
-   ```bash
-   npx wrangler secret put ELEVENLABS_API_KEY --env production
-   ```
+Browser routing order:
 
-2. Optional per-persona voice IDs:
+```
+WebGPU browser → server inference → WASM browser (manual selection) → native → text
+```
 
-   ```bash
-   npx wrangler secret put ELEVENLABS_VOICE_ADAORA --env production
-   npx wrangler secret put ELEVENLABS_VOICE_SOLOMON --env production
-   ```
+Server secrets (optional; required for server inference):
 
-3. Optional model override:
+```bash
+npx wrangler secret put HEADTTS_SERVER_URL --env production
+npx wrangler secret put HEADTTS_SERVICE_TOKEN --env production
+```
 
-   ```bash
-   npx wrangler secret put ELEVENLABS_MODEL_ID --env production
-   ```
-
-Without the key, the assistant uses browser speech. With the key, every spoken
-reply requests ElevenLabs audio from `/api/assistant/speech`; text is sent to the
-voice provider for synthesis. If the provider fails, the same response is spoken
-using the browser voice instead.
+The service token is never sent to the browser. The Worker requires an
+authenticated session, validates persona/text length, applies per-user rate
+limits and proxies to the Node service.
 
 ### Voice honesty
 
@@ -290,10 +286,11 @@ is not implemented because staff records store phone numbers in
 | Phase 6 | 21 passed |
 | Phase 7 | 26 passed |
 | Phase 8 | 75 passed |
-| Digital human / multi-property | 40 passed |
+| Digital human / multi-property | 44 passed |
+| Voice adapters / pronunciation / fallback | 11 passed |
 | Seed/wipe security | 5 passed |
 | Browser (Chrome) | 6 passed |
-| **Total** | **235 passed, 0 failed** |
+| **Total** | **250 passed, 0 failed** |
 
 The assistant suite covers anonymous access, published-listing filtering,
 client isolation, phone reset guidance, registration/email-optional guidance,
@@ -353,7 +350,7 @@ No new Cloudflare bindings are required. The assistant uses the existing `DB`,
 | 1 | Assistant appears throughout the public website | ✅ |
 | 2 | Assistant appears across authorised dashboards | ✅ |
 | 3 | Adaora welcomes a visitor | ✅ |
-| 4 | Users can speak and hear responses with free browser APIs or configured premium voice | ✅ with browser fallback; ElevenLabs key required for hyper-realistic audio |
+| 4 | Users can speak and hear responses with free browser APIs or configured neural voice | ✅ text and adapter tests pass; real-device HeadTTS audio acceptance remains pending |
 | 5 | Text fallback works | ✅ |
 | 6 | Adaora can introduce Solomon | ✅ |
 | 7 | Avatar and voice profile change | ✅ |
@@ -387,7 +384,7 @@ No new Cloudflare bindings are required. The assistant uses the existing `DB`,
 | 33 | Mute works without breaking the app | ✅ |
 | 34 | Mobile/tablet/desktop layouts | ✅ |
 | 35 | Existing financial/commission/lead/property workflows | ✅ |
-| 36 | Existing regression tests continue to pass | ✅ 235/235 |
+| 36 | Existing regression tests continue to pass | ✅ 250/250 |
 
 Items that remain operational/limitation rather than “done”:
 

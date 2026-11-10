@@ -813,6 +813,45 @@
   text-align: right;
 }
 
+.dh-lang {
+  height: 24px;
+  max-width: 88px;
+  padding: 0 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--dh-muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  cursor: pointer;
+  outline: none;
+}
+
+.dh-lang:focus {
+  border-color: rgba(0, 181, 34, 0.55);
+}
+
+.dh-avatar .dh-mouth-sync {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  width: 9%;
+  height: 2.6%;
+  border-radius: 50%;
+  background: rgba(38, 16, 12, 0.7);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scaleX(var(--dh-viseme-width, 0.96)) scaleY(var(--dh-viseme-open, 0.04));
+  transform-origin: center;
+  transition: transform 45ms linear, opacity 120ms ease;
+  mix-blend-mode: multiply;
+}
+
+.dh-avatar.is-speaking .dh-mouth-sync,
+.dh-avatar.is-viseme .dh-mouth-sync {
+  opacity: 0.28;
+}
+
 /* ---------------------------------------------------------------------------
    Toasts
    ------------------------------------------------------------------------- */

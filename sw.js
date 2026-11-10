@@ -1,6 +1,6 @@
 /* Bliss Legacy Limited — PWA service worker.
    Static assets only. API and authenticated financial data are never cached. */
-const CACHE_VERSION = "bliss-pwa-v8";
+const CACHE_VERSION = "bliss-pwa-v9";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/",
@@ -13,6 +13,7 @@ const CORE_ASSETS = [
   "/assets/js/pwa.js",
   "/assets/js/mobile-nav.js",
   "/assets/js/components.js",
+  "/assets/js/security-ui.js",
   "/assets/js/digital-human.js",
   "/assets/css/digital-human.css",
   "/assets/js/data/properties.js",
@@ -68,6 +69,10 @@ self.addEventListener("fetch", event => {
     );
     return;
   }
+
+  // Large neural voice/model assets are managed by the browser HTTP cache,
+  // not by the PWA cache, to avoid bloating offline storage.
+  if (url.pathname.startsWith("/assets/voice/") || url.pathname.startsWith("/assets/vendor/headtts/")) return;
 
   if (url.pathname.startsWith("/assets/") || url.pathname === "/manifest.json") {
     event.respondWith(

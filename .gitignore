@@ -6,3 +6,8 @@ node_modules
 
 # Local D1 backup exports
 backup-*.sql
+
+# HeadTTS local service
+voice-server/node_modules
+voice-server/.cache
+voice-server/.env

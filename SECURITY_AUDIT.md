@@ -29,7 +29,7 @@
 
 - Staff password-reset token delivery depends on an external email provider. The interface currently generates the token but does not send an email.
 - Clients without email can reset by SMS 6-digit code to their registered phone (Termii/Africa's Talking adapter, mock outside production).
-- Login throttling is identifier-based, not IP-based. A production edge rate limit or WAF rule is recommended.
+- Login throttling covers account and IP; a Cloudflare Workers rate-limit binding now adds a per-colo edge layer for login, signup, assistant messages, password reset and webhooks.
 - `users.must_reset_password` is enforced for client API access: a client holding a temporary password may only read their profile or change the password until the temporary password is replaced.
 
 ---
@@ -74,7 +74,7 @@ Property documents and unpublished property images are now explicitly branch-sco
 
 ### Outstanding
 
-- There is no per-session CSRF token. `SameSite=Lax`, origin checks and fetch-metadata checks provide defence in depth, but a synchroniser token is a future hardening option.
+- A per-session double-submit CSRF token is now required for browser-origin state changes (`bliss_csrf` cookie + `X-CSRF-Token` header), in addition to SameSite=Lax, Origin/Host and Fetch-Metadata checks.
 - Webhook authentication uses a static shared secret header, not HMAC signing with timestamp/replay protection beyond the existing timestamp window. Official Wema/ALAT signing requirements must be implemented from provider documentation when available.
 
 ---
@@ -105,7 +105,7 @@ Property documents and unpublished property images are now explicitly branch-sco
 ### Outstanding
 
 - Some older pages still build HTML from API data without a shared escaping helper. The highest-risk client/staff financial views were repaired, but a full frontend templating review is still advisable before production.
-- No Content-Security-Policy header is set. Cloudflare Workers/Pages headers or `_headers` could add CSP, `Referrer-Policy` and `Permissions-Policy`.
+- CSP is now set with per-request nonces, `script-src-attr 'none'`, `frame-ancestors 'none'`, `object-src 'none'`, strict referrer and permissions policies, HSTS and nosniff. `wasm-unsafe-eval` is allowed solely for ONNX/HeadTTS WebAssembly; bare `unsafe-eval` is not allowed.
 
 ---
 
@@ -152,7 +152,7 @@ Property documents and unpublished property images are now explicitly branch-sco
 
 - Email verification is not implemented.
 - CAPTCHA/Turnstile is not implemented; Cloudflare Turnstile is the recommended production option.
-- The current rate limiting uses D1 audit rows, which is adequate for local validation but should be supplemented by Cloudflare WAF/rate-limiting rules or KV counters at production scale.
+- Application limits use D1 audit rows and are supplemented by a Cloudflare Workers rate-limit binding. Cloudflare WAF rules are still recommended for volumetric attacks.
 - Public enquiry forms do not yet send an acknowledgement email.
 
 ---
@@ -190,7 +190,7 @@ Property documents and unpublished property images are now explicitly branch-sco
 
 **Fixed in Phase 8:** session fixation, CSRF fetch-metadata gap, unhandled JSON errors, public enquiry persistence, public enquiry/signup/reset rate limits, property document lifecycle, magic-byte validation, private document R2 isolation, unpublished image cache leakage, receipt key-prefix validation, several frontend XSS vectors, broken auth guards, lead deep links and mobile navigation.
 
-**Still required before production:** provider email/WhatsApp adapters, Wema/ALAT official signing/integration, email verification/Turnstile/edge rate limiting, CSP/security headers, monitoring/alerting, secret-management decision, backup/restore validation and a full penetration test against the deployed staging environment.
+**Still required before production:** provider email/WhatsApp adapters, Wema/ALAT official signing/integration, email verification/Turnstile, Cloudflare WAF rules for volumetric attacks, monitoring/alerting, backup/restore validation and a full penetration test against the deployed staging environment.
 
 
 ---
@@ -231,7 +231,7 @@ Outstanding production hardening:
 ## 9. Post-launch security hardening (2026-11-10)
 
 The following controls were added after the initial Phase 8 audit and are covered by
-the current 235-test suite:
+the current 250-test suite:
 
 | Control | Implementation |
 |---|---|
@@ -242,7 +242,7 @@ the current 235-test suite:
 | XSS in password-reset phone display | Customer-care phone is escaped before inline markup |
 | Clickjacking | `X-Frame-Options: DENY` and CSP `frame-ancestors 'none'` |
 | MIME sniffing | `X-Content-Type-Options: nosniff` on every response |
-| Script injection surface | CSP restricts scripts, styles, fonts, images, frames, objects, workers and connections; no `unsafe-eval` |
+| Script injection surface | CSP uses per-request nonces, blocks inline handlers, frames and objects, and allows only `wasm-unsafe-eval` for HeadTTS; bare `unsafe-eval` is blocked |
 | HTTPS downgrade | Production `Strict-Transport-Security` and `upgrade-insecure-requests` |
 | Privacy/referrer leakage | `Referrer-Policy: strict-origin-when-cross-origin` |
 | Browser feature abuse | `Permissions-Policy` limits camera/geolocation/payment/USB and allows microphone only for self |
@@ -253,7 +253,7 @@ the current 235-test suite:
 
 Remaining hardening work:
 
-- A strict CSP with nonces/hashes would allow removing `'unsafe-inline'` from script/style directives. The current platform has many inline handlers and scripts.
-- Cloudflare WAF/rate limiting should be enabled in front of `/api/assistant/*`, `/api/login`, `/api/signup` and webhooks for edge-level abuse protection.
-- A per-session CSRF synchroniser token would add another layer beyond SameSite=Lax, Origin/Host and Fetch-Metadata checks.
+- Inline style attributes still use `style-src-attr 'unsafe-inline'`; moving all styling to classes would allow removing it.
+- The Cloudflare Workers rate-limit binding is enabled in code. Dashboard-level WAF rules remain recommended for volumetric/DDoS protection.
+- The per-session double-submit CSRF token is enforced for browser-origin state changes.
 - Add a real RUM/analytics pipeline for security anomaly detection; current observability is Worker logs/audit rows.

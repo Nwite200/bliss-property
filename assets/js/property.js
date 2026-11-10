@@ -108,7 +108,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     <!-- Interactive Image Gallery -->
     <div class="gallery-wrapper">
       <div class="gallery-hero">
-        <img id="mainGalleryImg" src="${coverImage}" alt="${p.name}" class="gallery-hero-img" onerror="this.src='https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80'">
+        <img id="mainGalleryImg" src="${coverImage}" alt="${p.name}" class="gallery-hero-img" data-fallback-src="https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80">
         <div class="gallery-counter" id="galleryCounter">1 / ${allImages.length} Photos</div>
       </div>
 
@@ -116,7 +116,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         <div class="gallery-thumbnails">
           ${allImages.map((img, idx) => `
             <button class="thumb-btn ${idx === 0 ? 'active' : ''}" data-index="${idx}" data-src="${img}" aria-label="View photo ${idx + 1}">
-              <img src="${img}" alt="${p.name} thumbnail ${idx + 1}" onerror="this.src='https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=400&q=80'">
+              <img src="${img}" alt="${p.name} thumbnail ${idx + 1}" data-fallback-src="https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=400&q=80">
             </button>
           `).join('')}
         </div>

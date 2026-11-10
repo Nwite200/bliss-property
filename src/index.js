@@ -40,7 +40,7 @@ function parseCookies(request) {
   return out;
 }
 
-function applySecurityHeaders(headers, env, pathname) {
+function applySecurityHeaders(headers, env, pathname, nonce) {
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -60,13 +60,15 @@ function applySecurityHeaders(headers, env, pathname) {
     "frame-src 'none'",
     "form-action 'self'",
     "manifest-src 'self'",
-    "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com",
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    `script-src 'self' 'nonce-${nonce}' 'wasm-unsafe-eval' blob: https://static.cloudflareinsights.com https://cdn.jsdelivr.net`,
+    "script-src-attr 'none'",
+    `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
+    "style-src-attr 'unsafe-inline'",
     "font-src 'self' data: https://fonts.gstatic.com",
     "img-src 'self' data: blob: https://images.unsplash.com",
-    "connect-src 'self' https://cloudflareinsights.com https://*.cloudflareinsights.com",
+    "connect-src 'self' https://cloudflareinsights.com https://*.cloudflareinsights.com https://cdn.jsdelivr.net https://huggingface.co https://*.huggingface.co https://*.hf.co",
     "media-src 'self' blob:",
-    "worker-src 'self' blob:",
+    "worker-src 'self' blob: https://cdn.jsdelivr.net",
     isProduction ? "upgrade-insecure-requests" : ""
   ].filter(Boolean).join("; ");
   headers.set("Content-Security-Policy", csp);
@@ -241,10 +243,14 @@ function csrfOk(request) {
   if (!origin) return true;
   try {
     const o = new URL(origin);
-    return o.host === host;
+    if (o.host !== host) return false;
   } catch {
     return false;
   }
+  // Browser-origin state changes also need the double-submit CSRF token.
+  const cookieToken = parseCookies(request).bliss_csrf || "";
+  const headerToken = request.headers.get("X-CSRF-Token") || "";
+  return Boolean(cookieToken && secureCompare(headerToken, cookieToken));
 }
 
 function sanitizeFilename(name, fallback = "document") {
@@ -5614,28 +5620,21 @@ const DIGITAL_HUMAN_PERSONAS = [
 ];
 const DIGITAL_HUMAN_PERSONA_MAP = Object.fromEntries(DIGITAL_HUMAN_PERSONAS.map(p => [p.key, p]));
 
-// Premium voice mapping. These are ElevenLabs public default voices; each can
-// be overridden per persona with ELEVENLABS_VOICE_<PERSONA> in Worker secrets.
-const DIGITAL_HUMAN_ELEVENLABS_VOICES = {
-  adaora: "21m00Tcm4TlvDq8ikWAM",
-  solomon: "pNInz6obpgDQGcFmaJgB",
-  chiamaka: "EXAVITQu4vr4xnSDxMaL",
-  emeka: "ErXwobaYiN019PkySvjV",
-  amara: "MF3mGyEYCl7XYWbV9V6O",
-  david: "TxGEqnHWrfWFTfGW9XjX",
-  ngozi: "AZnzlk1XvdvUeBnXmlld",
-  daniel: "VR6AewLTigWG4xSOukaG",
-  ifeoma: "21m00Tcm4TlvDq8ikWAM"
+// HeadTTS/Kokoro voice profile defaults. The D1 assistant_voice_profiles table
+// is authoritative once a profile has been approved; these values seed and back
+// up the configuration.
+const DIGITAL_HUMAN_HEADTTS_VOICES = {
+  adaora: { voice: "af_heart", speed: 0.98 },
+  solomon: { voice: "am_fenrir", speed: 0.97 },
+  chiamaka: { voice: "af_bella", speed: 1.0 },
+  emeka: { voice: "am_michael", speed: 0.96 },
+  amara: { voice: "af_nicole", speed: 0.98 },
+  david: { voice: "am_puck", speed: 1.01 },
+  ngozi: { voice: "bf_emma", speed: 0.97 },
+  daniel: { voice: "bm_george", speed: 0.95 },
+  ifeoma: { voice: "af_aoede", speed: 0.97 }
 };
-
-function digitalHumanTtsConfig(env) {
-  const key = String(env.ELEVENLABS_API_KEY || "").trim();
-  return {
-    provider: key ? "elevenlabs" : null,
-    enabled: Boolean(key),
-    model: String(env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2")
-  };
-}
+const HEADTTS_ALLOWED_VOICES = new Set(Object.values(DIGITAL_HUMAN_HEADTTS_VOICES).map(v => v.voice));
 
 const ASSISTANT_FORM_FIELD_LABELS = {
   full_name: "Full name", email: "Email address", email_address: "Email address",
@@ -5649,6 +5648,29 @@ const ASSISTANT_FORM_FIELD_LABELS = {
   notes: "Notes", amount: "Amount", reason: "Reason"
 };
 const ASSISTANT_SECRET_FIELDS = new Set(["password", "confirm_password", "bvn", "identity_number", "otp", "code", "token"]);
+
+function digitalHumanTtsConfig(env) {
+  return {
+    provider: "headtts",
+    browser_enabled: true,
+    server_enabled: Boolean(env.HEADTTS_SERVER_URL && env.HEADTTS_SERVICE_TOKEN),
+    native_fallback: true,
+    model: "Kokoro-82M-v1.0-ONNX-timestamped",
+    language: "en-us"
+  };
+}
+
+function digitalHumanVoiceProfile(personaKey, row) {
+  const fallback = DIGITAL_HUMAN_HEADTTS_VOICES[personaKey] || DIGITAL_HUMAN_HEADTTS_VOICES.adaora;
+  return {
+    persona_key: personaKey,
+    provider: "headtts",
+    voice_id: row && row.voice_id ? row.voice_id : fallback.voice,
+    language: row && row.language ? row.language : "en-us",
+    speed: row && row.speed !== undefined && row.speed !== null ? Number(row.speed) : fallback.speed,
+    approved: row ? Number(row.is_approved) === 1 : true
+  };
+}
 
 function digitalHumanPersona(key) {
   return DIGITAL_HUMAN_PERSONA_MAP[String(key || "").toLowerCase()] || DIGITAL_HUMAN_PERSONA_MAP.adaora;
@@ -5805,6 +5827,87 @@ function assistantNormalizeMessage(value) {
   return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+const PIDGIN_MARKERS = /\b(abeg|wetin|dey|wan|una|sabi|wahala|shey|na\b|oga|abi|fit|don\b|never reflect|no understand|make you|talk to human being|how i go take|wetin una get|e be)\b/i;
+
+function assistantDetectPidgin(text) {
+  return PIDGIN_MARKERS.test(String(text || ""));
+}
+
+function assistantPidginToEnglish(text) {
+  return String(text || "")
+    .replace(/\bhow e be\b/gi, "how much is it")
+    .replace(/\bhow much e be\b/gi, "how much is it")
+    .replace(/\bwetin una get\b/gi, "what do you have")
+    .replace(/\bwetin\b/gi, "what")
+    .replace(/\bi wan talk to human being\b/gi, "i want to talk to a human")
+    .replace(/\bi wan buy\b/gi, "i want to buy")
+    .replace(/\bi wan\b/gi, "i want")
+    .replace(/\bi dey find\b/gi, "i am looking for")
+    .replace(/\bi don pay\b/gi, "i have paid")
+    .replace(/\bmy payment never reflect\b/gi, "my payment has not reflected")
+    .replace(/\bi no understand\b/gi, "i do not understand")
+    .replace(/\bmake you explain am again\b/gi, "please explain it again")
+    .replace(/\bhow i go take register\b/gi, "how do i register")
+    .replace(/\bno wahala\b/gi, "no problem")
+    .replace(/\bdey find\b/gi, "looking for")
+    .replace(/\bdey\b/gi, "is")
+    .replace(/\buna\b/gi, "you")
+    .replace(/\bdon\b/gi, "have")
+    .replace(/\bnever\b/gi, "not")
+    .replace(/\bfit\b/gi, "can")
+    .replace(/\bsabi\b/gi, "know")
+    .replace(/\bshey\b/gi, "is it")
+    .replace(/\bna\b/gi, "is")
+    .replace(/\boga\b/gi, "sir")
+    .replace(/\bhouse\b/gi, "property")
+    .replace(/\babeg\b/gi, "please")
+    .replace(/\bwetin\b/gi, "what")
+    .replace(/\bgo take\b/gi, "can")
+    .replace(/\bgo\b/gi, "will")
+    .replace(/\bam\b/gi, "it");
+}
+
+function assistantPidginReply(text, intent, persona) {
+  let reply = String(text || "").trim();
+  if (!reply) return reply;
+  const lead = {
+    "property.search": "No wahala. ",
+    "client.properties": "I don check your portfolio. ",
+    "client.payments": "I see your payment record. ",
+    "onboarding.signup": "No wahala. ",
+    "onboarding.login": "No wahala. ",
+    "onboarding.status": "I check your account. ",
+    "form.help": "I check the form. ",
+    "handover.request": "No wahala, I go request person for you. ",
+    "handover.status": "I check the handover. ",
+    "clarify": "No wahala. ",
+    "ack": "",
+    "greeting": "How far? ",
+    "capabilities": "I dey here to help. ",
+    "fallback": "I hear you. "
+  }[intent] || "No wahala. ";
+  if (!reply.startsWith(lead) && lead) reply = lead + reply;
+  return reply
+    .replace(/\bI searched the live Bliss Legacy listings\b/gi, "I check our correct listings")
+    .replace(/\band found\b/gi, "and I see")
+    .replace(/\bI did not find\b/gi, "I no see")
+    .replace(/\bI will not invent a listing\b/gi, "I no go invent listing")
+    .replace(/\bI will not\b/gi, "I no go")
+    .replace(/\bI will\b/gi, "I go")
+    .replace(/\bI can\b/gi, "I fit")
+    .replace(/\bYou currently have\b/gi, "You get")
+    .replace(/\bYou do not have\b/gi, "You no get")
+    .replace(/\bYour total contract value is\b/gi, "Your total contract na")
+    .replace(/\bYour next scheduled payment is\b/gi, "Your next payment na")
+    .replace(/\btotal verified payments are\b/gi, "total wey we don verify na")
+    .replace(/\boutstanding balance is\b/gi, "balance wey remain na")
+    .replace(/\bEmail is optional\b/gi, "Email no compulsory")
+    .replace(/\bYou need\b/gi, "You go need")
+    .replace(/\bI am here\b/gi, "I dey here")
+    .replace(/\bPlease\b/gi, "Abeg")
+    .replace(/\bThank you\b/gi, "Thank you");
+}
+
 function assistantSafeMessage(value) {
   return String(value || "")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
@@ -5840,12 +5943,16 @@ function assistantDetectPropertyReference(text) {
 }
 
 function assistantClassifyIntent(rawText, actor) {
-  const text = assistantNormalizeMessage(rawText);
+  const pidgin = assistantDetectPidgin(rawText);
+  const text = assistantNormalizeMessage(pidgin ? assistantPidginToEnglish(rawText) : rawText);
   const role = digitalHumanRole(actor);
   const explicit = DIGITAL_HUMAN_PERSONAS.find(p =>
     new RegExp(`\\b${p.name.toLowerCase()}\\b`).test(text) && /(speak|talk|connect|transfer|switch|hello|hi|hey)/.test(text)
   );
   if (explicit) return { intent: "persona.transfer", personaKey: explicit.key };
+  if (/(no wahala|i no understand|i do not understand|explain am again|explain it again|say that again|repeat that)/.test(text)) {
+    return { intent: /no wahala/.test(text) && !/(understand|explain|again)/.test(text) ? "ack" : "clarify" };
+  }
   if (/(handover|human|real person|agent|staff member).*(status|update|accepted)|check.*(handover|human agent)/.test(text)) {
     return { intent: "handover.status" };
   }
@@ -5870,6 +5977,9 @@ function assistantClassifyIntent(rawText, actor) {
   if (/(commission)/.test(text)) {
     return { intent: "finance.commission" };
   }
+  if (role === "Client" && /(i have paid|i don pay|payment has not reflected|payment never reflect|my payment|how much do i owe|i owe)/.test(text)) {
+    return { intent: "client.payments" };
+  }
   if (role === "Client" && /((my|our)\s+(propert|portfolio|balance|payment|receipt|account)|my next payment|account balance|outstanding balance|payment history|add (another )?propert|review my\s+(account|portfolio))/.test(text)) {
     if (/(payment|paid|receipt|next payment|balance|outstanding)/.test(text)) return { intent: "client.payments" };
     return { intent: "client.properties" };
@@ -5877,8 +5987,8 @@ function assistantClassifyIntent(rawText, actor) {
   if (/(customer|client|lead|follow.?up|pipeline|prospect|not contacted)/.test(text)) {
     return { intent: "leads.review" };
   }
-  if (/(property|properties|apartment|house|duplex|land|rent|rental|lease|buy|purchase|budget|location|viewing)/.test(text)) {
-    if (/(rent|rental|lease|tenant)/.test(text)) return { intent: "property.search", personaKey: "emeka" };
+  if (/(property|properties|apartment|house|duplex|land|rent|rental|lease|buy|purchase|budget|location|viewing|bedroom|show me what you have|how much is it)/.test(text)) {
+    if (/(\brent\b|\brental\b|\blease\b|\btenant\b)/.test(text)) return { intent: "property.search", personaKey: "emeka" };
     if (/(buy|purchase|sale|sales process|payment plan)/.test(text)) return { intent: "property.search", personaKey: "chiamaka" };
     return { intent: "property.search", personaKey: "solomon" };
   }
@@ -6334,6 +6444,11 @@ async function handleAssistantMessage(env, request, actor, client, body) {
   const conversation = await assistantOwnedConversation(env, actor, client, body, pagePath);
   const text = assistantSafeMessage(body.message);
   if (!text) return { error: "Enter a message for the assistant." };
+  const preferenceRow = actor ? await env.DB.prepare("SELECT language_mode FROM assistant_preferences WHERE user_id=?").bind(actor.id).first() : null;
+  const languageMode = ["auto", "pidgin", "nigerian", "international"].includes(String(body.language_mode || "").toLowerCase())
+    ? String(body.language_mode).toLowerCase()
+    : (preferenceRow && preferenceRow.language_mode ? preferenceRow.language_mode : "auto");
+  const usePidgin = languageMode === "pidgin" || (languageMode === "auto" && assistantDetectPidgin(text));
   const rateKey = actor ? `user:${actor.id}` : `visitor:${String(body.visitor_id || "").slice(0, 60)}`;
   const ipKey = `ip:${clientIp(request)}`;
   const recent = await recentAuditCount(env, "assistant.message", rateKey, 5);
@@ -6653,6 +6768,12 @@ async function handleAssistantMessage(env, request, actor, client, body) {
     } else if (classification.intent === "capabilities") {
       finish(`I am ${digitalHumanPersona(personaKey).name}, part of the Bliss Legacy digital team. I can search real published properties, explain registration and phone-based password recovery, review your own dashboard data according to your role, explain verified payments and commission records, and request a genuine human handover. I cannot change prices, approve payments or grant permissions.`);
       suggestions = assistantQuickPrompts(actor, page);
+    } else if (classification.intent === "clarify") {
+      const history = await assistantConversationHistory(env, conversation.id, 6);
+      const lastAssistant = [...history].reverse().find(message => message.role === "assistant");
+      finish(lastAssistant ? `I will explain it again. ${lastAssistant.content}` : "I can explain that again. Tell me which part you want me to break down.");
+    } else if (classification.intent === "ack") {
+      finish("No problem. I am here if you need anything.");
     } else if (classification.intent === "greeting") {
       finish(assistantGreetingFor(actor, page, personaKey));
       suggestions = assistantQuickPrompts(actor, page);
@@ -6666,6 +6787,10 @@ async function handleAssistantMessage(env, request, actor, client, body) {
   }
 
   const persona = digitalHumanPersona(personaKey);
+  if (usePidgin) {
+    reply = assistantPidginReply(reply, classification.intent, persona);
+    speech = assistantPidginReply(speech || reply, classification.intent, persona);
+  }
   if (reply.startsWith(" ")) reply = reply.trimStart();
   await env.DB.prepare("UPDATE assistant_conversations SET current_persona=?, page_path=?, context_json=?, updated_at=datetime('now') WHERE id=?")
     .bind(persona.key, pagePath || null, JSON.stringify({ page: page.key, lastIntent: classification.intent }), conversation.id).run();
@@ -6684,6 +6809,8 @@ async function handleAssistantMessage(env, request, actor, client, body) {
       assigned_role: handover.assigned ? handover.assigned.role_name : null
     } : null,
     action,
+    language: usePidgin ? "pidgin" : (languageMode === "international" ? "international" : "nigerian"),
+    language_mode: languageMode,
     page_context: page
   };
 }
@@ -6692,6 +6819,20 @@ async function handleFetch(request, env) {
   try {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // Edge rate-limit binding (per-colo) for sensitive browser/webhook routes.
+    // Application-level audit limits remain the stricter second layer.
+    if (env.SENSITIVE_LIMITER && typeof env.SENSITIVE_LIMITER.limit === "function") {
+      const sensitive = path === "/api/login" || path === "/api/signup" ||
+        path === "/api/assistant/message" || path.startsWith("/api/client/password-reset/") ||
+        path.startsWith("/api/webhooks/");
+      if (sensitive) {
+        const limited = await env.SENSITIVE_LIMITER.limit({ key: `ip:${clientIp(request)}:${path}` });
+        if (!limited || limited.success === false) {
+          return json({ error: "Too many requests. Please try again shortly." }, 429, { "Retry-After": "60" });
+        }
+      }
+    }
 
     // Clients holding a temporary password may only load their profile and
     // change the password. Every other client API stays blocked until then.
@@ -17138,6 +17279,23 @@ async function handleFetch(request, env) {
       if (actor && role !== "Client" && !staffAvailability) {
         staffAvailability = "available";
       }
+      let voiceProfiles = [];
+      try {
+        const { results: profileRows } = await env.DB.prepare(
+          "SELECT persona_key, voice_id, language, speed, is_approved FROM assistant_voice_profiles"
+        ).all();
+        const byKey = new Map((profileRows || []).map(row => [row.persona_key, row]));
+        voiceProfiles = DIGITAL_HUMAN_PERSONAS.map(p => digitalHumanVoiceProfile(p.key, byKey.get(p.key)));
+      } catch {
+        voiceProfiles = DIGITAL_HUMAN_PERSONAS.map(p => digitalHumanVoiceProfile(p.key, null));
+      }
+      const tts = digitalHumanTtsConfig(env);
+      const baseGreeting = passwordGate
+        ? "Your account is using a temporary password. Change it in your profile before I can discuss your portfolio, payments or account details."
+        : assistantGreetingFor(actor, page, persona.key);
+      const greeting = prefs && prefs.language_mode === "pidgin"
+        ? assistantPidginReply(baseGreeting, "greeting", persona)
+        : baseGreeting;
       return json({
         ok: true,
         authenticated: Boolean(actor),
@@ -17150,9 +17308,7 @@ async function handleFetch(request, env) {
         personas: DIGITAL_HUMAN_PERSONAS.map(digitalHumanPublicPersona),
         default_persona: assistantDefaultPersona(actor),
         persona: digitalHumanPublicPersona(persona),
-        greeting: passwordGate
-          ? "Your account is using a temporary password. Change it in your profile before I can discuss your portfolio, payments or account details."
-          : assistantGreetingFor(actor, page, persona.key),
+        greeting,
         password_change_required: passwordGate,
         page,
         quick_prompts: passwordGate ? ["Change my password", "Talk to a human"] : assistantQuickPrompts(actor, page),
@@ -17164,7 +17320,12 @@ async function handleFetch(request, env) {
           rate: prefs ? Number(prefs.speech_rate || 1) : 1,
           pitch: prefs ? Number(prefs.speech_pitch || 1) : 1,
           volume: prefs ? Number(prefs.speech_volume || 1) : 1,
-          preferred_persona: prefs ? prefs.preferred_persona : null
+          preferred_persona: prefs ? prefs.preferred_persona : null,
+          voice_mode: prefs && prefs.voice_mode ? prefs.voice_mode : "auto",
+          browser_voice_enabled: prefs ? Number(prefs.browser_voice_enabled) === 1 : true,
+          server_voice_enabled: prefs ? Number(prefs.server_voice_enabled) === 1 : true,
+          language_mode: prefs && prefs.language_mode ? prefs.language_mode : "auto",
+          voice_consent_at: prefs ? prefs.voice_consent_at || null : null
         },
         pending_handovers: pendingHandovers,
         my_handovers: activeHandovers,
@@ -17174,17 +17335,18 @@ async function handleFetch(request, env) {
           email: siteConfig.email || "",
           whatsapp: siteConfig.whatsapp || ""
         },
-        tts: (() => {
-          const tts = digitalHumanTtsConfig(env);
-          return {
-            enabled: tts.enabled,
-            provider: tts.provider,
-            label: tts.enabled ? "Hyper-realistic neuro voice" : "Browser voice"
-          };
-        })(),
-        voice_note: digitalHumanTtsConfig(env).enabled
-          ? "Hyper-realistic voice is enabled. If it is unavailable, the assistant falls back to your browser voice."
-          : "Voice uses the browser's free SpeechRecognition and SpeechSynthesis APIs. Availability differs by browser and operating system. Text input always works."
+        tts: {
+          provider: tts.provider,
+          browser_enabled: Boolean(tts.browser_enabled && (!prefs || Number(prefs.browser_voice_enabled) !== 0)),
+          server_enabled: Boolean(tts.server_enabled && (!prefs || Number(prefs.server_voice_enabled) !== 0)),
+          native_fallback: true,
+          mode: prefs && prefs.voice_mode ? prefs.voice_mode : "auto",
+          language: tts.language,
+          model: tts.model,
+          profiles: voiceProfiles,
+          label: "HeadTTS neural voice"
+        },
+        voice_note: "HeadTTS runs in your browser when supported, then falls back to the Bliss server, then to a basic browser voice. Text-only mode is always available."
       });
     }
 
@@ -17232,8 +17394,11 @@ async function handleFetch(request, env) {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       const body = await request.json().catch(() => ({}));
+      const existingPrefs = await env.DB.prepare("SELECT * FROM assistant_preferences WHERE user_id=?").bind(actor.id).first();
       const muted = isTruthy(body.muted) ? 1 : 0;
-      const voiceEnabled = body.voice_enabled === undefined || isTruthy(body.voice_enabled) ? 1 : 0;
+      const voiceEnabled = body.voice_enabled === undefined
+        ? (existingPrefs ? Number(existingPrefs.voice_enabled) === 1 ? 1 : 0 : 1)
+        : (isTruthy(body.voice_enabled) ? 1 : 0);
       const clamp = (value, min, max, fallback) => {
         const n = Number(value);
         return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
@@ -17243,15 +17408,43 @@ async function handleFetch(request, env) {
       const volume = clamp(body.volume, 0, 1, 1);
       const preferred = body.preferred_persona && DIGITAL_HUMAN_PERSONA_MAP[String(body.preferred_persona)]
         ? String(body.preferred_persona) : null;
+      const requestedVoiceMode = body.voice_mode !== undefined ? body.voice_mode : (existingPrefs ? existingPrefs.voice_mode : "auto");
+      const voiceMode = ["auto", "browser", "server", "native", "text"].includes(String(requestedVoiceMode || "").toLowerCase())
+        ? String(requestedVoiceMode).toLowerCase() : "auto";
+      const browserVoiceEnabled = body.browser_voice_enabled === undefined
+        ? (existingPrefs ? Number(existingPrefs.browser_voice_enabled) === 1 ? 1 : 0 : 1)
+        : (isTruthy(body.browser_voice_enabled) ? 1 : 0);
+      const serverVoiceEnabled = body.server_voice_enabled === undefined
+        ? (existingPrefs ? Number(existingPrefs.server_voice_enabled) === 1 ? 1 : 0 : 1)
+        : (isTruthy(body.server_voice_enabled) ? 1 : 0);
+      const requestedLanguage = body.language_mode !== undefined ? body.language_mode : (existingPrefs ? existingPrefs.language_mode : "auto");
+      const languageMode = ["auto", "pidgin", "nigerian", "international"].includes(String(requestedLanguage || "").toLowerCase())
+        ? String(requestedLanguage).toLowerCase() : "auto";
+      const consentAt = isTruthy(body.voice_consent) ? new Date().toISOString() : null;
       await env.DB.prepare(`
-        INSERT INTO assistant_preferences (user_id, muted, voice_enabled, speech_rate, speech_pitch, speech_volume, preferred_persona, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO assistant_preferences
+          (user_id, muted, voice_enabled, speech_rate, speech_pitch, speech_volume, preferred_persona,
+           voice_mode, browser_voice_enabled, server_voice_enabled, language_mode, voice_consent_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(user_id) DO UPDATE SET
           muted=excluded.muted, voice_enabled=excluded.voice_enabled, speech_rate=excluded.speech_rate,
           speech_pitch=excluded.speech_pitch, speech_volume=excluded.speech_volume,
-          preferred_persona=excluded.preferred_persona, updated_at=datetime('now')
-      `).bind(actor.id, muted, voiceEnabled, rate, pitch, volume, preferred).run();
-      return json({ ok: true, preferences: { muted: Boolean(muted), voice_enabled: Boolean(voiceEnabled), rate, pitch, volume, preferred_persona: preferred } });
+          preferred_persona=excluded.preferred_persona, voice_mode=excluded.voice_mode,
+          browser_voice_enabled=excluded.browser_voice_enabled,
+          server_voice_enabled=excluded.server_voice_enabled,
+          language_mode=excluded.language_mode,
+          voice_consent_at=COALESCE(excluded.voice_consent_at, assistant_preferences.voice_consent_at),
+          updated_at=datetime('now')
+      `).bind(actor.id, muted, voiceEnabled, rate, pitch, volume, preferred,
+        voiceMode, browserVoiceEnabled, serverVoiceEnabled, languageMode, consentAt).run();
+      return json({ ok: true, preferences: {
+        muted: Boolean(muted), voice_enabled: Boolean(voiceEnabled), rate, pitch, volume,
+        preferred_persona: preferred, voice_mode: voiceMode,
+        browser_voice_enabled: Boolean(browserVoiceEnabled),
+        server_voice_enabled: Boolean(serverVoiceEnabled),
+        language_mode: languageMode,
+        voice_consent_at: consentAt
+      } });
     }
 
     if (path === "/api/assistant/events" && request.method === "GET") {
@@ -17448,63 +17641,109 @@ async function handleFetch(request, env) {
       return json({ ok: true, status });
     }
 
+    // Paid ElevenLabs voice is intentionally disabled. HeadTTS is free and
+    // runs in the browser or through the separately hosted voice service.
     if (path === "/api/assistant/speech" && request.method === "POST") {
+      return json({ error: "Paid speech providers are disabled. Use HeadTTS browser or server inference.", fallback: "browser" }, 410);
+    }
+
+    if (path === "/api/voice/synthesize" && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
-      const tts = digitalHumanTtsConfig(env);
-      if (!tts.enabled) {
-        return json({ error: "Premium voice is not configured", fallback: "browser" }, 503);
-      }
       const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Sign in to use server voice inference" }, 401);
+      const serverEnabled = Boolean(env.HEADTTS_SERVER_URL && env.HEADTTS_SERVICE_TOKEN);
+      if (!serverEnabled) {
+        return json({ error: "Server voice inference is not configured", fallback: "browser" }, 503);
+      }
       const body = await request.json().catch(() => ({}));
-      const persona = digitalHumanPersona(body.persona_key);
-      const text = String(body.text || "").replace(/\s+/g, " ").trim().slice(0, 900);
+      const personaKey = String(body.persona_key || "").toLowerCase();
+      const persona = DIGITAL_HUMAN_PERSONA_MAP[personaKey];
+      if (!persona) return json({ error: "Unknown persona" }, 400);
+      const text = String(body.text || "").replace(/\s+/g, " ").trim();
       if (!text) return json({ error: "Text is required" }, 400);
-      const rateKey = actor ? `user:${actor.id}` : `ip:${clientIp(request)}`;
-      if (await recentAuditCount(env, "assistant.speech", rateKey, 5) >= 40) {
+      if (text.length > 500) return json({ error: "Text is too long for server inference (500 characters max)" }, 413);
+      if (await recentAuditCount(env, "voice.synthesize", `user:${actor.id}`, 5) >= 30) {
         return json({ error: "Voice requests are temporarily limited. Please try again shortly.", fallback: "browser" }, 429);
       }
-      await audit(env, actor ? actor.id : null, "assistant.speech", "assistant_voice", rateKey, {
-        persona: persona.key, characters: text.length, provider: tts.provider
-      }, actor ? actor.branch_id : null);
-      const envVoiceKey = "ELEVENLABS_VOICE_" + persona.key.toUpperCase();
-      const voiceId = String(env[envVoiceKey] || DIGITAL_HUMAN_ELEVENLABS_VOICES[persona.key] || DIGITAL_HUMAN_ELEVENLABS_VOICES.adaora);
+      const profileRow = await env.DB.prepare(
+        "SELECT voice_id, language, speed, is_approved FROM assistant_voice_profiles WHERE persona_key=?"
+      ).bind(personaKey).first();
+      if (profileRow && Number(profileRow.is_approved) !== 1) {
+        return json({ error: "This voice profile is not approved", fallback: "browser" }, 403);
+      }
+      const profile = digitalHumanVoiceProfile(personaKey, profileRow);
+      const speed = Math.min(1.3, Math.max(0.7, Number(body.speed || profile.speed || 1)));
+      await audit(env, actor.id, "voice.synthesize", "assistant_voice", personaKey, {
+        characters: text.length, voice_id: profile.voice_id, route: "server"
+      }, actor.branch_id || null);
       let upstream;
       try {
-        upstream = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
+        upstream = await fetch(String(env.HEADTTS_SERVER_URL).replace(/\/+$/, "") + "/v1/synthesize", {
           method: "POST",
           headers: {
-            "xi-api-key": String(env.ELEVENLABS_API_KEY || ""),
             "Content-Type": "application/json",
-            "Accept": "audio/mpeg"
+            "Authorization": "Bearer " + String(env.HEADTTS_SERVICE_TOKEN || "")
           },
           body: JSON.stringify({
-            text,
-            model_id: tts.model,
-            voice_settings: {
-              stability: 0.42,
-              similarity_boost: 0.82,
-              style: 0.28,
-              use_speaker_boost: true
-            }
-          })
+            input: text,
+            voice: profile.voice_id,
+            language: profile.language || "en-us",
+            speed,
+            audioEncoding: "wav"
+          }),
+          signal: AbortSignal.timeout(45000)
         });
       } catch (error) {
-        return json({ error: "Premium voice provider is unreachable", fallback: "browser" }, 502);
+        return json({ error: "Server voice inference is unreachable", fallback: "browser" }, 502);
       }
       if (!upstream.ok) {
         const detail = await upstream.text().catch(() => "");
-        console.error("ElevenLabs TTS error", upstream.status, detail.slice(0, 300));
-        return json({ error: "Premium voice provider rejected the request", fallback: "browser" }, 502);
+        console.error("HeadTTS server error", upstream.status, detail.slice(0, 200));
+        return json({ error: "Server voice inference rejected the request", fallback: "browser" }, 502);
       }
-      const audio = await upstream.arrayBuffer();
-      return new Response(audio, {
-        status: 200,
-        headers: {
-          "Content-Type": "audio/mpeg",
-          "Cache-Control": "private, max-age=3600",
-          "X-Voice-Provider": "elevenlabs"
-        }
+      const payload = await upstream.json().catch(() => null);
+      if (!payload || !payload.audio) return json({ error: "Server voice returned no audio", fallback: "browser" }, 502);
+      return json({
+        audio: payload.audio,
+        audioEncoding: payload.audioEncoding || "wav",
+        words: payload.words || [],
+        wtimes: payload.wtimes || [],
+        wdurations: payload.wdurations || [],
+        visemes: payload.visemes || [],
+        vtimes: payload.vtimes || [],
+        vdurations: payload.vdurations || [],
+        phonemes: payload.phonemes || [],
+        voice: profile.voice_id,
+        language: profile.language || "en-us",
+        route: "server"
       });
+    }
+
+    const voiceProfileMatch = path.match(/^\/api\/admin\/voice-profiles\/([a-z]+)$/);
+    if (voiceProfileMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!isOwnerAuthority(actor)) return json({ error: "Owner authority is required" }, 403);
+      const personaKey = voiceProfileMatch[1];
+      if (!DIGITAL_HUMAN_PERSONA_MAP[personaKey]) return json({ error: "Unknown persona" }, 400);
+      const body = await request.json().catch(() => ({}));
+      const voiceId = String(body.voice_id || "").trim();
+      if (!HEADTTS_ALLOWED_VOICES.has(voiceId)) return json({ error: "Voice is not in the approved HeadTTS set" }, 400);
+      const speed = Math.min(1.3, Math.max(0.7, Number(body.speed || 1) || 1));
+      const approved = body.is_approved === undefined || isTruthy(body.is_approved) ? 1 : 0;
+      await env.DB.prepare(`
+        INSERT INTO assistant_voice_profiles (persona_key, provider, voice_id, language, speed, is_approved, approved_by, approved_at, updated_at)
+        VALUES (?, 'headtts', ?, 'en-us', ?, ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(persona_key) DO UPDATE SET
+          provider='headtts', voice_id=excluded.voice_id, language='en-us', speed=excluded.speed,
+          is_approved=excluded.is_approved, approved_by=excluded.approved_by,
+          approved_at=datetime('now'), updated_at=datetime('now')
+      `).bind(personaKey, voiceId, speed, approved, approved ? actor.id : null).run();
+      await audit(env, actor.id, "voice.profile.approve", "assistant_voice", personaKey, {
+        voice_id: voiceId, speed, approved: Boolean(approved)
+      }, actor.branch_id || null);
+      return json({ ok: true, profile: { persona_key: personaKey, provider: "headtts", voice_id: voiceId, language: "en-us", speed, approved: Boolean(approved) } });
     }
 
     // Unknown API routes must never fall through to static assets.
@@ -17550,10 +17789,28 @@ async function handleFetch(request, env) {
 
 export default {
   async fetch(request, env) {
-    const response = await handleFetch(request, env);
+    let response = await handleFetch(request, env);
     if (response.status === 101) return response;
+    const nonce = crypto.randomUUID().replace(/-/g, "");
     const headers = new Headers(response.headers);
-    applySecurityHeaders(headers, env, new URL(request.url).pathname);
+    const cookies = parseCookies(request);
+    if (!cookies.bliss_csrf && response.status !== 304) {
+      headers.append("Set-Cookie", `bliss_csrf=${nonce}; Path=/; Secure; SameSite=Lax; Max-Age=28800`);
+    }
+    const contentType = response.headers.get("Content-Type") || "";
+    if (contentType.includes("text/html") && response.status !== 204 && response.status !== 304) {
+      let html = await response.text();
+      html = html
+        .replace(/<script(?![^>]*\bnonce=)/gi, `<script nonce="${nonce}"`)
+        .replace(/<style(?![^>]*\bnonce=)/gi, `<style nonce="${nonce}"`);
+      headers.delete("Content-Length");
+      response = new Response(html, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers
+      });
+    }
+    applySecurityHeaders(headers, env, new URL(request.url).pathname, nonce);
     if (env.ENVIRONMENT !== "production") headers.set("X-Robots-Tag", "noindex, nofollow");
     return new Response(response.body, {
       status: response.status,

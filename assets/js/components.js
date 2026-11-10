@@ -63,7 +63,7 @@ Bliss.renderHeader = function(activePage) {
   <header class="site-header" id="siteHeader">
     <div class="container nav-wrapper">
       <a class="brand" href="${homePrefix}#home" aria-label="${c.companyName} Home">
-        <img src="assets/images/bliss-legacy-logo.png" alt="${c.companyName} Official Logo" class="brand-img" onerror="this.src='bliss-legacy-logo.png'">
+        <img src="assets/images/bliss-legacy-logo.png" alt="${c.companyName} Official Logo" class="brand-img" data-fallback-src="bliss-legacy-logo.png">
       </a>
 
       <nav class="nav-links" id="navLinks">
@@ -102,7 +102,7 @@ Bliss.renderFooter = function() {
       <div class="footer-grid">
         <div class="footer-col footer-col-brand">
           <a href="index.html#home" class="footer-brand-link">
-            <img class="footer-logo" src="assets/images/bliss-legacy-logo.png" alt="${c.companyName}" onerror="this.src='bliss-legacy-logo.png'">
+            <img class="footer-logo" src="assets/images/bliss-legacy-logo.png" alt="${c.companyName}" data-fallback-src="bliss-legacy-logo.png">
           </a>
           <p class="footer-bio">
             Discover exceptional property opportunities with Bliss Legacy Limited. We make property ownership and investment straightforward, transparent and rewarding across Nigeria.

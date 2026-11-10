@@ -576,3 +576,33 @@ notification routes remain unchanged. Portfolio totals now include every active
 
 No email address is required for client reset. Staff continue to use
 `/api/password-reset-request` and `/api/password-reset`.
+
+---
+
+## HeadTTS / Kokoro voice and language modes
+
+### Synthesis
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| POST | `/api/voice/synthesize` | Required session | Validates persona, text (≤500 chars), approved voice profile and per-user rate limit, then proxies to the private HeadTTS Node service. Returns base64 WAV plus words, word timings, visemes, viseme timings and phonemes. |
+| POST | `/api/admin/voice-profiles/:persona` | MD / Super Admin | Approve or change a persona's `voice_id`, `speed` and approval state. Voice IDs must be in the approved Kokoro set. |
+| POST | `/api/assistant/preferences` | Required session | Now also accepts `voice_mode` (`auto`, `browser`, `server`, `native`, `text`), `browser_voice_enabled`, `server_voice_enabled`, `language_mode` (`auto`, `pidgin`, `nigerian`, `international`), `voice_consent` and existing mute/rate/pitch/volume fields. |
+| POST | `/api/assistant/speech` | — | Disabled paid ElevenLabs endpoint. Returns `410` with `fallback: "browser"`. |
+
+### Language
+
+`/api/assistant/message` accepts an optional `language_mode`. The reply includes
+`language` (`pidgin`, `nigerian`, `international`) and echoes `language_mode`.
+Pidgin intents use the same server-side role, branch and financial permission
+checks as English. No Pidgin command bypasses authorisation.
+
+Server secrets:
+
+```bash
+npx wrangler secret put HEADTTS_SERVER_URL --env production
+npx wrangler secret put HEADTTS_SERVICE_TOKEN --env production
+```
+
+The Node service is documented in `voice-server/README.md`. It is not bundled
+into the Worker and must be hosted separately.

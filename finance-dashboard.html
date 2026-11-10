@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <script src="assets/js/security-ui.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Finance & Ledger Management | Bliss Legacy Limited</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -151,7 +152,7 @@
     <aside class="sidebar" id="sidebar">
       <div class="brand">
         <a href="index.html">
-          <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" onerror="this.src='bliss-legacy-logo.png'">
+          <img src="assets/images/bliss-legacy-logo.png" alt="Bliss Legacy" data-fallback-src="bliss-legacy-logo.png">
         </a>
       </div>
       <div class="section-label">Management</div>
@@ -329,7 +330,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <h3>Record Client Payment</h3>
-        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('recordPaymentModal')">✕</button>
+        <button type="button" class="btn btn-outline btn-sm" data-close-modal="recordPaymentModal">✕</button>
       </div>
       <form id="recordPaymentForm">
         <div class="form-group">
@@ -363,7 +364,7 @@
           </label>
         </div>
         <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px">
-          <button type="button" class="btn btn-outline" onclick="closeModal('recordPaymentModal')">Cancel</button>
+          <button type="button" class="btn btn-outline" data-close-modal="recordPaymentModal">Cancel</button>
           <button type="submit" class="btn btn-green" id="submitRecordBtn">Record Payment</button>
         </div>
       </form>
@@ -375,7 +376,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <h3>Verify & Authorize Payment</h3>
-        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('verifyPaymentModal')">✕</button>
+        <button type="button" class="btn btn-outline btn-sm" data-close-modal="verifyPaymentModal">✕</button>
       </div>
       <div style="font-size:13px;color:var(--charcoal);line-height:1.5;margin-bottom:18px">
         You are about to verify the following payment into the company's ledger. This action is <strong>authoritative</strong>, computes remaining balances in integer kobo, and generates an official receipt for the client.
@@ -395,7 +396,7 @@
         </div>
       </div>
       <div style="display:flex;justify-content:flex-end;gap:10px">
-        <button type="button" class="btn btn-outline" onclick="closeModal('verifyPaymentModal')">Cancel</button>
+        <button type="button" class="btn btn-outline" data-close-modal="verifyPaymentModal">Cancel</button>
         <button type="button" class="btn btn-green" id="confirmVerifyBtn">Confirm & Issue Receipt</button>
       </div>
     </div>
@@ -406,7 +407,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <h3>Financial Adjustment</h3>
-        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('adjustPaymentModal')">✕</button>
+        <button type="button" class="btn btn-outline btn-sm" data-close-modal="adjustPaymentModal">✕</button>
       </div>
       <form id="adjustPaymentForm">
         <input type="hidden" id="adjustPaymentId">
@@ -422,7 +423,7 @@
           <textarea id="adjustReason" rows="3" placeholder="Provide full justification and bank reversal reference..." required></textarea>
         </div>
         <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px">
-          <button type="button" class="btn btn-outline" onclick="closeModal('adjustPaymentModal')">Cancel</button>
+          <button type="button" class="btn btn-outline" data-close-modal="adjustPaymentModal">Cancel</button>
           <button type="submit" class="btn btn-sm" style="background:#DC2626;color:#FFF" id="submitAdjustBtn">Apply Adjustment</button>
         </div>
       </form>
@@ -434,7 +435,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <h3>ALAT by Wema Bank Integration Settings</h3>
-        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('wemaConfigModal')">✕</button>
+        <button type="button" class="btn btn-outline btn-sm" data-close-modal="wemaConfigModal">✕</button>
       </div>
       <form id="wemaConfigForm">
         <div class="form-group">
@@ -462,7 +463,7 @@
           📌 <em>Architecture Notice:</em> Until status is set to <strong>Active</strong>, the client portal displays the official message: <em>"Your dedicated payment account will be available once our Wema Bank payment integration is activated. Please contact our finance team for payment assistance."</em>
         </div>
         <div style="display:flex;justify-content:flex-end;gap:10px">
-          <button type="button" class="btn btn-outline" onclick="closeModal('wemaConfigModal')">Cancel</button>
+          <button type="button" class="btn btn-outline" data-close-modal="wemaConfigModal">Cancel</button>
           <button type="submit" class="btn btn-green" id="saveWemaBtn">Save Configuration</button>
         </div>
       </form>
@@ -474,7 +475,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <h3 id="scheduleModalTitle">Create Installment Plan</h3>
-        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('scheduleModal')">✕</button>
+        <button type="button" class="btn btn-outline btn-sm" data-close-modal="scheduleModal">✕</button>
       </div>
       <form id="scheduleForm">
         <input type="hidden" id="scheduleId">
@@ -560,7 +561,7 @@
           Overdue installments are flagged for the client. No penalties or interest are applied automatically.
         </div>
         <div style="display:flex;justify-content:flex-end;gap:10px">
-          <button type="button" class="btn btn-outline" onclick="closeModal('scheduleModal')">Cancel</button>
+          <button type="button" class="btn btn-outline" data-close-modal="scheduleModal">Cancel</button>
           <button type="submit" class="btn btn-green" id="saveScheduleBtn">Save Plan</button>
         </div>
       </form>
@@ -572,7 +573,7 @@
     <div class="modal-box" style="max-width:640px">
       <div class="modal-header">
         <h3>Schedule Audit History</h3>
-        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal('scheduleHistoryModal')">✕</button>
+        <button type="button" class="btn btn-outline btn-sm" data-close-modal="scheduleHistoryModal">✕</button>
       </div>
       <div id="scheduleHistoryBody" style="max-height:400px;overflow:auto;font-size:12px"></div>
     </div>
@@ -1059,9 +1060,9 @@
             <td><span class="status-badge ${badge}">${esc(s.status)}${s.status === "defaulting" || s.is_overdue ? " / overdue" : ""}</span></td>
             <td style="text-align:right">
               <div style="display:inline-flex;gap:5px">
-                ${s.status !== "cancelled" ? `<button type="button" class="btn btn-outline btn-sm" onclick="editSchedule(${Number(s.id)})" style="padding:3px 7px;font-size:11px">Edit</button>` : ""}
-                <button type="button" class="btn btn-outline btn-sm" onclick="scheduleHistory(${Number(s.id)})" style="padding:3px 7px;font-size:11px">History</button>
-                ${s.status === "active" ? `<button type="button" class="btn btn-outline btn-sm" onclick="cancelSchedule(${Number(s.id)})" style="padding:3px 7px;font-size:11px;color:#DC2626">Cancel</button>` : ""}
+                ${s.status !== "cancelled" ? `<button type="button" class="btn btn-outline btn-sm" data-schedule-action="edit" data-schedule-id="${Number(s.id)}" style="padding:3px 7px;font-size:11px">Edit</button>` : ""}
+                <button type="button" class="btn btn-outline btn-sm" data-schedule-action="history" data-schedule-id="${Number(s.id)}" style="padding:3px 7px;font-size:11px">History</button>
+                ${s.status === "active" ? `<button type="button" class="btn btn-outline btn-sm" data-schedule-action="cancel" data-schedule-id="${Number(s.id)}" style="padding:3px 7px;font-size:11px;color:#DC2626">Cancel</button>` : ""}
               </div>
             </td>
           </tr>`;

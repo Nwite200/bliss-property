@@ -54,11 +54,16 @@
     premiumVoice: false,
     audio: null,
     speechToken: 0,
+    ttsConfig: null,
+    languageMode: "auto",
+    visemeController: null,
     startedAt: Date.now()
   };
 
   var el = {};
   var svgSeq = 0;
+  var voiceSelector = null;
+  var voiceSelectorPromise = null;
 
   /* -------------------------------------------------------------------------
      Small utilities
@@ -287,13 +292,14 @@
 
   function paintAvatar(node, persona) {
     if (!node) return;
-    node.innerHTML = avatarMarkup(persona);
+    node.innerHTML = avatarMarkup(persona) + '<span class="dh-mouth-sync" aria-hidden="true"></span>';
     var img = node.querySelector("img");
     if (img) {
       img.addEventListener("error", function () {
-        node.innerHTML = personaSvg(persona, true);
+        node.innerHTML = personaSvg(persona, true) + '<span class="dh-mouth-sync" aria-hidden="true"></span>';
       }, { once: true });
     }
+    if (state.visemeController) state.visemeController.attach(node);
   }
 
   /* -------------------------------------------------------------------------
@@ -345,8 +351,14 @@
         '<div class="dh-footer">' +
           '<button type="button" id="dhStop">Stop voice</button>' +
           '<button type="button" id="dhRepeat">Repeat</button>' +
+          '<select id="dhLanguage" class="dh-lang" aria-label="Assistant language">' +
+            '<option value="auto">Auto</option>' +
+            '<option value="pidgin">Pidgin</option>' +
+            '<option value="nigerian">English (NG)</option>' +
+            '<option value="international">English (Intl)</option>' +
+          '</select>' +
           '<button type="button" id="dhAvail" hidden title="Set your handover availability">Available</button>' +
-          '<span class="dh-footer-note" id="dhVoiceNote">Free browser voice</span>' +
+          '<span class="dh-footer-note" id="dhVoiceNote">HeadTTS neural voice</span>' +
         '</div>' +
       '</section>';
 
@@ -378,6 +390,7 @@
     el.mic = document.getElementById("dhMic");
     el.stop = document.getElementById("dhStop");
     el.repeat = document.getElementById("dhRepeat");
+    el.language = document.getElementById("dhLanguage");
     el.avail = document.getElementById("dhAvail");
     el.voiceNote = document.getElementById("dhVoiceNote");
     el.toasts = toastWrap;
@@ -409,6 +422,19 @@
       if (state.lastSpeech) speak(state.lastSpeech);
     });
     el.avail.addEventListener("click", cycleAvailability);
+    el.language.addEventListener("change", function () {
+      state.languageMode = el.language.value;
+      writeStore({ languageMode: state.languageMode });
+      if (state.boot && state.boot.authenticated) {
+        api("/preferences", {
+          method: "POST",
+          body: JSON.stringify({ language_mode: state.languageMode })
+        }).catch(function () { /* preference sync is optional */ });
+      }
+      if (state.recognition) {
+        state.recognition.lang = state.languageMode === "pidgin" ? "en-NG" : (navigator.language || "en-GB");
+      }
+    });
     document.addEventListener("keydown", function (event) {
       state.hasInteracted = true;
       if (event.key === "Escape" && state.open) closePanel();
@@ -433,6 +459,7 @@
     el.role.textContent = title + (persona.department ? " · " + persona.department : "");
     el.root.style.setProperty("--dh-persona-accent", persona.accent || "#00B522");
     el.launcher.setAttribute("aria-label", "Open " + (persona.name || "the Bliss Legacy") + ", digital assistant, " + title);
+    if (voiceSelector) voiceSelector.setVoice(persona.key);
 
     if (!changed || !animate) {
       paintAvatar(el.avatar, persona);
@@ -772,6 +799,8 @@
   function stopSpeaking() {
     state.speechToken += 1;
     stopAudio();
+    if (voiceSelector) voiceSelector.stop();
+    if (state.visemeController) state.visemeController.stop();
     if (state.synth) {
       try { state.synth.cancel(); } catch (error) { /* ignore */ }
     }
@@ -781,60 +810,64 @@
     setStatus("Online", "ok");
   }
 
-  function speakPremium(text) {
-    var token = ++state.speechToken;
-    var persona = state.persona || {};
-    setStatus("Preparing voice…", "ok");
-    el.voiceNote.textContent = "Hyper-realistic voice";
-    fetch(API + "/speech", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: String(text || "").slice(0, 900), persona_key: persona.key || "adaora" })
-    }).then(function (response) {
-      if (!response.ok) throw new Error("Premium voice unavailable");
-      return response.blob();
-    }).then(function (blob) {
-      if (token !== state.speechToken) return;
-      if (!blob || !blob.size) throw new Error("Empty voice response");
-      var url = URL.createObjectURL(blob);
-      var audio = new Audio(url);
-      state.audio = audio;
-      audio.onplay = function () {
-        if (token !== state.speechToken) return;
-        state.speaking = true;
-        el.avatar.classList.add("is-speaking");
-        el.root.classList.add("is-speaking");
-        setStatus("Speaking…", "ok");
-      };
-      audio.onended = function () {
-        if (token !== state.speechToken) return;
-        state.speaking = false;
-        el.avatar.classList.remove("is-speaking");
-        el.root.classList.remove("is-speaking");
-        setStatus("Online", "ok");
-        try { URL.revokeObjectURL(url); } catch (error) { /* ignore */ }
-        if (state.audio === audio) state.audio = null;
-      };
-      audio.onerror = function () {
-        if (token !== state.speechToken) return;
-        state.premiumVoice = false;
-        stopAudio();
-        speakBrowser(text);
-      };
-      return audio.play().catch(function () {
-        if (token !== state.speechToken) return;
-        state.premiumVoice = false;
-        stopAudio();
-        el.voiceNote.textContent = "Browser voice fallback";
-        speakBrowser(text);
+  function ensureVoiceSelector() {
+    if (voiceSelectorPromise) return voiceSelectorPromise;
+    voiceSelectorPromise = Promise.all([
+      import("/assets/js/voice/voice-selector.js"),
+      import("/assets/js/voice/viseme-controller.js")
+    ]).then(function (modules) {
+      var VoiceSelector = modules[0].VoiceSelector;
+      var VisemeController = modules[1].VisemeController;
+      state.visemeController = new VisemeController({
+        node: el.avatar,
+        onWord: function () {}
       });
-    }).catch(function () {
-      if (token !== state.speechToken) return;
-      state.premiumVoice = false;
-      el.voiceNote.textContent = "Browser voice fallback";
-      speakBrowser(text);
+      var config = state.ttsConfig || {};
+      voiceSelector = new VoiceSelector({
+        personaKey: (state.persona && state.persona.key) || "adaora",
+        config: {
+          mode: config.mode || "auto",
+          browserEnabled: config.browser_enabled !== false,
+          serverEnabled: config.server_enabled === true
+        },
+        nativeSpeak: speakBrowser,
+        onStatus: function (status) {
+          if (!status) return;
+          if (status.state === "loading") setStatus("Loading voice…", "warn");
+          else if (status.state === "generating") setStatus("Generating voice…", "warn");
+          else if (status.state === "route") setStatus(status.route === "native" ? "Browser voice" : "Neural voice", "ok");
+          if (status.text) el.voiceNote.textContent = status.text;
+        },
+        onAudioStart: function () {
+          if (state.visemeController) state.visemeController.start();
+          state.speaking = true;
+          el.avatar.classList.add("is-speaking");
+          el.root.classList.add("is-speaking");
+          setStatus("Speaking…", "ok");
+          if (state.visemeController) state.visemeController.attach(el.avatar);
+        },
+        onAudioEnd: function () {
+          state.speaking = false;
+          el.avatar.classList.remove("is-speaking");
+          el.root.classList.remove("is-speaking");
+          if (state.visemeController) state.visemeController.stop();
+          setStatus("Online", "ok");
+        },
+        onViseme: function (event) {
+          if (state.visemeController && event) state.visemeController.apply(event.viseme, event.duration);
+        },
+        onWord: function (event) {
+          if (!event || !event.word) return;
+          el.caption.textContent = String(event.word).trim();
+        },
+        onError: function (event) {
+          if (event && event.error) console.warn("Voice route failed", event.route, event.error.message || event.error);
+        }
+      });
+      if (state.persona) voiceSelector.setVoice(state.persona.key);
+      return voiceSelector;
     });
+    return voiceSelectorPromise;
   }
 
   function speak(text) {
@@ -845,11 +878,19 @@
       return;
     }
     stopSpeaking();
-    if (state.premiumVoice) {
-      speakPremium(String(text));
-      return;
-    }
-    speakBrowser(String(text));
+    ensureVoiceSelector().then(function (selector) {
+      var config = state.ttsConfig || {};
+      selector.setConfig({
+        mode: config.mode || "auto",
+        browserEnabled: config.browser_enabled !== false,
+        serverEnabled: config.server_enabled === true
+      });
+      selector.setVoice((state.persona && state.persona.key) || "adaora");
+      return selector.speak(String(text));
+    }).catch(function () {
+      el.voiceNote.textContent = "Browser voice fallback";
+      speakBrowser(String(text));
+    });
   }
 
   function renderAvailability(status) {
@@ -880,7 +921,7 @@
     el.mute.setAttribute("aria-label", state.voiceEnabled ? "Turn assistant voice off" : "Turn assistant voice on");
     el.mute.title = state.voiceEnabled ? "Voice on" : "Voice off";
     el.voiceNote.textContent = state.voiceEnabled
-      ? (state.premiumVoice ? "Hyper-realistic voice" : "Free browser voice")
+      ? ((state.ttsConfig && state.ttsConfig.browser_enabled) ? "HeadTTS neural voice" : "Free browser voice")
       : "Voice muted · text only";
     if (!state.voiceEnabled) stopSpeaking();
     writeStore({ voiceEnabled: state.voiceEnabled });
@@ -919,7 +960,9 @@
     }
     state.recognitionSupported = true;
     var recognition = new Recognition();
-    recognition.lang = (navigator.language && /^en/i.test(navigator.language)) ? navigator.language : "en-NG";
+    recognition.lang = state.languageMode === "pidgin"
+      ? "en-NG"
+      : ((navigator.language && /^en/i.test(navigator.language)) ? navigator.language : "en-GB");
     recognition.continuous = false;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
@@ -1076,6 +1119,7 @@
       visitor_id: visitorId(),
       message: text,
       page: location.pathname,
+      language_mode: state.languageMode || "auto",
       confirm_handover: Boolean(options.confirmHandover),
       form_context: collectFormContext()
     };
@@ -1280,8 +1324,10 @@
       state.rate = data.preferences.rate || 1;
       state.pitch = data.preferences.pitch || 1;
       state.volume = data.preferences.volume || 1;
-      state.premiumVoice = Boolean(data.tts && data.tts.enabled);
-      if (state.premiumVoice && state.voiceEnabled) el.voiceNote.textContent = "Hyper-realistic voice";
+      state.ttsConfig = data.tts || null;
+      state.languageMode = (data.preferences && data.preferences.language_mode) || "auto";
+      if (el.language) el.language.value = state.languageMode;
+      if (state.ttsConfig && state.voiceEnabled) el.voiceNote.textContent = "HeadTTS neural voice";
       state.messages = (data.messages || []).slice(-MAX_MESSAGES);
       applyPersona(data.persona, false);
       if (data.authenticated && data.role !== "Client" && data.staff_availability) {
@@ -1357,14 +1403,10 @@
     if (!el.thread.children.length) {
       var greeting = greetingText();
       addMessage("assistant", greeting, { persona: state.persona, time: nowTime() });
-      var stored = readStore();
-      var lastGreeting = Number(stored.greetingAt || 0);
-      var shouldSpeak = state.voiceEnabled && (Date.now() - lastGreeting > 6 * 60 * 60 * 1000);
-      if (shouldSpeak) {
-        speak(greeting);
-        writeStore({ greetingAt: Date.now() });
-      }
+      // Do not download the neural model just to greet. The first real reply
+      // (or the Repeat button) starts HeadTTS lazily.
       state.greeted = true;
+      if (state.voiceEnabled) el.caption.textContent = "Tap Repeat to hear this greeting.";
     }
     var pending = collectFormContext();
     if (pending && pending.fields.some(function (field) { return field.required && !field.filled; })) {

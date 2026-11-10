@@ -32,6 +32,12 @@ const hasAssistantTables = db.prepare(
 if (!hasAssistantTables) {
   db.exec(readFileSync('migrations/0030_digital_humans.sql', 'utf8'));
 }
+const hasVoiceProfiles = db.prepare(
+  "SELECT name FROM sqlite_master WHERE type='table' AND name='assistant_voice_profiles'"
+).get();
+if (!hasVoiceProfiles) {
+  db.exec(readFileSync('migrations/0031_headtts_voice_profiles.sql', 'utf8'));
+}
 
 function createD1Adapter(database) {
   return {
@@ -553,14 +559,14 @@ await test('team lead can remove a member but not the team lead', async () => {
   assert(!db.prepare('SELECT 1 AS ok FROM team_members WHERE team_id=? AND user_id=?').get(teamId, mkt1.id), 'membership was not removed');
 });
 
-await test('premium voice is optional and falls back to the browser cleanly', async () => {
+await test('paid ElevenLabs speech is disabled and HeadTTS is the configured provider', async () => {
   const boot = await request('/api/assistant/bootstrap?page=/index.html');
-  assert(boot.data.tts && boot.data.tts.enabled === false, 'test environment should not have a premium voice key');
+  assert(boot.data.tts && boot.data.tts.provider === 'headtts', 'HeadTTS provider missing');
   const speech = await request('/api/assistant/speech', {
     method: 'POST', headers: { Cookie: clientUser.cookie },
     body: { text: 'Welcome to Bliss Legacy Limited.', persona_key: 'adaora' }
   });
-  assert(speech.status === 503, `expected 503 without a provider key, got ${speech.status}`);
+  assert(speech.status === 410, `expected 410 for disabled paid voice, got ${speech.status}`);
   assert(speech.data.fallback === 'browser', 'missing browser fallback signal');
 });
 
@@ -569,7 +575,8 @@ await test('security headers block framing, sniffing and unsafe cross-origin loa
   const csp = res.headers.get('content-security-policy') || '';
   assert(/frame-ancestors 'none'/.test(csp), 'CSP frame-ancestors missing');
   assert(/object-src 'none'/.test(csp), 'CSP object-src missing');
-  assert(!/unsafe-eval/.test(csp), 'CSP must not allow unsafe-eval');
+  assert(!/'unsafe-eval'/.test(csp), 'CSP must not allow bare unsafe-eval');
+  assert(/'wasm-unsafe-eval'/.test(csp), 'WASM-safe eval directive missing for HeadTTS');
   assert(res.headers.get('x-frame-options') === 'DENY', 'X-Frame-Options missing');
   assert(res.headers.get('x-content-type-options') === 'nosniff', 'nosniff missing');
   assert(res.headers.get('referrer-policy') === 'strict-origin-when-cross-origin', 'referrer policy missing');
@@ -592,6 +599,56 @@ await test('public-signup XSS sinks are escaped and production assets run throug
   const wrangler = fs.readFileSync('wrangler.toml', 'utf8');
   const prodAssets = wrangler.slice(wrangler.indexOf('[env.production.assets]'));
   assert(/run_worker_first\s*=\s*true/.test(prodAssets), 'production assets must run through the Worker for security headers');
+});
+
+await test('HeadTTS bootstrap exposes nine unique approved voice profiles', async () => {
+  const boot = await request('/api/assistant/bootstrap?page=/index.html');
+  assert(boot.data.tts && boot.data.tts.provider === 'headtts', 'HeadTTS provider missing');
+  assert(boot.data.tts.profiles.length === 9, `expected 9 voice profiles, got ${boot.data.tts.profiles.length}`);
+  assert(new Set(boot.data.tts.profiles.map(p => p.voice_id)).size === 9, 'persona voices are not unique');
+});
+
+await test('Nigerian Pidgin requests are understood and answered in Pidgin', async () => {
+  const search = await assistant(null, 'Abeg, I need house for Lekki.', { page: '/index.html', visitor_id: 'pidgin-1' });
+  assert(search.persona.key === 'solomon', 'Pidgin property request should route to Solomon');
+  assert(/No wahala/i.test(search.reply), 'Pidgin response lead missing');
+  assert(/I no see|I see|I check/i.test(search.reply), 'Pidgin property response missing');
+  const rent = await assistant(null, 'I dey find two bedroom.', { page: '/index.html', visitor_id: 'pidgin-2' });
+  assert(rent.persona.key === 'solomon' || rent.persona.key === 'emeka', 'Pidgin rental search not routed');
+  const human = await assistant(clientUser.cookie, 'I wan talk to human being.', { page: '/client-dashboard.html' });
+  assert(human.action && human.action.type === 'confirm_handover', 'Pidgin human handover not understood');
+  const clarify = await assistant(null, 'I no understand.', { page: '/index.html', visitor_id: 'pidgin-4' });
+  assert(/No wahala/i.test(clarify.reply), 'Pidgin clarification lead missing');
+  const register = await assistant(null, 'How I go take register?', { page: '/index.html', visitor_id: 'pidgin-5' });
+  assert(/signup\.html/.test(JSON.stringify(clarify.cards || [])) === false, 'unexpected');
+  assert(register.cards.some(c => /signup\.html/.test(c.href || '')), 'Pidgin registration guidance missing');
+});
+
+await test('client Pidgin payment questions use verified records and keep language mode', async () => {
+  const payment = await assistant(clientUser.cookie, 'My payment never reflect.', { page: '/client-dashboard.html', language_mode: 'pidgin' });
+  assert(payment.language === 'pidgin', 'language mode not returned');
+  assert(/I see your payment record|I don check/i.test(payment.reply), 'Pidgin payment response missing');
+  const english = await assistant(clientUser.cookie, 'Show my properties', { page: '/client-dashboard.html', language_mode: 'nigerian' });
+  assert(english.language === 'nigerian', 'language switch did not return to standard English');
+  assert(english.conversation_ref === payment.conversation_ref, 'language switch lost conversation continuity');
+});
+
+await test('voice synthesis endpoint rejects anonymous, invalid persona and oversized text', async () => {
+  const anon = await request('/api/voice/synthesize', { method: 'POST', body: { text: 'Hello', persona_key: 'adaora' } });
+  assert(anon.status === 401, `anonymous expected 401, got ${anon.status}`);
+  const voiceEnv = { ...env, HEADTTS_SERVER_URL: 'http://127.0.0.1:9', HEADTTS_SERVICE_TOKEN: 'x'.repeat(32) };
+  const invalid = await request('/api/voice/synthesize', {
+    method: 'POST', headers: { Cookie: clientUser.cookie }, body: { text: 'Hello', persona_key: 'not-a-persona' }, env: voiceEnv
+  });
+  assert(invalid.status === 400, `invalid persona expected 400, got ${invalid.status}`);
+  const oversized = await request('/api/voice/synthesize', {
+    method: 'POST', headers: { Cookie: clientUser.cookie }, body: { text: 'x'.repeat(501), persona_key: 'adaora' }, env: voiceEnv
+  });
+  assert(oversized.status === 413, `oversized expected 413, got ${oversized.status}`);
+  const valid = await request('/api/voice/synthesize', {
+    method: 'POST', headers: { Cookie: clientUser.cookie }, body: { text: 'Welcome to Bliss Legacy.', persona_key: 'adaora' }, env: voiceEnv
+  });
+  assert(valid.status === 502, `unreachable server expected 502, got ${valid.status}`);
 });
 
 await test('unknown requests fall back honestly instead of inventing data', async () => {
