@@ -568,7 +568,7 @@ async function getDefaultPaymentProvider(env) {
   return "wema_alat";
 }
 
-async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
+async function createAlatpayVirtualAccount(env, client, amountKobo, actorId, propertyId) {
   const settings = await getAlatpaySettings(env);
   if (!settings.ready) {
     const error = new Error(settings.businessId
@@ -596,7 +596,7 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
       phone: client.phone_number || "",
       firstName,
       lastName,
-      metadata: JSON.stringify({ client_id: client.id, client_reference: client.client_reference })
+      metadata: JSON.stringify({ client_id: client.id, client_reference: client.client_reference, property_id: propertyId || null })
     }
   };
   const data = await alatpayRequest(env, "/bank-transfer/api/v1/bankTransfer/virtualAccount", {
@@ -644,7 +644,7 @@ async function createAlatpayVirtualAccount(env, client, amountKobo, actorId) {
        is_demo, provider, provider_reference, provider_account_number, payment_mode)
     VALUES (?, ?, ?, ?, 'NGN', 'ALATPay Dynamic Account', 'pending', ?, 0, 'alatpay', ?, ?, ?)
   `).bind(
-    client.id, client.interested_property_id || null, orderId, fromKobo(Number(amountKobo)),
+    client.id, propertyId || client.interested_property_id || null, orderId, fromKobo(Number(amountKobo)),
     Number(amountKobo), transactionId ? String(transactionId) : null, String(accountNumber), settings.mode
   ).run();
   const dynamicPayment = await env.DB.prepare(
@@ -694,7 +694,13 @@ async function finalizeAlatpayCredit(env, payment, remoteData, mode, reference) 
     SELECT COALESCE(SUM(amount_kobo),0) AS total_kobo FROM payments
     WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
   `).bind(payment.client_id).first();
-  const remainingKobo = Math.max(0, toKobo(client?.agreed_purchase_price || 0) - Number(totalRow ? totalRow.total_kobo : 0));
+  const portfolioRow = await env.DB.prepare(`
+    SELECT COALESCE(SUM(agreed_purchase_price),0) AS contract FROM client_properties
+    WHERE client_id=? AND status NOT IN ('Cancelled')
+  `).bind(payment.client_id).first();
+  const contractKobo = Number(portfolioRow && portfolioRow.contract)
+    ? toKobo(portfolioRow.contract) : toKobo(client?.agreed_purchase_price || 0);
+  const remainingKobo = Math.max(0, contractKobo - Number(totalRow ? totalRow.total_kobo : 0));
   let receipt = await env.DB.prepare("SELECT * FROM receipts WHERE payment_id=?").bind(payment.id).first();
   if (!receipt) {
     const receiptRef = newReceiptRef(false);
@@ -978,8 +984,13 @@ async function outstandingForClient(env, client) {
   const row = await env.DB.prepare(
     "SELECT COALESCE(SUM(amount_kobo),0) AS verified FROM payments WHERE client_id=? AND status='verified' AND is_demo=0 AND currency='NGN'"
   ).bind(client.id).first();
-  const contract = toKobo(client.agreed_purchase_price || 0);
-  return Math.max(0, contract - Number(row ? row.verified : 0));
+  const portfolio = await env.DB.prepare(
+    "SELECT COALESCE(SUM(agreed_purchase_price),0) AS contract FROM client_properties WHERE client_id=? AND status NOT IN ('Cancelled')"
+  ).bind(client.id).first();
+  const contractKobo = Number(portfolio && portfolio.contract)
+    ? toKobo(portfolio.contract)
+    : toKobo(client.agreed_purchase_price || 0);
+  return Math.max(0, contractKobo - Number(row ? row.verified : 0));
 }
 
 // Financial integer kobo helpers. Decimal strings are parsed directly so
@@ -4046,7 +4057,7 @@ function propertyPlanSnapshot(plan) {
   };
 }
 
-async function createScheduleFromPropertyPlan(env, client, plan, actorId, startDateArg) {
+async function createScheduleFromPropertyPlan(env, client, plan, actorId, startDateArg, propertyIdArg) {
   const planType = normalizePlanType(plan.plan_type);
   const totalKobo = Number(plan.total_price_kobo || 0);
   const depositKobo = Math.min(totalKobo, Math.max(0, Number(plan.deposit_kobo || 0)));
@@ -4080,7 +4091,7 @@ async function createScheduleFromPropertyPlan(env, client, plan, actorId, startD
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, datetime('now'), datetime('now'),
       ?, ?, 0, ?, ?, 1, ?, ?)
   `).bind(
-    client.id, client.interested_property_id || plan.property_id || null,
+    client.id, propertyIdArg || client.interested_property_id || plan.property_id || null,
     fromKobo(totalKobo), totalKobo,
     fromKobo(depositKobo), depositKobo,
     fromKobo(installmentKobo), installmentKobo,
@@ -5479,6 +5490,1132 @@ export class ChatRoom {
   async webSocketError(ws) {
     try { ws.close(); } catch (error) {}
   }
+}
+
+// ============================================================================
+// Digital human ecosystem — persona registry, intent routing and scoped data
+// ----------------------------------------------------------------------------
+// The assistant is a conversational interface over the SAME authorised backend
+// data. It never invents records, never bypasses role/branch scope and never
+// performs a financial mutation. Sensitive changes stay in the existing APIs.
+// ============================================================================
+const DIGITAL_HUMAN_PERSONAS = [
+  {
+    key: "adaora", image: "/assets/images/personas/adaora.jpg", name: "Adaora", gender: "female", department: "Client Experience",
+    title: "Main Concierge", accent: "#00B522", hairStyle: "updo",
+    personality: "Warm, polished and efficient. Welcomes everyone and makes sure they reach the right specialist.",
+    greeting: "Welcome to Bliss Legacy Limited. I am Adaora, your main concierge. I can help you find a property, create an account, use your dashboard or connect you with a specialist.",
+    voice: { gender: "female", rate: 0.98, pitch: 1.04 },
+    avatar: { skin: "#8A5A3B", hair: "#1B1713", outfit: "#0B3D2E", shirt: "#F4EFE4", earrings: true, beard: false }
+  },
+  {
+    key: "solomon", image: "/assets/images/personas/solomon.jpg", name: "Solomon", gender: "male", department: "Property Discovery",
+    title: "Property Discovery Specialist", accent: "#1E8E5A", hairStyle: "short",
+    personality: "Calm and precise. Answers only from real published listings and explains location, price and availability.",
+    greeting: "Hello, I am Solomon, your property discovery specialist. Tell me your budget and preferred location and I will search the live Bliss Legacy listings for you.",
+    voice: { gender: "male", rate: 0.96, pitch: 0.9 },
+    avatar: { skin: "#6E452C", hair: "#15110E", outfit: "#2B2F33", shirt: "#F7F7F5", earrings: false, beard: false }
+  },
+  {
+    key: "chiamaka", image: "/assets/images/personas/chiamaka.jpg", name: "Chiamaka", gender: "female", department: "Sales",
+    title: "Sales Consultant", accent: "#00A83A", hairStyle: "bob",
+    personality: "Confident and clear. Explains the sales process and routes offers or contract questions to authorised staff.",
+    greeting: "Hello, I am Chiamaka, your sales consultant. I can explain the buying process, payment plans and the next step for a property you like.",
+    voice: { gender: "female", rate: 1.0, pitch: 1.06 },
+    avatar: { skin: "#7C4F33", hair: "#241A14", outfit: "#145C3A", shirt: "#FFFFFF", earrings: true, beard: false }
+  },
+  {
+    key: "emeka", image: "/assets/images/personas/emeka.jpg", name: "Emeka", gender: "male", department: "Rentals and Leasing",
+    title: "Rental and Leasing Specialist", accent: "#2E7D6B", hairStyle: "fade",
+    personality: "Practical and helpful. Focuses on rental availability, viewing requests and leasing steps.",
+    greeting: "Good day, I am Emeka, your rental and leasing specialist. I can check available rentals and help you arrange a viewing.",
+    voice: { gender: "male", rate: 0.95, pitch: 0.88 },
+    avatar: { skin: "#7A4E34", hair: "#13100D", outfit: "#23364A", shirt: "#F2F4F7", earrings: false, beard: true }
+  },
+  {
+    key: "amara", image: "/assets/images/personas/amara.jpg", name: "Amara", gender: "female", department: "Client Relations",
+    title: "Client Relations Specialist", accent: "#3C9D6E", hairStyle: "braids",
+    personality: "Patient and reassuring. Helps clients understand their account, updates, payments and support options.",
+    greeting: "Welcome back to Bliss Legacy Limited. I am Amara, your client relations specialist. I can review your properties, payments and account updates with you.",
+    voice: { gender: "female", rate: 0.97, pitch: 1.05 },
+    avatar: { skin: "#8B5E3C", hair: "#171310", outfit: "#1F4A3B", shirt: "#EFE7D8", earrings: true, beard: false }
+  },
+  {
+    key: "david", image: "/assets/images/personas/david.jpg", name: "David", gender: "male", department: "Lead Intelligence",
+    title: "Lead Intelligence Specialist", accent: "#238A63", hairStyle: "short",
+    personality: "Analytical and direct. Reviews only the leads and customers the signed-in marketer is authorised to see.",
+    greeting: "Welcome back. I am David, your lead intelligence specialist. Let us review your assigned leads, follow-ups and pipeline activity.",
+    voice: { gender: "male", rate: 1.0, pitch: 0.92 },
+    avatar: { skin: "#68422B", hair: "#16120F", outfit: "#30363B", shirt: "#E8EEF2", earrings: false, beard: false }
+  },
+  {
+    key: "ngozi", image: "/assets/images/personas/ngozi.jpg", name: "Ngozi", gender: "female", department: "Branch Operations",
+    title: "Branch Operations Specialist", accent: "#0F8A4A", hairStyle: "wrap",
+    personality: "Organised and authoritative. Keeps branch information inside the correct branch boundary.",
+    greeting: "Welcome back. I am Ngozi, your branch operations specialist. I can review authorised branch activity, teams and enquiry routing.",
+    voice: { gender: "female", rate: 0.97, pitch: 1.02 },
+    avatar: { skin: "#7B4C31", hair: "#14100E", outfit: "#123D2C", shirt: "#F3E9D8", earrings: true, beard: false }
+  },
+  {
+    key: "daniel", image: "/assets/images/personas/daniel.jpg", name: "Daniel", gender: "male", department: "Finance",
+    title: "Finance Intelligence Specialist", accent: "#1B7A56", hairStyle: "fade",
+    personality: "Careful and factual. Reports only verified records and never approves, reverses or edits money.",
+    greeting: "Welcome back. I am Daniel, your finance intelligence specialist. Let us review verified payments, outstanding transactions and commission records within your permission.",
+    voice: { gender: "male", rate: 0.94, pitch: 0.86 },
+    avatar: { skin: "#6B462F", hair: "#12100D", outfit: "#3A3F44", shirt: "#FFFFFF", earrings: false, beard: true }
+  },
+  {
+    key: "ifeoma", image: "/assets/images/personas/ifeoma.jpg", name: "Ifeoma", gender: "female", department: "Management",
+    title: "Management Intelligence Specialist", accent: "#0A6B3D", hairStyle: "elegant",
+    personality: "Strategic and discreet. Presents management information according to the signed-in executive's authority.",
+    greeting: "Welcome back. I am Ifeoma, your management intelligence specialist. I can review authorised company, branch and financial performance information.",
+    voice: { gender: "female", rate: 0.96, pitch: 1.0 },
+    avatar: { skin: "#74482F", hair: "#181310", outfit: "#26282B", shirt: "#E9E2D3", earrings: true, beard: false }
+  }
+];
+const DIGITAL_HUMAN_PERSONA_MAP = Object.fromEntries(DIGITAL_HUMAN_PERSONAS.map(p => [p.key, p]));
+const ASSISTANT_FORM_FIELD_LABELS = {
+  full_name: "Full name", email: "Email address", email_address: "Email address",
+  phone_number: "Phone number", password: "Password", confirm_password: "Confirm password",
+  residential_address: "Residential address", state: "State", city: "City",
+  branch_id: "Branch", next_of_kin_name: "Next of kin name", next_of_kin_phone: "Next of kin phone",
+  next_of_kin_relationship: "Next of kin relationship", next_of_kin_address: "Next of kin address",
+  identity_type: "Identity type", identity_number: "Identity number", bvn: "BVN",
+  property_id: "Property", property_plan_id: "Payment plan", plan_start_date: "Plan start date",
+  terms_accepted: "Terms acceptance", lead_name: "Lead name", source: "Source",
+  notes: "Notes", amount: "Amount", reason: "Reason"
+};
+const ASSISTANT_SECRET_FIELDS = new Set(["password", "confirm_password", "bvn", "identity_number", "otp", "code", "token"]);
+
+function digitalHumanPersona(key) {
+  return DIGITAL_HUMAN_PERSONA_MAP[String(key || "").toLowerCase()] || DIGITAL_HUMAN_PERSONA_MAP.adaora;
+}
+
+function digitalHumanPublicPersona(persona) {
+  const p = digitalHumanPersona(persona && persona.key ? persona.key : persona);
+  return {
+    key: p.key, name: p.name, gender: p.gender, department: p.department,
+    title: p.title, accent: p.accent, personality: p.personality,
+    greeting: p.greeting, image: p.image, hairStyle: p.hairStyle, avatar: p.avatar,
+    voice: { gender: p.voice.gender, rate: p.voice.rate, pitch: p.voice.pitch }
+  };
+}
+
+function digitalHumanRole(actor) {
+  return actor ? (actor.actual_role_name || actor.role_name) : "Visitor";
+}
+
+function assistantPasswordGate(actor) {
+  return Boolean(actor && actor.role_name === "Client" && Number(actor.must_reset_password) === 1);
+}
+
+function assistantDefaultPersona(actor) {
+  const role = digitalHumanRole(actor);
+  if (role === "Visitor") return "adaora";
+  if (role === "Client") return "amara";
+  if (role === "Marketer" || role === "Team Lead") return "david";
+  if (role === "Branch Manager" || role === "Project Manager") return "ngozi";
+  if (role === "Finance Officer" || role === "Head Accountant" || role === "Accountant") return "daniel";
+  if (["Managing Director", "Super Admin", "Sub Admin", "GSM"].includes(role)) return "ifeoma";
+  if (role === "Customer Care") return "amara";
+  return "adaora";
+}
+
+function assistantPageContext(pathValue) {
+  const path = String(pathValue || "/").split("?")[0].toLowerCase();
+  const clean = path.replace(/^\/+/, "") || "index.html";
+  const map = {
+    "index.html": { key: "public.home", label: "public home page", area: "public" },
+    "about.html": { key: "public.about", label: "About Bliss Legacy", area: "public" },
+    "contact.html": { key: "public.contact", label: "Contact page", area: "public" },
+    "properties.html": { key: "public.properties", label: "property listings", area: "public" },
+    "property.html": { key: "public.properties", label: "property listings", area: "public" },
+    "property-details.html": { key: "public.property_detail", label: "property details page", area: "public" },
+    "signup.html": { key: "onboarding.signup", label: "client registration", area: "public", form: true },
+    "client-register.html": { key: "onboarding.signup", label: "client registration", area: "public", form: true },
+    "client-login.html": { key: "onboarding.login", label: "client sign-in", area: "public", form: true },
+    "login.html": { key: "onboarding.login", label: "staff sign-in", area: "public", form: true },
+    "forgot-password.html": { key: "onboarding.reset", label: "password reset", area: "public", form: true },
+    "client-verify.html": { key: "onboarding.verify", label: "account verification", area: "public", form: true },
+    "client-dashboard.html": { key: "client.dashboard", label: "client dashboard", area: "client" },
+    "client-property.html": { key: "client.property", label: "client property page", area: "client" },
+    "client-payments.html": { key: "client.payments", label: "client payments page", area: "client" },
+    "client-receipts.html": { key: "client.receipts", label: "client receipts page", area: "client" },
+    "client-profile.html": { key: "client.profile", label: "client profile page", area: "client", form: true },
+    "client-virtual-account.html": { key: "client.virtual_account", label: "client virtual account page", area: "client" },
+    "client-notifications.html": { key: "client.notifications", label: "client notifications", area: "client" },
+    "dashboard.html": { key: "staff.dashboard", label: "staff dashboard", area: "staff" },
+    "leads.html": { key: "staff.leads", label: "lead pipeline", area: "staff", form: true },
+    "clients.html": { key: "staff.clients", label: "client records", area: "staff" },
+    "client-detail.html": { key: "staff.client_detail", label: "client detail page", area: "staff" },
+    "properties.html?staff": { key: "staff.properties", label: "property records", area: "staff" },
+    "property-create.html": { key: "staff.property_create", label: "property creation form", area: "staff", form: true },
+    "finance-dashboard.html": { key: "staff.finance", label: "finance dashboard", area: "staff" },
+    "commissions.html": { key: "staff.commissions", label: "commissions page", area: "staff" },
+    "referral-commissions.html": { key: "staff.referral_commissions", label: "referral commissions page", area: "staff" },
+    "reports.html": { key: "staff.reports", label: "reports page", area: "staff" },
+    "revenue.html": { key: "staff.revenue", label: "revenue page", area: "staff" },
+    "performance.html": { key: "staff.performance", label: "performance page", area: "staff" },
+    "staff-management.html": { key: "staff.management", label: "staff management page", area: "staff", form: true },
+    "staff-notifications.html": { key: "staff.notifications", label: "staff notifications", area: "staff" },
+    "staff-chat.html": { key: "staff.chat", label: "staff chat", area: "staff" },
+    "super-admin.html": { key: "staff.admin", label: "administration console", area: "staff" },
+    "permissions.html": { key: "staff.permissions", label: "permissions page", area: "staff" },
+    "activity-centre.html": { key: "staff.activity", label: "activity centre", area: "staff" },
+    "provider-config.html": { key: "staff.providers", label: "payment provider configuration", area: "staff" },
+    "accountant-dashboard.html": { key: "staff.accountant", label: "accountant dashboard", area: "staff" },
+    "sub-admin-dashboard.html": { key: "staff.sub_admin", label: "sub-admin dashboard", area: "staff" },
+    "gsm-dashboard.html": { key: "staff.gsm", label: "GSM dashboard", area: "staff" },
+    "customer-care.html": { key: "staff.care", label: "customer care dashboard", area: "staff" },
+    "defaulting.html": { key: "staff.defaulting", label: "defaulting clients page", area: "staff" },
+    "sms-center.html": { key: "staff.sms", label: "SMS centre", area: "staff" }
+  };
+  return map[clean] || { key: "app.page", label: clean.replace(/\.html$/, "").replace(/[-_]/g, " "), area: "app" };
+}
+
+function assistantGreetingFor(actor, page, personaKey) {
+  const role = digitalHumanRole(actor);
+  if (role === "Visitor") {
+    return "Welcome to Bliss Legacy Limited. I am Adaora. I can introduce the company, help you search real published properties, guide your registration or connect you with our team.";
+  }
+  const persona = digitalHumanPersona(personaKey);
+  if (role === "Client") {
+    if (page.key === "client.dashboard") {
+      return "Welcome back to Bliss Legacy Limited. Your client dashboard is ready. Would you like to review your properties, your next payment or your account?";
+    }
+    return `Welcome back. I am ${persona.name}. I can help with properties, payments, receipts and your account. What would you like to review?`;
+  }
+  if (role === "Marketer") {
+    return "Welcome back. Your Bliss Legacy marketer dashboard is ready. Let us review your assigned clients, enquiries and follow-up activities.";
+  }
+  if (role === "Team Lead") {
+    return "Welcome back. Your team dashboard is ready. Let us review the activities and progress of your authorised team.";
+  }
+  if (role === "Branch Manager" || role === "Project Manager") {
+    return "Welcome back. Your branch dashboard is ready. I can help you review branch activities, sales progress and team performance.";
+  }
+  if (role === "Finance Officer" || role === "Head Accountant" || role === "Accountant") {
+    return "Welcome back. Your finance dashboard is ready. Let us review today's payment activities and financial records.";
+  }
+  if (role === "Super Admin") {
+    return "Welcome back. Your Bliss Legacy administration dashboard is ready. What would you like to review?";
+  }
+  if (role === "Managing Director") {
+    return "Welcome back. Your executive dashboard is ready. I can help you review the company's operational and financial performance.";
+  }
+  if (role === "Customer Care") {
+    return "Welcome back. Your customer care dashboard is ready. I can help you review client-care activity, branch enquiries and handover requests.";
+  }
+  if (role === "Sub Admin" || role === "GSM") {
+    return "Welcome back. Your Bliss Legacy dashboard is ready. What would you like to review?";
+  }
+  return `${persona.greeting}`;
+}
+
+function assistantQuickPrompts(actor, page) {
+  const role = digitalHumanRole(actor);
+  if (role === "Visitor") {
+    return ["Find a property", "How do I register?", "Tell me about Bliss Legacy", "Talk to a human"];
+  }
+  if (role === "Client") {
+    return ["Show my properties", "What is my next payment?", "Show my payment history", "Talk to a human"];
+  }
+  if (role === "Marketer") {
+    return ["Show my assigned leads", "Which leads need follow-up?", "Show my commission summary", "Talk to a human"];
+  }
+  if (role === "Team Lead") {
+    return ["Show my team activity", "Which leads need follow-up?", "Team performance summary", "Talk to a human"];
+  }
+  if (role === "Branch Manager" || role === "Project Manager") {
+    return ["Branch performance summary", "Show branch leads", "Today's verified payments", "Talk to a human"];
+  }
+  if (role === "Finance Officer" || role === "Head Accountant" || role === "Accountant") {
+    return ["Today's verified payments", "Show outstanding transactions", "Commission summary", "Prepare a report"];
+  }
+  if (role === "Managing Director" || role === "Super Admin") {
+    return ["Company performance summary", "Branch performance", "Show commission summary", "Today's verified payments"];
+  }
+  return ["What can you help me with?", "Show today's activity", "Talk to a human"];
+}
+
+function assistantNormalizeMessage(value) {
+  return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function assistantSafeMessage(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim()
+    .slice(0, 1200);
+}
+
+function assistantRedactSecrets(value) {
+  return String(value || "")
+    .replace(/((?:password|passcode|otp|one[ -]?time code|pin|bvn|cvv)\s*(?:is|:|=)?\s*)([^\s,;]{3,})/gi, "$1[redacted]")
+    .slice(0, 1200);
+}
+
+function assistantDetectBudget(text) {
+  const source = String(text || "").toLowerCase().replace(/,/g, "");
+  const matches = [...source.matchAll(/(?:₦|ngn|n)?\s*(\d+(?:\.\d+)?)\s*(m|million|k|thousand|naira)?\b/g)];
+  for (const match of matches) {
+    const amount = Number(match[1]);
+    const unit = match[2] || "";
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    if (unit === "m" || unit === "million") return Math.round(amount * 1000000);
+    if (unit === "k" || unit === "thousand") return Math.round(amount * 1000);
+    if (unit === "naira" || /₦|ngn/.test(match[0])) return Math.round(amount);
+    if (amount >= 100000) return Math.round(amount);
+  }
+  return null;
+}
+
+function assistantDetectPropertyReference(text) {
+  const match = String(text || "").match(/\b(?:reference|ref)\s*[:#-]?\s*([a-z0-9][a-z0-9-]{3,})/i)
+    || String(text || "").match(/\b(BL[A-Z0-9-]{4,})\b/i);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function assistantClassifyIntent(rawText, actor) {
+  const text = assistantNormalizeMessage(rawText);
+  const role = digitalHumanRole(actor);
+  const explicit = DIGITAL_HUMAN_PERSONAS.find(p =>
+    new RegExp(`\\b${p.name.toLowerCase()}\\b`).test(text) && /(speak|talk|connect|transfer|switch|hello|hi|hey)/.test(text)
+  );
+  if (explicit) return { intent: "persona.transfer", personaKey: explicit.key };
+  if (/(handover|human|real person|agent|staff member).*(status|update|accepted)|check.*(handover|human agent)/.test(text)) {
+    return { intent: "handover.status" };
+  }
+  if (/(human|real person|agent|staff member|callback|call me|speak to (someone|somebody)|connect me)/.test(text)) {
+    return { intent: "handover.request" };
+  }
+  if (/(password|reset|forgot|otp|verification code|sign in|log in|login|temporary password)/.test(text)) {
+    return { intent: "onboarding.login" };
+  }
+  if (/(approved|approval|application status|onboarding status|account status|verified account)/.test(text)) {
+    return { intent: "onboarding.status" };
+  }
+  if (/(register|sign up|signup|create (an )?account|\bonboard(ing)?\b|registration)/.test(text)) {
+    return { intent: "onboarding.signup" };
+  }
+  if (/\b(form|missing field|missing fields|incomplete|what do i need|required field)\b/.test(text)) {
+    return { intent: "form.help" };
+  }
+  if (/(report|statement|csv|pdf|export)/.test(text)) {
+    return { intent: "reports.help" };
+  }
+  if (/(commission)/.test(text)) {
+    return { intent: "finance.commission" };
+  }
+  if (role === "Client" && /((my|our)\s+(propert|portfolio|balance|payment|receipt|account)|my next payment|account balance|outstanding balance|payment history|add (another )?propert|review my\s+(account|portfolio))/.test(text)) {
+    if (/(payment|paid|receipt|next payment|balance|outstanding)/.test(text)) return { intent: "client.payments" };
+    return { intent: "client.properties" };
+  }
+  if (/(customer|client|lead|follow.?up|pipeline|prospect|not contacted)/.test(text)) {
+    return { intent: "leads.review" };
+  }
+  if (/(property|properties|apartment|house|duplex|land|rent|rental|lease|buy|purchase|budget|location|viewing)/.test(text)) {
+    if (/(rent|rental|lease|tenant)/.test(text)) return { intent: "property.search", personaKey: "emeka" };
+    if (/(buy|purchase|sale|sales process|payment plan)/.test(text)) return { intent: "property.search", personaKey: "chiamaka" };
+    return { intent: "property.search", personaKey: "solomon" };
+  }
+  if (/(today|verified|payment|transaction|reconcil|finance|outstanding|paid|revenue)/.test(text)) {
+    return { intent: "finance.overview" };
+  }
+  if (/(branch|location|office)/.test(text)) {
+    return { intent: "branch.overview" };
+  }
+  if (/(company|executive|management|how is business|company summary)/.test(text)) {
+    return { intent: "management.overview" };
+  }
+  if (/(team|marketer|member|performance)/.test(text)) {
+    return { intent: "team.overview" };
+  }
+  if (/(overview|summary|total)/.test(text)) {
+    return { intent: "management.overview" };
+  }
+  if (/(notification|alert|message|update)/.test(text)) {
+    return { intent: "notifications.review" };
+  }
+  if (/(who are you|what is bliss|about (bliss|the company)|introduce|introduction|company)/.test(text)) {
+    return { intent: "company.intro" };
+  }
+  if (/(help|what can you do|capabilities|how can you help)/.test(text)) {
+    return { intent: "capabilities" };
+  }
+  if (/^(hi|hello|hey|good (morning|afternoon|evening)|welcome)\b/.test(text)) {
+    return { intent: "greeting" };
+  }
+  return { intent: "fallback" };
+}
+
+async function assistantOwnedConversation(env, actor, client, body, pagePath) {
+  const ref = String(body.conversation_ref || "").trim();
+  const visitorId = String(body.visitor_id || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80) || null;
+  if (!ref) {
+    const latest = actor
+      ? await env.DB.prepare("SELECT * FROM assistant_conversations WHERE user_id=? ORDER BY id DESC LIMIT 1").bind(actor.id).first()
+      : (visitorId
+        ? await env.DB.prepare("SELECT * FROM assistant_conversations WHERE visitor_id=? AND user_id IS NULL ORDER BY id DESC LIMIT 1").bind(visitorId).first()
+        : null);
+    if (latest) return latest;
+  }
+  if (ref) {
+    const existing = await env.DB.prepare("SELECT * FROM assistant_conversations WHERE conversation_ref=?").bind(ref).first();
+    if (existing) {
+      const owned = actor
+        ? Number(existing.user_id) === Number(actor.id)
+        : (!existing.user_id && visitorId && existing.visitor_id === visitorId);
+      if (owned) {
+        if (actor && client && !existing.client_id) {
+          await env.DB.prepare("UPDATE assistant_conversations SET client_id=?, updated_at=datetime('now') WHERE id=?")
+            .bind(client.id, existing.id).run();
+          existing.client_id = client.id;
+        }
+        return existing;
+      }
+    }
+  }
+  const conversationRef = "DHC-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 8).toUpperCase();
+  const result = await env.DB.prepare(`
+    INSERT INTO assistant_conversations
+      (conversation_ref, user_id, client_id, visitor_id, current_persona, page_path, context_json, last_message_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).bind(
+    conversationRef,
+    actor ? actor.id : null,
+    client ? client.id : null,
+    visitorId,
+    assistantDefaultPersona(actor),
+    pagePath || null,
+    JSON.stringify({ page: pagePath || null })
+  ).run();
+  return await env.DB.prepare("SELECT * FROM assistant_conversations WHERE id=?").bind(result.meta.last_row_id).first();
+}
+
+async function assistantConversationHistory(env, conversationId, limit = 12) {
+  const { results } = await env.DB.prepare(`
+    SELECT role, persona_key, content, intent, created_at
+    FROM assistant_messages WHERE conversation_id=? ORDER BY id DESC LIMIT ?
+  `).bind(conversationId, limit).all();
+  return (results || []).reverse();
+}
+
+async function assistantStoreMessage(env, conversationId, role, personaKey, content, intent, metadata) {
+  await env.DB.prepare(`
+    INSERT INTO assistant_messages (conversation_id, role, persona_key, content, intent, metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(conversationId, role, personaKey || null, String(content).slice(0, 4000), intent || null, metadata ? JSON.stringify(metadata) : null).run();
+  await env.DB.prepare("UPDATE assistant_conversations SET updated_at=datetime('now'), last_message_at=datetime('now') WHERE id=?")
+    .bind(conversationId).run();
+}
+
+async function assistantNotifications(env, actor, client) {
+  if (!actor) return [];
+  const { results } = await env.DB.prepare(`
+    SELECT n.id, n.type, n.title, n.message, n.metadata, n.is_read, n.created_at
+    FROM notifications n
+    WHERE (n.user_id=? OR n.client_id=?)
+      AND n.created_at >= datetime('now','-7 days')
+    ORDER BY n.id DESC LIMIT 20
+  `).bind(actor.id, client ? client.id : -1).all();
+  return (results || []).map(row => {
+    let metadata = null;
+    try { metadata = row.metadata ? JSON.parse(row.metadata) : null; } catch {}
+    return {
+      key: `notification:${row.id}`,
+      type: row.type,
+      title: row.title,
+      message: row.message,
+      is_read: Number(row.is_read),
+      created_at: row.created_at,
+      metadata
+    };
+  });
+}
+
+async function assistantSearchProperties(env, { text, location, budget, propertyType }) {
+  let resolvedLocation = location || null;
+  if (!resolvedLocation) {
+    const { results: places } = await env.DB.prepare(`
+      SELECT DISTINCT city AS name FROM properties WHERE is_published=1 AND is_archived=0 AND city IS NOT NULL
+      UNION SELECT DISTINCT state AS name FROM properties WHERE is_published=1 AND is_archived=0 AND state IS NOT NULL
+      LIMIT 300
+    `).all();
+    const lowered = assistantNormalizeMessage(text);
+    resolvedLocation = (places || []).map(p => p.name).filter(Boolean)
+      .find(name => lowered.includes(String(name).toLowerCase())) || null;
+  }
+  const where = [
+    "p.is_published=1", "p.is_archived=0", "p.is_internal_test=0", "p.is_demo=0"
+  ];
+  const binds = [];
+  if (resolvedLocation) {
+    where.push("(LOWER(p.city)=? OR LOWER(p.state)=?)");
+    binds.push(String(resolvedLocation).toLowerCase(), String(resolvedLocation).toLowerCase());
+  }
+  if (propertyType) {
+    where.push("(LOWER(p.property_type)=? OR LOWER(pc.name)=?)");
+    binds.push(String(propertyType).toLowerCase(), String(propertyType).toLowerCase());
+  }
+  if (budget) {
+    where.push("COALESCE(NULLIF(p.promotional_price,0), p.sale_price) > 0");
+    where.push("COALESCE(NULLIF(p.promotional_price,0), p.sale_price) <= ?");
+    binds.push(Number(budget));
+  }
+  const { results } = await env.DB.prepare(`
+    SELECT p.id, p.reference, p.title, p.city, p.state, p.property_type, p.bedrooms, p.bathrooms,
+           p.sale_price, p.promotional_price, p.status, p.available_units, pc.name AS category_name,
+           (SELECT COUNT(*) FROM property_payment_plans pp WHERE pp.property_id=p.id AND pp.is_enabled=1) AS plan_count
+    FROM properties p
+    LEFT JOIN property_categories pc ON pc.id=p.category_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY p.is_featured DESC, p.id DESC
+    LIMIT 6
+  `).bind(...binds).all();
+  return { properties: results || [], location: resolvedLocation };
+}
+
+async function assistantFindPropertyByReference(env, reference) {
+  if (!reference) return null;
+  return await env.DB.prepare(`
+    SELECT p.id, p.reference, p.title, p.city, p.state, p.property_type, p.bedrooms, p.bathrooms,
+           p.sale_price, p.promotional_price, p.status, p.description
+    FROM properties p
+    WHERE UPPER(p.reference)=? AND p.is_published=1 AND p.is_archived=0 AND p.is_internal_test=0 AND p.is_demo=0
+    LIMIT 1
+  `).bind(String(reference).toUpperCase()).first();
+}
+
+async function assistantClientPortfolio(env, actor) {
+  const client = await getClientForActor(env, actor);
+  if (!client) return { client: null, portfolio: null };
+  return { client, portfolio: await buildClientPropertyPortfolio(env, client) };
+}
+
+async function assistantLeadSummary(env, actor, text) {
+  const role = digitalHumanRole(actor);
+  if (!["Marketer", "Team Lead", "Branch Manager", "Managing Director", "Super Admin", "Project Manager", "GSM"].includes(role)) {
+    return { allowed: false, reason: "Lead intelligence is available to authorised sales staff only." };
+  }
+  const scope = await resolvePhase6Scope(env, actor);
+  const scoped = leadScopeSql(scope, "l");
+  const wantsFollowUp = /(follow.?up|not contacted|pending|overdue|today)/.test(assistantNormalizeMessage(text));
+  const where = [scoped.clause];
+  const binds = [...scoped.binds];
+  if (wantsFollowUp) {
+    where.push("l.status NOT IN ('Converted','Lost')");
+    where.push("(l.next_follow_up_date IS NULL OR date(l.next_follow_up_date) <= date('now'))");
+  }
+  const count = await env.DB.prepare(`SELECT COUNT(*) AS c FROM leads l WHERE ${where.join(" AND ")}`).bind(...binds).first();
+  const { results } = await env.DB.prepare(`
+    SELECT l.id, l.lead_reference, l.full_name, l.phone_number, l.status, l.lead_temperature,
+           l.next_follow_up_date, prop.title AS property_title, l.branch_id
+    FROM leads l LEFT JOIN properties prop ON prop.id=l.property_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY CASE WHEN l.next_follow_up_date IS NULL THEN 1 ELSE 0 END, l.next_follow_up_date ASC, l.id DESC
+    LIMIT 6
+  `).bind(...binds).all();
+  return { allowed: true, count: Number(count ? count.c : 0), leads: results || [], wantsFollowUp };
+}
+
+async function assistantFinanceOverview(env, actor, text) {
+  const role = digitalHumanRole(actor);
+  const allowed = ["Managing Director", "Super Admin", "Finance Officer", "Head Accountant", "Accountant", "Branch Manager"];
+  if (!allowed.includes(role)) return { allowed: false, reason: "Finance records are available to authorised finance and management roles only." };
+  const normalized = assistantNormalizeMessage(text);
+  const wantsMonth = /(this month|monthly|month to date|mtd)/.test(normalized);
+  const wantsPending = /(outstanding|pending|unverified|failed|exception)/.test(normalized);
+  const where = ["p.is_demo=0", "p.is_archived=0", "p.currency='NGN'"];
+  const binds = [];
+  if (role === "Branch Manager") { where.push("p.revenue_branch_id=?"); binds.push(actor.branch_id); }
+  if (wantsPending) {
+    where.push("p.status IN ('pending','failed')");
+  } else if (wantsMonth) {
+    where.push("p.status='verified'");
+    where.push("date(p.verified_at) >= date('now','start of month')");
+  } else {
+    where.push("p.status='verified'");
+    where.push("date(p.verified_at) = date('now')");
+  }
+  const totals = await env.DB.prepare(`
+    SELECT COUNT(*) AS records, COALESCE(SUM(p.amount_kobo),0) AS amount_kobo
+    FROM payments p WHERE ${where.join(" AND ")}
+  `).bind(...binds).first();
+  const { results } = await env.DB.prepare(`
+    SELECT p.id, p.transaction_ref, p.amount_kobo, p.status, p.provider, p.verified_at, p.created_at,
+           c.full_name AS client_name, c.client_reference
+    FROM payments p LEFT JOIN clients c ON c.id=p.client_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY p.id DESC LIMIT 5
+  `).bind(...binds).all();
+  return {
+    allowed: true, records: Number(totals ? totals.records : 0),
+    amount_kobo: Number(totals ? totals.amount_kobo : 0),
+    payments: results || [], wantsPending, wantsMonth
+  };
+}
+
+async function assistantManagementOverview(env, actor) {
+  const role = digitalHumanRole(actor);
+  if (!["Managing Director", "Super Admin", "Branch Manager", "Project Manager", "Head Accountant"].includes(role)) {
+    return { allowed: false, reason: "Management intelligence is restricted to authorised management roles." };
+  }
+  const branchScoped = ["Branch Manager", "Project Manager"].includes(role);
+  const branchId = branchScoped ? actor.branch_id : null;
+  const clientWhere = branchScoped ? "c.is_deleted=0 AND c.assigned_branch_id=?" : "c.is_deleted=0";
+  const leadWhere = branchScoped ? "l.branch_id=?" : "1=1";
+  const propertyWhere = branchScoped ? "p.is_published=1 AND p.is_archived=0 AND p.branch_id=?" : "p.is_published=1 AND p.is_archived=0";
+  const paymentWhere = branchScoped
+    ? "p.is_demo=0 AND p.status='verified' AND date(p.verified_at)=date('now') AND p.revenue_branch_id=?"
+    : "p.is_demo=0 AND p.status='verified' AND date(p.verified_at)=date('now')";
+  const bind = branchScoped ? [branchId] : [];
+  const [clients, leads, properties, payments, commissions] = await Promise.all([
+    env.DB.prepare(`SELECT COUNT(*) AS c FROM clients c WHERE ${clientWhere}`).bind(...bind).first(),
+    env.DB.prepare(`SELECT COUNT(*) AS c FROM leads l WHERE ${leadWhere} AND l.status NOT IN ('Converted','Lost')`).bind(...bind).first(),
+    env.DB.prepare(`SELECT COUNT(*) AS c FROM properties p WHERE ${propertyWhere}`).bind(...bind).first(),
+    env.DB.prepare(`SELECT COALESCE(SUM(p.amount_kobo),0) AS amount_kobo, COUNT(*) AS c FROM payments p WHERE ${paymentWhere}`).bind(...bind).first(),
+    branchScoped ? Promise.resolve(null) : getCommissionSummary(env, await resolvePhase6Scope(env, actor))
+  ]);
+  return {
+    allowed: true, branchScoped,
+    clients: Number(clients ? clients.c : 0),
+    open_leads: Number(leads ? leads.c : 0),
+    properties: Number(properties ? properties.c : 0),
+    verified_today_kobo: Number(payments ? payments.amount_kobo : 0),
+    verified_today_count: Number(payments ? payments.c : 0),
+    commission: commissions
+  };
+}
+
+async function assistantTeamOverview(env, actor) {
+  const role = digitalHumanRole(actor);
+  if (!["Team Lead", "Branch Manager", "Managing Director", "Super Admin", "Project Manager"].includes(role)) {
+    return { allowed: false, reason: "Team intelligence is available to team leads, branch managers and executives only." };
+  }
+  if (["Managing Director", "Super Admin"].includes(role)) {
+    const [members, leads, clients] = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE is_active=1").first(),
+      env.DB.prepare("SELECT COUNT(*) AS c FROM leads WHERE status NOT IN ('Converted','Lost')").first(),
+      env.DB.prepare("SELECT COUNT(*) AS c FROM clients WHERE is_deleted=0").first()
+    ]);
+    return {
+      allowed: true, members: Number(members ? members.c : 0),
+      open_leads: Number(leads ? leads.c : 0), clients: Number(clients ? clients.c : 0)
+    };
+  }
+  if (role === "Branch Manager" || role === "Project Manager") {
+    const [members, leads, clients] = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE is_active=1 AND branch_id=?").bind(actor.branch_id).first(),
+      env.DB.prepare("SELECT COUNT(*) AS c FROM leads WHERE branch_id=? AND status NOT IN ('Converted','Lost')").bind(actor.branch_id).first(),
+      env.DB.prepare("SELECT COUNT(*) AS c FROM clients WHERE is_deleted=0 AND assigned_branch_id=?").bind(actor.branch_id).first()
+    ]);
+    return {
+      allowed: true, members: Number(members ? members.c : 0),
+      open_leads: Number(leads ? leads.c : 0), clients: Number(clients ? clients.c : 0)
+    };
+  }
+  const scope = await resolvePhase6Scope(env, actor);
+  const memberIds = scope.memberIds.length ? scope.memberIds : [actor.id];
+  const placeholders = memberIds.map(() => "?").join(",");
+  const leads = await env.DB.prepare(`
+    SELECT COUNT(*) AS c FROM leads l
+    WHERE l.status NOT IN ('Converted','Lost')
+      AND (l.team_lead_id=? OR l.assigned_marketer_id IN (${placeholders}))
+  `).bind(actor.id, ...memberIds).first();
+  const clients = await env.DB.prepare(`
+    SELECT COUNT(*) AS c FROM clients c
+    WHERE c.is_deleted=0 AND (c.team_lead_id=? OR c.original_marketer_id IN (${placeholders}))
+  `).bind(actor.id, ...memberIds).first();
+  return {
+    allowed: true, members: memberIds.length,
+    open_leads: Number(leads ? leads.c : 0),
+    clients: Number(clients ? clients.c : 0)
+  };
+}
+
+async function assistantBranchOverview(env, actor) {
+  const role = digitalHumanRole(actor);
+  if (!["Managing Director", "Super Admin", "Branch Manager", "Project Manager"].includes(role)) {
+    return { allowed: false, reason: "Branch information is restricted to authorised management roles." };
+  }
+  if (role === "Branch Manager" || role === "Project Manager") {
+    const branch = await env.DB.prepare("SELECT id, name FROM branches WHERE id=?").bind(actor.branch_id).first();
+    const [clients, leads, payments] = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) AS c FROM clients WHERE is_deleted=0 AND assigned_branch_id=?").bind(actor.branch_id).first(),
+      env.DB.prepare("SELECT COUNT(*) AS c FROM leads WHERE branch_id=? AND status NOT IN ('Converted','Lost')").bind(actor.branch_id).first(),
+      env.DB.prepare("SELECT COALESCE(SUM(amount_kobo),0) AS a FROM payments WHERE is_demo=0 AND status='verified' AND date(verified_at)=date('now') AND revenue_branch_id=?").bind(actor.branch_id).first()
+    ]);
+    return {
+      allowed: true, branch: branch || null,
+      clients: Number(clients ? clients.c : 0),
+      open_leads: Number(leads ? leads.c : 0),
+      verified_today_kobo: Number(payments ? payments.a : 0)
+    };
+  }
+  const { results } = await env.DB.prepare(`
+    SELECT b.id, b.name,
+      (SELECT COUNT(*) FROM clients c WHERE c.assigned_branch_id=b.id AND c.is_deleted=0) AS clients,
+      (SELECT COALESCE(SUM(p.amount_kobo),0) FROM payments p WHERE p.revenue_branch_id=b.id AND p.status='verified' AND p.is_demo=0 AND date(p.verified_at)=date('now')) AS verified_today_kobo
+    FROM branches b ORDER BY b.name LIMIT 12
+  `).all();
+  return { allowed: true, branches: results || [] };
+}
+
+async function assistantHandoverCandidates(env, actor, client, department, limit = 5) {
+  const roleMap = {
+    "Customer Care": ["Customer Care"],
+    Sales: ["Marketer", "Team Lead", "Branch Manager"],
+    Finance: ["Finance Officer", "Head Accountant", "Accountant"],
+    Management: ["Managing Director", "Branch Manager"],
+    "Branch Operations": ["Branch Manager", "Project Manager"]
+  };
+  const roles = roleMap[department] || roleMap["Customer Care"];
+  const branchId = client ? client.assigned_branch_id : (actor ? actor.branch_id : null);
+  const rolePlaceholders = roles.map(() => "?").join(",");
+  const { results } = await env.DB.prepare(`
+    SELECT u.id, u.full_name, u.branch_id, r.name AS role_name, b.name AS branch_name,
+           COALESCE(sp.availability_status,'available') AS availability_status
+    FROM users u
+    JOIN roles r ON r.id=u.role_id
+    LEFT JOIN branches b ON b.id=u.branch_id
+    LEFT JOIN staff_profiles sp ON sp.user_id=u.id
+    WHERE u.is_active=1
+      AND r.name IN (${rolePlaceholders})
+      AND COALESCE(sp.availability_status,'available')='available'
+      AND (? IS NULL OR u.branch_id=? OR u.branch_id IS NULL)
+    ORDER BY CASE WHEN u.branch_id=? THEN 0 ELSE 1 END, u.id ASC
+    LIMIT ?
+  `).bind(...roles, branchId, branchId, branchId, limit).all();
+  return (results || []).filter(row => !actor || Number(row.id) !== Number(actor.id));
+}
+
+async function assistantCreateHandover(env, actor, client, conversation, department, topic, pagePath) {
+  const candidates = await assistantHandoverCandidates(env, actor, client, department);
+  const assigned = candidates[0] || null;
+  const history = await assistantConversationHistory(env, conversation.id, 8);
+  const summary = history
+    .filter(m => m.role === "user")
+    .map(m => m.content)
+    .join(" | ")
+    .slice(0, 900) || topic || "Customer requested a human staff handover.";
+  const ref = "DHH-" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomUUID().slice(0, 6).toUpperCase();
+  const result = await env.DB.prepare(`
+    INSERT INTO assistant_handovers
+      (handover_ref, conversation_id, client_id, requested_by_user_id, department, branch_id,
+       assigned_user_id, status, summary, context_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    ref, conversation.id, client ? client.id : null, actor ? actor.id : null,
+    department, client ? client.assigned_branch_id : (actor ? actor.branch_id : null),
+    assigned ? assigned.id : null,
+    assigned ? "pending" : "unassigned",
+    summary,
+    JSON.stringify({ page: pagePath, topic, department })
+  ).run();
+  const handoverId = result.meta.last_row_id;
+  if (assigned) {
+    await createNotification(env, {
+      userId: assigned.id,
+      type: "assistant.handover",
+      title: "Digital assistant handover request",
+      message: `${client ? client.full_name : (actor ? actor.full_name : "A visitor")} is waiting for a human agent about ${topic}. Open the Bliss assistant to accept the handover.`,
+      metadata: { handover_id: handoverId, handover_ref: ref, department, conversation_id: conversation.id }
+    }).catch(() => {});
+  } else {
+    const notifyRoles = department === "Finance" ? ["Finance Officer", "Head Accountant", "Managing Director"] : ["Customer Care", "Branch Manager", "Managing Director"];
+    const { results: staff } = await env.DB.prepare(`
+      SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+      WHERE u.is_active=1 AND r.name IN (${notifyRoles.map(() => "?").join(",")})
+      LIMIT 20
+    `).bind(...notifyRoles).all();
+    for (const member of staff || []) {
+      if (actor && Number(member.id) === Number(actor.id)) continue;
+      await createNotification(env, {
+        userId: member.id,
+        type: "assistant.handover",
+        title: "Unassigned handover request",
+        message: `A customer is waiting for a human agent about ${topic}. No available specialist was matched; open the assistant to take the request.`,
+        metadata: { handover_id: handoverId, handover_ref: ref, department, unassigned: true }
+      }).catch(() => {});
+    }
+  }
+  await audit(env, actor ? actor.id : null, "assistant.handover.request", "assistant_handover", String(handoverId), {
+    department, assigned_user_id: assigned ? assigned.id : null, handover_ref: ref
+  }, client ? client.assigned_branch_id : (actor ? actor.branch_id : null));
+  return { id: handoverId, ref, assigned, department, status: assigned ? "pending" : "unassigned", candidates };
+}
+
+function assistantPersonaIntroduction(fromPersonaKey, toPersonaKey) {
+  const from = digitalHumanPersona(fromPersonaKey);
+  const to = digitalHumanPersona(toPersonaKey);
+  if (from.key === to.key) return "";
+  return `Let me bring in ${to.name}, our ${to.title}. `;
+}
+
+function assistantCardsForProperties(properties) {
+  return (properties || []).map(p => {
+    const price = Number(p.promotional_price || 0) > 0 ? Number(p.promotional_price) : Number(p.sale_price || 0);
+    return {
+      title: p.title,
+      subtitle: [p.city, p.state].filter(Boolean).join(", ") || p.property_type || "Bliss Legacy property",
+      meta: `${p.reference || ""}${price ? " · " + formatNGN(toKobo(price)) : ""}${p.bedrooms ? " · " + p.bedrooms + " bed" : ""}${Number(p.plan_count || 0) ? " · " + p.plan_count + " payment plan(s)" : ""}`,
+      href: `property-details.html?id=${encodeURIComponent(p.id)}`
+    };
+  });
+}
+
+async function handleAssistantMessage(env, request, actor, client, body) {
+  const pagePath = String(body.page || "").slice(0, 200);
+  const page = assistantPageContext(pagePath);
+  const conversation = await assistantOwnedConversation(env, actor, client, body, pagePath);
+  const text = assistantSafeMessage(body.message);
+  if (!text) return { error: "Enter a message for the assistant." };
+  const rateKey = actor ? `user:${actor.id}` : `visitor:${String(body.visitor_id || "").slice(0, 60)}`;
+  const recent = await recentAuditCount(env, "assistant.message", rateKey, 5);
+  if (recent >= 60) return { error: "The assistant is receiving too many messages. Please wait a moment." };
+
+  await audit(env, actor ? actor.id : null, "assistant.message", "assistant_rate", rateKey, {
+    role: digitalHumanRole(actor), page: page.key, conversation_id: conversation.id
+  }, client ? client.assigned_branch_id : (actor ? actor.branch_id : null));
+  await assistantStoreMessage(env, conversation.id, "user", null, assistantRedactSecrets(text), null, null);
+
+  const classification = assistantClassifyIntent(text, actor);
+  const currentPersonaKey = digitalHumanPersona(conversation.current_persona).key;
+  let personaKey = currentPersonaKey;
+  let reply = "";
+  let speech = "";
+  let cards = [];
+  let suggestions = [];
+  let handover = null;
+  let action = null;
+
+  const setPersona = (key) => {
+    const next = digitalHumanPersona(key);
+    if (next.key !== personaKey) {
+      reply += assistantPersonaIntroduction(personaKey, next.key);
+      personaKey = next.key;
+    }
+  };
+  const finish = (textValue, speechValue) => {
+    reply += textValue;
+    speech += speechValue !== undefined ? speechValue : textValue;
+  };
+
+  try {
+    if (classification.intent === "persona.transfer") {
+      setPersona(classification.personaKey);
+      const p = digitalHumanPersona(personaKey);
+      finish(`I am ${p.name}, ${p.title}. ${p.greeting}`);
+      suggestions = assistantQuickPrompts(actor, page);
+    } else if (classification.intent === "handover.request") {
+      if (!actor) {
+        const config = await getSiteConfig(env);
+        finish(`To connect you with a human, please sign in or create a free client account. You can also call our team${config.phone ? " on " + config.phone : ""}${config.email ? " or email " + config.email : ""}. I have not started a human handover yet.`);
+        cards = [{ title: "Create a client account", subtitle: "Register in a few minutes", meta: "Bliss Legacy Limited", href: "signup.html" }];
+        suggestions = ["Find a property", "How do I register?", "Call the team"];
+      } else if (!body.confirm_handover) {
+        const department = digitalHumanRole(actor) === "Client" ? "Customer Care" : (["Finance Officer", "Head Accountant", "Accountant"].includes(digitalHumanRole(actor)) ? "Finance" : "Sales");
+        finish(`I can request a real Bliss Legacy staff member for you. Shall I send a handover request to our ${department} team? I will only confirm the connection after a staff member accepts.`);
+        action = { type: "confirm_handover", label: `Request ${department} handover`, department };
+        suggestions = ["Yes, request a human", "No, continue with you"];
+      } else {
+        const pageText = assistantNormalizeMessage(text);
+        const department = /(finance|payment|commission|report)/.test(pageText)
+          ? "Finance"
+          : (/(branch|operation)/.test(pageText) ? "Branch Operations" : (digitalHumanRole(actor) === "Client" ? "Customer Care" : "Sales"));
+        handover = await assistantCreateHandover(env, actor, client, conversation, department, text.slice(0, 160), pagePath);
+        if (handover.assigned) {
+          finish(`I have sent a handover request to ${handover.assigned.full_name} (${handover.assigned.role_name}). Reference ${handover.ref}. I will tell you as soon as they accept — you are not connected to a human yet.`);
+        } else {
+          finish(`I have saved your request with reference ${handover.ref}. No specialist is available right now, so I have alerted the ${department} team. I have not claimed a successful human connection.`);
+        }
+        suggestions = ["Check handover status", "Show my notifications", "Continue with you"];
+      }
+    } else if (classification.intent === "handover.status") {
+      if (!actor) {
+        finish("Please sign in to check a handover request. Anonymous visitors are never given a fake human handover.");
+      } else {
+        const latest = await env.DB.prepare(`
+          SELECT h.handover_ref, h.status, h.department, h.accepted_at, u.full_name AS accepted_by_name
+          FROM assistant_handovers h LEFT JOIN users u ON u.id=h.accepted_by_user_id
+          WHERE h.requested_by_user_id=? OR (h.client_id IS NOT NULL AND h.client_id=?)
+          ORDER BY h.id DESC LIMIT 1
+        `).bind(actor.id, client ? client.id : -1).first();
+        if (!latest) {
+          finish("You do not have a human handover request yet. Say “talk to a human” and I will ask you to confirm before creating one.");
+        } else if (latest.status === "accepted") {
+          finish(`Your handover ${latest.handover_ref} was accepted by ${latest.accepted_by_name || "a Bliss Legacy staff member"}${latest.accepted_at ? " at " + String(latest.accepted_at).slice(0, 16) : ""}. A real staff member has joined.`);
+        } else if (latest.status === "pending") {
+          finish(`Handover ${latest.handover_ref} is still pending. A specialist has been notified, but no one has accepted yet, so I will not describe you as connected.`);
+        } else {
+          finish(`Handover ${latest.handover_ref} is currently ${latest.status}. It has not been accepted yet.`);
+        }
+      }
+    } else if (classification.intent === "property.search") {
+      setPersona(classification.personaKey || "solomon");
+      const reference = assistantDetectPropertyReference(text);
+      if (reference) {
+        const property = await assistantFindPropertyByReference(env, reference);
+        if (property) {
+          const price = Number(property.promotional_price || 0) > 0 ? Number(property.promotional_price) : Number(property.sale_price || 0);
+          finish(`I found ${property.title} (${property.reference}) in ${[property.city, property.state].filter(Boolean).join(", ")}. Published price: ${price ? formatNGN(toKobo(price)) : "not published"}. Status: ${property.status || "Available"}. I can only quote published prices; an approved contract price must come from an authorised Managing Director or Branch Manager.`);
+          cards = [{ title: property.title, subtitle: [property.city, property.state].filter(Boolean).join(", "), meta: property.reference, href: `property-details.html?id=${property.id}` }];
+        } else {
+          finish(`I could not find a published property with reference ${reference}. I will not invent a listing. Please check the reference or tell me your budget and location.`);
+        }
+      } else {
+        const budget = assistantDetectBudget(text);
+        const propertyType = /(duplex|apartment|land|terrace|bungalow|shop|office)/.exec(assistantNormalizeMessage(text));
+        const result = await assistantSearchProperties(env, { text, budget, propertyType: propertyType ? propertyType[0] : null });
+        if (result.properties.length) {
+          const filterText = [result.location, budget ? `up to ${formatNGN(toKobo(budget))}` : ""].filter(Boolean).join(" · ");
+          finish(`I searched the live Bliss Legacy listings${filterText ? " for " + filterText : ""} and found ${result.properties.length} published ${result.properties.length === 1 ? "property" : "properties"}. These are real listings; availability and published prices are shown on each property page.`);
+          cards = assistantCardsForProperties(result.properties);
+          suggestions = ["Compare these properties", "Show rentals", "Talk to a sales consultant", "Request a viewing"];
+        } else {
+          finish(`I did not find a published property matching that search. I will not invent a listing. Try a wider budget or another location, or I can request a human sales specialist.`);
+          suggestions = ["Show all properties", "Talk to a human", "How do I register?"];
+        }
+      }
+    } else if (classification.intent === "client.properties") {
+      setPersona("amara");
+      const { client: foundClient, portfolio } = await assistantClientPortfolio(env, actor);
+      if (!foundClient) {
+        finish("I could not find a client record linked to this login. Please contact customer care so we can link your account.");
+      } else if (!portfolio.properties.length) {
+        finish(`You do not have a property in your portfolio yet, ${foundClient.full_name.split(" ")[0]}. You can add a published property from your dashboard and choose one of its payment plans. Your client reference is ${foundClient.client_reference}.`);
+        cards = [{ title: "Add a property", subtitle: "Browse published listings", meta: "Client dashboard", href: "client-dashboard.html#add-property" }];
+      } else {
+        finish(`You currently have ${portfolio.properties.length} ${portfolio.properties.length === 1 ? "property" : "properties"} in your portfolio. Total contract value is ${formatNGN(portfolio.financials.agreed_price_kobo)}, verified payments are ${formatNGN(portfolio.financials.total_verified_kobo)}, and the outstanding balance is ${formatNGN(portfolio.financials.outstanding_balance_kobo)}.`);
+        cards = portfolio.properties.map(p => ({
+          title: p.title,
+          subtitle: `${p.reference} · ${p.location || "Bliss Legacy"}`,
+          meta: `Paid ${formatNGN(p.verified_kobo)} of ${formatNGN(p.agreed_purchase_price_kobo)} · ${p.progress}%`,
+          href: "client-dashboard.html"
+        }));
+        suggestions = ["What is my next payment?", "Show my payment history", "Add another property"];
+      }
+    } else if (classification.intent === "client.payments") {
+      setPersona("amara");
+      const { client: foundClient, portfolio } = await assistantClientPortfolio(env, actor);
+      if (!foundClient || !portfolio) {
+        finish("I could not find a client record linked to this login. Please contact customer care.");
+      } else {
+        const normalized = assistantNormalizeMessage(text);
+        const verified = await env.DB.prepare(`
+          SELECT id, transaction_ref, amount_kobo, status, method, verified_at, created_at
+          FROM payments WHERE client_id=? AND is_demo=0 ORDER BY created_at DESC LIMIT 5
+        `).bind(foundClient.id).all();
+        const next = await env.DB.prepare(`
+          SELECT s.*, p.title AS property_title FROM payment_schedules s
+          LEFT JOIN properties p ON p.id=s.property_id
+          WHERE s.client_id=? AND s.status='active' ORDER BY s.next_due_date ASC LIMIT 1
+        `).bind(foundClient.id).first();
+        if (/(next|due|schedule|installment)/.test(normalized) && next) {
+          finish(`Your next scheduled payment is ${formatNGN(Number(next.installment_kobo || toKobo(next.installment_amount)))} for ${next.property_title || "your property"}, due on ${String(next.next_due_date).slice(0, 10)}. Your total verified payments are ${formatNGN(portfolio.financials.total_verified_kobo)} and your outstanding balance is ${formatNGN(portfolio.financials.outstanding_balance_kobo)}.`);
+        } else if (/(balance|outstanding|owe)/.test(normalized)) {
+          finish(`Your total contract value is ${formatNGN(portfolio.financials.agreed_price_kobo)}, verified payments are ${formatNGN(portfolio.financials.total_verified_kobo)}, and the outstanding balance is ${formatNGN(portfolio.financials.outstanding_balance_kobo)}.`);
+        } else {
+          const rows = verified.results || [];
+          finish(rows.length
+            ? `Here are your ${rows.length} most recent payment records. Only verified payments count toward your balance.`
+            : "You do not have any payment records yet. Your payment account details are on the virtual account page.");
+          cards = rows.map(p => ({
+            title: formatNGN(Number(p.amount_kobo || 0)),
+            subtitle: `${p.transaction_ref} · ${p.status}`,
+            meta: `Recorded ${String(p.created_at || "").slice(0, 10)}${p.verified_at ? " · verified " + String(p.verified_at).slice(0, 10) : ""}`,
+            href: "client-payments.html"
+          }));
+        }
+        suggestions = ["Show my properties", "What is my next payment?", "Talk to a human"];
+      }
+    } else if (classification.intent === "leads.review") {
+      const summary = await assistantLeadSummary(env, actor, text);
+      if (!summary.allowed) {
+        finish(summary.reason);
+      } else {
+        setPersona("david");
+        finish(summary.count
+          ? `${summary.wantsFollowUp ? "You have" : "Your authorised scope contains"} ${summary.count} ${summary.wantsFollowUp ? "lead(s) that need follow-up" : "open lead(s)"}. I am showing only records inside your assigned scope.`
+          : "There are no matching leads inside your authorised scope right now.");
+        cards = summary.leads.map(l => ({
+          title: l.full_name,
+          subtitle: `${l.lead_reference || "Lead"} · ${l.status}`,
+          meta: [l.phone_number, l.lead_temperature, l.next_follow_up_date ? "follow-up " + String(l.next_follow_up_date).slice(0, 10) : "no follow-up set"].filter(Boolean).join(" · "),
+          href: "leads.html"
+        }));
+        suggestions = ["Which leads need follow-up?", "Show my commission summary", "Talk to a human"];
+      }
+    } else if (classification.intent === "finance.overview") {
+      const summary = await assistantFinanceOverview(env, actor, text);
+      if (!summary.allowed) {
+        finish(summary.reason);
+      } else {
+        setPersona("daniel");
+        const label = summary.wantsPending ? "outstanding or pending transactions" : (summary.wantsMonth ? "verified payments this month" : "verified payments today");
+        finish(`${label.charAt(0).toUpperCase() + label.slice(1)}: ${summary.records} record(s) totalling ${formatNGN(summary.amount_kobo)}. These figures come from the payment ledger inside your authorised scope; I will not announce a payment as successful unless its status is verified.`);
+        cards = summary.payments.map(p => ({
+          title: `${p.client_name || "Client"} · ${formatNGN(Number(p.amount_kobo || 0))}`,
+          subtitle: `${p.transaction_ref} · ${p.status}`,
+          meta: [p.provider, p.verified_at ? "verified " + String(p.verified_at).slice(0, 16) : String(p.created_at || "").slice(0, 16)].filter(Boolean).join(" · "),
+          href: "finance-dashboard.html"
+        }));
+        suggestions = ["Show outstanding transactions", "Show commission summary", "Prepare a report"];
+      }
+    } else if (classification.intent === "finance.commission") {
+      const scope = await resolvePhase6Scope(env, actor);
+      if (!canAccessCommissions(actor) && !canViewOwnCommission(actor) && !canViewReferralCommissions(actor)) {
+        finish("Commission records are restricted to authorised recipients and finance roles.");
+      } else {
+        setPersona("daniel");
+        const summary = await getCommissionSummary(env, scope);
+        finish(`Your authorised commission summary shows ${summary.total_count} entr${summary.total_count === 1 ? "y" : "ies"}: earned ${formatNGN(summary.earned_kobo)}, paid ${formatNGN(summary.paid_kobo)}, and outstanding ${formatNGN(summary.outstanding_kobo)}. I will not describe a commission as payable unless its workflow status supports that.`);
+        suggestions = ["Show today's verified payments", "Prepare a report", "Talk to a human"];
+      }
+    } else if (classification.intent === "management.overview") {
+      const summary = await assistantManagementOverview(env, actor);
+      if (!summary.allowed) {
+        finish(summary.reason);
+      } else {
+        setPersona("ifeoma");
+        finish(`${summary.branchScoped ? "Your branch" : "The company"} currently has ${summary.clients} client(s), ${summary.open_leads} open lead(s) and ${summary.properties} published propert${summary.properties === 1 ? "y" : "ies"}. Verified payments today total ${formatNGN(summary.verified_today_kobo)} across ${summary.verified_today_count} record(s).${summary.commission ? " Commission earned is " + formatNGN(summary.commission.earned_kobo) + " with " + formatNGN(summary.commission.outstanding_kobo) + " outstanding." : ""}`);
+        suggestions = ["Branch performance", "Today's verified payments", "Show commission summary"];
+      }
+    } else if (classification.intent === "team.overview") {
+      const summary = await assistantTeamOverview(env, actor);
+      if (!summary.allowed) {
+        finish(summary.reason);
+      } else {
+        setPersona("david");
+        finish(`Your authorised team scope contains ${summary.members} member(s), ${summary.clients} client(s) and ${summary.open_leads} open lead(s). These figures are calculated with the existing team and reporting scope.`);
+        suggestions = ["Which leads need follow-up?", "Show my commission summary", "Branch performance summary"];
+      }
+    } else if (classification.intent === "branch.overview") {
+      const summary = await assistantBranchOverview(env, actor);
+      if (!summary.allowed) {
+        finish(summary.reason);
+      } else if (summary.branch) {
+        setPersona("ngozi");
+        finish(`${summary.branch.name}: ${summary.clients} client(s), ${summary.open_leads} open lead(s), and ${formatNGN(summary.verified_today_kobo)} verified today. This is limited to your branch scope.`);
+        suggestions = ["Team performance summary", "Today's verified payments", "Talk to a human"];
+      } else {
+        setPersona("ngozi");
+        finish("Here is the authorised branch overview. Only branches you are permitted to see are included.");
+        cards = (summary.branches || []).map(b => ({
+          title: b.name, subtitle: `${b.clients} client(s)`,
+          meta: `Verified today ${formatNGN(Number(b.verified_today_kobo || 0))}`,
+          href: "dashboard.html"
+        }));
+      }
+    } else if (classification.intent === "reports.help") {
+      setPersona("daniel");
+      const role = digitalHumanRole(actor);
+      if (!["Managing Director", "Super Admin", "Finance Officer", "Head Accountant", "Accountant", "Branch Manager"].includes(role)) {
+        finish("Financial reports are restricted to authorised finance and management roles. I can still help you with your account or a property.");
+      } else {
+        finish("I can help prepare a financial report, but private files stay in protected R2 storage and are never exposed as public links. Open the Reports page to choose the report type and PDF or CSV format; the existing report service will authorise and generate it. I will not claim a report exists until that service completes.");
+        cards = [{ title: "Open reports", subtitle: "Generate an authorised PDF or CSV", meta: "Private R2 delivery", href: "reports.html" }];
+        suggestions = ["Show today's verified payments", "Show commission summary", "Talk to a human"];
+      }
+    } else if (classification.intent === "notifications.review") {
+      const all = await assistantNotifications(env, actor, client);
+      const unread = all.filter(n => !n.is_read);
+      finish(unread.length
+        ? `You have ${unread.length} unread notification(s). Only your own notifications are included.`
+        : "You have no unread notifications in the last seven days.");
+      cards = unread.slice(0, 6).map(n => ({
+        title: n.title, subtitle: n.message.slice(0, 140),
+        meta: String(n.created_at || "").slice(0, 16),
+        href: digitalHumanRole(actor) === "Client" ? "client-notifications.html" : "staff-notifications.html"
+      }));
+    } else if (classification.intent === "onboarding.login") {
+      const config = await getSiteConfig(env);
+      if (/(forgot|reset|password)/.test(assistantNormalizeMessage(text))) {
+        finish(`Clients can reset a password with a 6-digit SMS code sent to their registered phone — no email address is required. Open the reset page and choose “Client (phone)”. Staff accounts use the email reset path. If SMS is unavailable, contact customer care${config.phone ? " on " + config.phone : ""}.`);
+        cards = [{ title: "Reset password", subtitle: "Client phone code or staff email token", meta: "Secure reset", href: "forgot-password.html" }];
+      } else {
+        finish("You can sign in with your registered phone number or client reference. If you do not have an email address, that is fine — your phone is the recovery channel for client password resets.");
+        cards = [
+          { title: "Client sign in", subtitle: "Phone or client reference", meta: "Client portal", href: "client-login.html" },
+          { title: "Staff sign in", subtitle: "Staff email account", meta: "Staff portal", href: "login.html" }
+        ];
+      }
+    } else if (classification.intent === "onboarding.signup") {
+      finish("I can guide you through registration. You need your full name, a Nigerian phone number, a password of at least 8 characters, your residential address, state, city and branch. Email is optional, so you can register without one. Your phone number is used for verification and password recovery.");
+      cards = [{ title: "Create a client account", subtitle: "Email is optional", meta: "Takes a few minutes", href: "signup.html" }];
+      suggestions = ["Check my form", "Find a property", "Talk to a human"];
+    } else if (classification.intent === "onboarding.status") {
+      if (!actor || digitalHumanRole(actor) !== "Client") {
+        finish("I can only read an onboarding or approval status for the signed-in client account. Please sign in, or ask customer care to check a staff onboarding application.");
+      } else {
+        const foundClient = client || await getClientForActor(env, actor);
+        if (!foundClient) {
+          finish("I could not find a client record linked to this login. Please contact customer care so we can link your account.");
+        } else {
+          const verified = String(foundClient.verification_status || "pending").toLowerCase();
+          const kyc = String(foundClient.kyc_status || "pending").toLowerCase();
+          const active = Number(actor.is_active === undefined ? 1 : actor.is_active) !== 0;
+          finish(`Your account status is ${foundClient.status || "Active"}. Phone/email trust verification is ${verified}; identity review is ${kyc}. ${active ? "Your portal login is active." : "Your account is currently inactive; customer care can help."} I am reading the real workflow fields, not assuming approval from a submitted form.`);
+          suggestions = ["Show my properties", "What is my next payment?", "Talk to a human"];
+        }
+      }
+    } else if (classification.intent === "form.help") {
+      const form = body.form_context && typeof body.form_context === "object" ? body.form_context : null;
+      const fields = Array.isArray(form && form.fields) ? form.fields.slice(0, 40) : [];
+      const missing = fields.filter(f => f && f.required && !f.filled && !ASSISTANT_SECRET_FIELDS.has(String(f.name || "")))
+        .map(f => ASSISTANT_FORM_FIELD_LABELS[f.name] || String(f.label || f.name || "a required field").slice(0, 60));
+      const invalid = fields.filter(f => f && f.filled && f.valid === false && !ASSISTANT_SECRET_FIELDS.has(String(f.name || "")))
+        .map(f => ASSISTANT_FORM_FIELD_LABELS[f.name] || String(f.label || f.name || "a field").slice(0, 60));
+      if (missing.length) {
+        finish(`I can see the form on this page. The following required item(s) are still missing: ${missing.join(", ")}. I will not read or repeat secret credentials aloud.`);
+      } else if (invalid.length) {
+        finish(`The form is mostly complete. Please check: ${invalid.join(", ")}. I have not submitted anything — you remain in control of the submit button.`);
+      } else if (fields.length) {
+        finish("I do not see any missing required fields in the current form. I have not submitted the form; please review it and submit when you are ready.");
+      } else {
+        finish("Open the form on this page and choose “Check my form” again. I only read field names and completion state — never passwords, BVNs or one-time codes.");
+      }
+    } else if (classification.intent === "company.intro") {
+      setPersona("adaora");
+      finish("Bliss Legacy Limited is a Nigerian property company helping clients discover, reserve and pay for property through verified payment plans, dedicated virtual accounts and a secure client portal. Our published listings, branch network and finance workflows are all inside this platform. I can show you real published properties or guide your registration.");
+      suggestions = ["Find a property", "How do I register?", "Talk to a human"];
+    } else if (classification.intent === "capabilities") {
+      finish(`I am ${digitalHumanPersona(personaKey).name}, part of the Bliss Legacy digital team. I can search real published properties, explain registration and phone-based password recovery, review your own dashboard data according to your role, explain verified payments and commission records, and request a genuine human handover. I cannot change prices, approve payments or grant permissions.`);
+      suggestions = assistantQuickPrompts(actor, page);
+    } else if (classification.intent === "greeting") {
+      finish(assistantGreetingFor(actor, page, personaKey));
+      suggestions = assistantQuickPrompts(actor, page);
+    } else {
+      finish("I can help with published properties, registration, login and phone-based password recovery, your authorised dashboard information, payment and commission records, reports, notifications and a real human handover. I will not guess at records or invent an answer. Which of those would you like?");
+      suggestions = assistantQuickPrompts(actor, page);
+    }
+  } catch (error) {
+    console.error("Assistant intent error", error);
+    finish("I could not complete that request safely. No data was changed. Please try again or ask for a human handover.");
+  }
+
+  const persona = digitalHumanPersona(personaKey);
+  if (reply.startsWith(" ")) reply = reply.trimStart();
+  await env.DB.prepare("UPDATE assistant_conversations SET current_persona=?, page_path=?, context_json=?, updated_at=datetime('now') WHERE id=?")
+    .bind(persona.key, pagePath || null, JSON.stringify({ page: page.key, lastIntent: classification.intent }), conversation.id).run();
+  await assistantStoreMessage(env, conversation.id, "assistant", persona.key, reply, classification.intent, { cards, handover_ref: handover ? handover.ref : null });
+  return {
+    ok: true,
+    conversation_ref: conversation.conversation_ref,
+    persona: digitalHumanPublicPersona(persona),
+    reply,
+    speech: (speech || reply).trim(),
+    cards,
+    suggestions: suggestions.filter(Boolean).slice(0, 5),
+    handover: handover ? {
+      ref: handover.ref, status: handover.status, department: handover.department,
+      assigned_name: handover.assigned ? handover.assigned.full_name : null,
+      assigned_role: handover.assigned ? handover.assigned.role_name : null
+    } : null,
+    action,
+    page_context: page
+  };
 }
 
 async function handleFetch(request, env) {
@@ -9724,6 +10861,225 @@ async function handleFetch(request, env) {
       }
 
       return json({ ok: true, message: "Profile updated successfully." });
+    }
+
+    if (path === "/api/client/properties" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor || actor.role_name !== "Client") return json({ error: "Forbidden" }, 403);
+      const client = await getClientForActor(env, actor);
+      if (!client) return json({ error: "Client record not found" }, 404);
+      const body = await request.json().catch(() => ({}));
+      const propertyId = Number(body.property_id);
+      if (!Number.isInteger(propertyId) || propertyId <= 0) return json({ error: "Select a property to add" }, 400);
+
+      const property = await env.DB.prepare(`
+        SELECT p.*, pc.name AS category_name FROM properties p
+        LEFT JOIN property_categories pc ON pc.id=p.category_id
+        WHERE p.id=? AND p.is_published=1 AND p.is_archived=0 AND p.is_internal_test=0
+        LIMIT 1
+      `).bind(propertyId).first();
+      if (!property) return json({ error: "This property is not available for self-service allocation" }, 404);
+
+      const { results: plans } = await env.DB.prepare(
+        "SELECT * FROM property_payment_plans WHERE property_id=? AND is_enabled=1 ORDER BY total_price_kobo ASC"
+      ).bind(propertyId).all();
+      let selectedPlan = null;
+      if (plans.length) {
+        const planId = Number(body.plan_id);
+        selectedPlan = plans.find(plan => Number(plan.id) === planId) || null;
+        if (!selectedPlan) return json({ error: "Select one of the payment plans offered for this property" }, 400);
+      }
+      const agreedKobo = selectedPlan
+        ? Number(selectedPlan.total_price_kobo || 0)
+        : toKobo(property.promotional_price || property.sale_price || 0);
+      if (!Number.isInteger(agreedKobo) || agreedKobo <= 0) {
+        return json({ error: "This property has no published price yet. Please contact our sales team." }, 409);
+      }
+
+      const existing = await env.DB.prepare(
+        "SELECT id, status FROM client_properties WHERE client_id=? AND property_id=?"
+      ).bind(client.id, propertyId).first();
+      if (existing && existing.status !== "Cancelled") {
+        return json({ error: "This property is already in your portfolio", allocation_id: existing.id }, 409);
+      }
+      const count = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM client_properties WHERE client_id=? AND status NOT IN ('Cancelled')"
+      ).bind(client.id).first();
+      if (Number(count ? count.c : 0) >= 10) {
+        return json({ error: "A portfolio can hold up to 10 active properties. Please contact customer care." }, 409);
+      }
+
+      let allocationId;
+      if (selectedPlan) {
+        const snapshot = propertyPlanSnapshot(selectedPlan);
+        if (existing) {
+          await env.DB.prepare(`
+            UPDATE client_properties SET agreed_purchase_price=?, status='Active',
+              property_payment_plan_id=?, plan_type=?, plan_total_kobo=?, plan_deposit_kobo=?,
+              plan_installment_kobo=?, plan_duration_months=?, plan_number_of_installments=?,
+              plan_locked_at=?, plan_locked_json=?, updated_at=datetime('now')
+            WHERE id=?
+          `).bind(
+            fromKobo(snapshot.total_price_kobo), selectedPlan.id, snapshot.plan_type,
+            snapshot.total_price_kobo, snapshot.deposit_kobo, snapshot.installment_kobo,
+            snapshot.duration_months, snapshot.number_of_installments,
+            snapshot.locked_at, JSON.stringify(snapshot), existing.id
+          ).run();
+          allocationId = existing.id;
+        } else {
+          const inserted = await env.DB.prepare(`
+            INSERT INTO client_properties
+              (client_id, property_id, agreed_purchase_price, status, property_payment_plan_id,
+               plan_type, plan_total_kobo, plan_deposit_kobo, plan_installment_kobo,
+               plan_duration_months, plan_number_of_installments, plan_locked_at, plan_locked_json,
+               created_at, updated_at)
+            VALUES (?, ?, ?, 'Active', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+          `).bind(
+            client.id, propertyId, fromKobo(snapshot.total_price_kobo), selectedPlan.id,
+            snapshot.plan_type, snapshot.total_price_kobo, snapshot.deposit_kobo,
+            snapshot.installment_kobo, snapshot.duration_months,
+            snapshot.number_of_installments, snapshot.locked_at, JSON.stringify(snapshot)
+          ).run();
+          allocationId = inserted.meta.last_row_id;
+        }
+        const existingSchedule = await env.DB.prepare(
+          "SELECT id FROM payment_schedules WHERE client_id=? AND property_id=? AND status='active' LIMIT 1"
+        ).bind(client.id, propertyId).first();
+        if (!existingSchedule) {
+          const scheduleResult = await createScheduleFromPropertyPlan(
+            env, client, selectedPlan, actor.id, dateOnly(body.start_date) || todayOnly(), propertyId
+          );
+          if (scheduleResult && scheduleResult.error) {
+            if (existing) {
+              await env.DB.prepare("UPDATE client_properties SET status='Cancelled', updated_at=datetime('now') WHERE id=?")
+                .bind(existing.id).run();
+            } else {
+              await env.DB.prepare("DELETE FROM client_properties WHERE id=?").bind(allocationId).run();
+            }
+            return json({ error: scheduleResult.error }, 400);
+          }
+        }
+      } else {
+        if (existing) {
+          await env.DB.prepare(`
+            UPDATE client_properties SET agreed_purchase_price=?, status='Active',
+              property_payment_plan_id=NULL, plan_type=NULL, plan_total_kobo=NULL, plan_deposit_kobo=NULL,
+              plan_installment_kobo=NULL, plan_duration_months=NULL, plan_number_of_installments=NULL,
+              plan_locked_at=NULL, plan_locked_json=NULL, updated_at=datetime('now') WHERE id=?
+          `).bind(fromKobo(agreedKobo), existing.id).run();
+          allocationId = existing.id;
+        } else {
+          const inserted = await env.DB.prepare(`
+            INSERT INTO client_properties (client_id, property_id, agreed_purchase_price, status)
+            VALUES (?, ?, ?, 'Active')
+          `).bind(client.id, propertyId, fromKobo(agreedKobo)).run();
+          allocationId = inserted.meta.last_row_id;
+        }
+      }
+
+      // Legacy screens read the clients row for the primary property. Only
+      // populate that fallback when the client had no primary allocation.
+      if (!client.interested_property_id) {
+        await env.DB.prepare(`
+          UPDATE clients SET interested_property_id=?, agreed_purchase_price=?,
+            property_payment_plan_id=?, payment_plan_type=?, payment_plan_total_kobo=?,
+            payment_plan_locked_at=?, updated_at=datetime('now')
+          WHERE id=?
+        `).bind(
+          propertyId, fromKobo(agreedKobo),
+          selectedPlan ? selectedPlan.id : null,
+          selectedPlan ? normalizePlanType(selectedPlan.plan_type) : null,
+          agreedKobo,
+          selectedPlan ? new Date().toISOString() : null,
+          client.id
+        ).run();
+      }
+
+      await audit(env, actor.id, "client.property.self_add", "client_property", String(allocationId), {
+        client_id: client.id, property_id: propertyId, plan_id: selectedPlan ? selectedPlan.id : null,
+        agreed_price_kobo: agreedKobo, source: "client_portal"
+      }, client.assigned_branch_id);
+
+      await createNotification(env, {
+        clientId: client.id,
+        type: "property.added",
+        title: "Property added to your portfolio",
+        message: `${property.title} (${property.reference}) has been added to your portfolio${selectedPlan ? " with the selected payment plan" : ""}.`,
+        metadata: { property_id: propertyId, allocation_id: allocationId, plan_id: selectedPlan ? selectedPlan.id : null }
+      }).catch(() => {});
+
+      const notifyIds = new Set();
+      if (client.original_marketer_id) notifyIds.add(Number(client.original_marketer_id));
+      if (property.branch_id) {
+        const { results: managers } = await env.DB.prepare(`
+          SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+          WHERE u.is_active=1 AND u.branch_id=? AND r.name IN ('Branch Manager','Team Lead')
+          LIMIT 5
+        `).bind(property.branch_id).all();
+        for (const manager of managers || []) notifyIds.add(Number(manager.id));
+      }
+      for (const userId of notifyIds) {
+        if (!userId || Number(userId) === Number(actor.id)) continue;
+        await createNotification(env, {
+          userId,
+          type: "client.property.added",
+          title: "Client added another property",
+          message: `${client.full_name} (${client.client_reference}) added ${property.title} (${property.reference}) to their portfolio.`,
+          metadata: { client_id: client.id, property_id: propertyId, allocation_id: allocationId }
+        }).catch(() => {});
+      }
+
+      const portfolio = await buildClientPropertyPortfolio(env, client);
+      return json({
+        ok: true,
+        message: "Property added to your portfolio.",
+        allocation_id: allocationId,
+        property: portfolio.properties.find(p => Number(p.property_id) === propertyId) || null,
+        portfolio
+      });
+    }
+
+    const clientPropertyPaymentMatch = path.match(/^\/api\/client\/properties\/(\d+)\/payment-account$/);
+    if (clientPropertyPaymentMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor || actor.role_name !== "Client") return json({ error: "Forbidden" }, 403);
+      const client = await getClientForActor(env, actor);
+      if (!client) return json({ error: "Client record not found" }, 404);
+      const allocation = await env.DB.prepare(`
+        SELECT cp.*, p.title, p.reference FROM client_properties cp
+        JOIN properties p ON p.id=cp.property_id
+        WHERE cp.id=? AND cp.client_id=? LIMIT 1
+      `).bind(clientPropertyPaymentMatch[1], client.id).first();
+      if (!allocation) return json({ error: "Property allocation not found" }, 404);
+      if (allocation.status === "Cancelled") return json({ error: "This allocation is cancelled" }, 409);
+      const paid = await env.DB.prepare(`
+        SELECT COALESCE(SUM(amount_kobo),0) AS total FROM payments
+        WHERE client_id=? AND property_id=? AND status='verified' AND is_demo=0 AND currency='NGN'
+      `).bind(client.id, allocation.property_id).first();
+      const contractKobo = toKobo(allocation.agreed_purchase_price || 0);
+      if (contractKobo <= 0) return json({ error: "This property has no agreed price yet. Please contact finance." }, 409);
+      const outstandingKobo = Math.max(0, contractKobo - Number(paid ? paid.total : 0));
+      if (outstandingKobo < 10000) return json({ error: "This property is already fully paid." }, 400);
+      const body = await request.json().catch(() => ({}));
+      const amountKobo = body.amount !== undefined && body.amount !== null && body.amount !== ""
+        ? toKobo(body.amount) : outstandingKobo;
+      if (!Number.isInteger(amountKobo) || amountKobo < 10000) return json({ error: "An amount of at least ₦100 is required" }, 400);
+      if (amountKobo > outstandingKobo) return json({ error: "Amount cannot exceed this property's outstanding balance" }, 400);
+      try {
+        const account = await createAlatpayVirtualAccount(env, client, amountKobo, actor.id, allocation.property_id);
+        await createNotification(env, {
+          clientId: client.id,
+          type: "payment.virtual_account",
+          title: "Property payment account created",
+          message: `A dedicated ALATPay account was created for ${formatNGN(amountKobo)} towards ${allocation.title} (${allocation.reference}).`,
+          metadata: { property_id: allocation.property_id, allocation_id: allocation.id, order_id: account.order_id, account_number: account.account_number }
+        }).catch(() => {});
+        return json({ ok: true, ...account, property_title: allocation.title, property_reference: allocation.reference, outstanding_kobo: outstandingKobo, client_reference: client.client_reference });
+      } catch (error) {
+        return json({ error: error.message || "Unable to create a payment account" }, error.status || 502);
+      }
     }
 
     // 4. Client My Property Page
@@ -15531,6 +16887,387 @@ async function handleFetch(request, env) {
           "Cache-Control": "private, no-store"
         }
       });
+    }
+
+    // =========================================================================
+    // DIGITAL HUMAN ECOSYSTEM
+    // =========================================================================
+    if (path === "/api/assistant/bootstrap" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      const role = digitalHumanRole(actor);
+      const passwordGate = assistantPasswordGate(actor);
+      const client = actor && role === "Client" && !passwordGate ? await getClientForActor(env, actor) : null;
+      const pageParam = String(url.searchParams.get("page") || "").slice(0, 200);
+      const page = assistantPageContext(pageParam);
+      const visitorId = String(url.searchParams.get("visitor") || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80);
+
+      let prefs = null;
+      if (actor) {
+        prefs = await env.DB.prepare("SELECT * FROM assistant_preferences WHERE user_id=?").bind(actor.id).first();
+      }
+      let conversation = null;
+      if (actor) {
+        conversation = await env.DB.prepare(
+          "SELECT * FROM assistant_conversations WHERE user_id=? ORDER BY id DESC LIMIT 1"
+        ).bind(actor.id).first();
+      } else if (visitorId) {
+        conversation = await env.DB.prepare(
+          "SELECT * FROM assistant_conversations WHERE visitor_id=? AND user_id IS NULL ORDER BY id DESC LIMIT 1"
+        ).bind(visitorId).first();
+      }
+      let messages = [];
+      if (passwordGate) { conversation = null; messages = []; }
+      if (conversation) {
+        const { results } = await env.DB.prepare(`
+          SELECT role, persona_key, content, intent, metadata_json, created_at
+          FROM assistant_messages WHERE conversation_id=? ORDER BY id DESC LIMIT 30
+        `).bind(conversation.id).all();
+        messages = (results || []).reverse().map(row => {
+          let metadata = null;
+          try { metadata = row.metadata_json ? JSON.parse(row.metadata_json) : null; } catch {}
+          return {
+            role: row.role, persona: row.persona_key, content: row.content,
+            intent: row.intent, created_at: row.created_at,
+            cards: metadata && Array.isArray(metadata.cards) ? metadata.cards : []
+          };
+        });
+      }
+      const preferredPersona = prefs && prefs.preferred_persona && DIGITAL_HUMAN_PERSONA_MAP[prefs.preferred_persona]
+        ? prefs.preferred_persona
+        : (conversation ? conversation.current_persona : assistantDefaultPersona(actor));
+      const persona = digitalHumanPersona(preferredPersona);
+
+      const pendingHandovers = [];
+      const activeHandovers = [];
+      if (actor && role !== "Client" && !passwordGate) {
+        const { results: assigned } = await env.DB.prepare(`
+          SELECT h.id, h.handover_ref, h.department, h.status, h.summary, h.created_at,
+                 c.full_name AS client_name, c.client_reference
+          FROM assistant_handovers h LEFT JOIN clients c ON c.id=h.client_id
+          WHERE h.assigned_user_id=? AND h.status IN ('pending','accepted')
+          ORDER BY h.id DESC LIMIT 5
+        `).bind(actor.id).all();
+        pendingHandovers.push(...(assigned || []));
+      }
+      if (actor && !passwordGate) {
+        const { results: mine } = await env.DB.prepare(`
+          SELECT id, handover_ref, department, status, accepted_at, created_at
+          FROM assistant_handovers
+          WHERE requested_by_user_id=? OR (client_id IS NOT NULL AND client_id=?)
+          ORDER BY id DESC LIMIT 3
+        `).bind(actor.id, client ? client.id : -1).all();
+        activeHandovers.push(...(mine || []));
+      }
+
+      const siteConfig = await getSiteConfig(env);
+      let staffAvailability = null;
+      if (actor && role !== "Client") {
+        const availabilityRow = await env.DB.prepare("SELECT availability_status FROM staff_profiles WHERE user_id=?")
+          .bind(actor.id).first();
+        staffAvailability = availabilityRow && availabilityRow.availability_status
+          ? availabilityRow.availability_status : "available";
+      }
+      if (actor && role !== "Client" && !staffAvailability) {
+        staffAvailability = "available";
+      }
+      return json({
+        ok: true,
+        authenticated: Boolean(actor),
+        staff_availability: staffAvailability,
+        role,
+        user: actor ? {
+          id: actor.id, full_name: actor.full_name, role,
+          branch_id: actor.branch_id || null, client_reference: client ? client.client_reference : null
+        } : null,
+        personas: DIGITAL_HUMAN_PERSONAS.map(digitalHumanPublicPersona),
+        default_persona: assistantDefaultPersona(actor),
+        persona: digitalHumanPublicPersona(persona),
+        greeting: passwordGate
+          ? "Your account is using a temporary password. Change it in your profile before I can discuss your portfolio, payments or account details."
+          : assistantGreetingFor(actor, page, persona.key),
+        password_change_required: passwordGate,
+        page,
+        quick_prompts: passwordGate ? ["Change my password", "Talk to a human"] : assistantQuickPrompts(actor, page),
+        conversation_ref: conversation ? conversation.conversation_ref : null,
+        messages,
+        preferences: {
+          muted: prefs ? Number(prefs.muted) === 1 : false,
+          voice_enabled: prefs ? Number(prefs.voice_enabled) === 1 : true,
+          rate: prefs ? Number(prefs.speech_rate || 1) : 1,
+          pitch: prefs ? Number(prefs.speech_pitch || 1) : 1,
+          volume: prefs ? Number(prefs.speech_volume || 1) : 1,
+          preferred_persona: prefs ? prefs.preferred_persona : null
+        },
+        pending_handovers: pendingHandovers,
+        my_handovers: activeHandovers,
+        company: {
+          name: "Bliss Legacy Limited",
+          phone: siteConfig.phone || "",
+          email: siteConfig.email || "",
+          whatsapp: siteConfig.whatsapp || ""
+        },
+        voice_note: "Voice uses the browser's free SpeechRecognition and SpeechSynthesis APIs. Availability differs by browser and operating system. Text input always works."
+      });
+    }
+
+    if (path === "/api/assistant/message" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      const role = digitalHumanRole(actor);
+      if (assistantPasswordGate(actor)) {
+        return json({
+          ok: true,
+          persona: digitalHumanPublicPersona(assistantDefaultPersona(actor)),
+          reply: "For your security, you must change the temporary password before I can discuss your portfolio, payments or account details. No account data has been read.",
+          speech: "For your security, please change the temporary password in your profile first.",
+          cards: [{ title: "Change temporary password", subtitle: "Required before portal access", meta: "Client profile", href: "client-profile.html?force=1" }],
+          suggestions: ["Change my password", "Talk to a human"],
+          handover: null,
+          action: null,
+          page_context: assistantPageContext("/client-profile.html")
+        });
+      }
+      const client = actor && role === "Client" ? await getClientForActor(env, actor) : null;
+      const body = await request.json().catch(() => ({}));
+      if (body.form_context && typeof body.form_context === "object") {
+        const fields = Array.isArray(body.form_context.fields) ? body.form_context.fields.slice(0, 40) : [];
+        body.form_context = {
+          page: String(body.form_context.page || "").slice(0, 120),
+          step: String(body.form_context.step || "").slice(0, 80),
+          fields: fields.map(field => ({
+            name: String(field && field.name || "").slice(0, 60),
+            label: String(field && field.label || "").slice(0, 60),
+            type: String(field && field.type || "").slice(0, 30),
+            required: Boolean(field && field.required),
+            filled: Boolean(field && field.filled),
+            valid: field && field.valid === false ? false : true
+          }))
+        };
+      }
+      const result = await handleAssistantMessage(env, request, actor, client, body);
+      if (result.error) return json({ error: result.error }, result.error.startsWith("The assistant is receiving") ? 429 : 400);
+      return json(result);
+    }
+
+    if (path === "/api/assistant/preferences" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const body = await request.json().catch(() => ({}));
+      const muted = isTruthy(body.muted) ? 1 : 0;
+      const voiceEnabled = body.voice_enabled === undefined || isTruthy(body.voice_enabled) ? 1 : 0;
+      const clamp = (value, min, max, fallback) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+      };
+      const rate = clamp(body.rate, 0.6, 1.6, 1);
+      const pitch = clamp(body.pitch, 0.6, 1.6, 1);
+      const volume = clamp(body.volume, 0, 1, 1);
+      const preferred = body.preferred_persona && DIGITAL_HUMAN_PERSONA_MAP[String(body.preferred_persona)]
+        ? String(body.preferred_persona) : null;
+      await env.DB.prepare(`
+        INSERT INTO assistant_preferences (user_id, muted, voice_enabled, speech_rate, speech_pitch, speech_volume, preferred_persona, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(user_id) DO UPDATE SET
+          muted=excluded.muted, voice_enabled=excluded.voice_enabled, speech_rate=excluded.speech_rate,
+          speech_pitch=excluded.speech_pitch, speech_volume=excluded.speech_volume,
+          preferred_persona=excluded.preferred_persona, updated_at=datetime('now')
+      `).bind(actor.id, muted, voiceEnabled, rate, pitch, volume, preferred).run();
+      return json({ ok: true, preferences: { muted: Boolean(muted), voice_enabled: Boolean(voiceEnabled), rate, pitch, volume, preferred_persona: preferred } });
+    }
+
+    if (path === "/api/assistant/events" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor || assistantPasswordGate(actor)) return json({ events: [] });
+      const role = digitalHumanRole(actor);
+      const client = role === "Client" ? await getClientForActor(env, actor) : null;
+      const all = await assistantNotifications(env, actor, client);
+      const unread = all.filter(n => !n.is_read);
+      let acked = new Set();
+      if (unread.length) {
+        const keys = unread.map(n => n.key);
+        const placeholders = keys.map(() => "?").join(",");
+        const { results } = await env.DB.prepare(
+          `SELECT event_key FROM assistant_event_acks WHERE user_id=? AND event_key IN (${placeholders})`
+        ).bind(actor.id, ...keys).all();
+        acked = new Set((results || []).map(row => row.event_key));
+      }
+      return json({ events: unread.filter(n => !acked.has(n.key)).slice(0, 8) });
+    }
+
+    if (path === "/api/assistant/events/ack" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const body = await request.json().catch(() => ({}));
+      const keys = Array.isArray(body.keys) ? body.keys.filter(k => /^notification:\d+$/.test(String(k))).slice(0, 20) : [];
+      for (const key of keys) {
+        await env.DB.prepare("INSERT OR IGNORE INTO assistant_event_acks (user_id, event_key) VALUES (?, ?)")
+          .bind(actor.id, key).run();
+      }
+      return json({ ok: true, acknowledged: keys.length });
+    }
+
+    if (path === "/api/assistant/handovers" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (assistantPasswordGate(actor)) return json({ error: "Password change required", code: "PASSWORD_CHANGE_REQUIRED" }, 403);
+      const role = digitalHumanRole(actor);
+      if (role === "Client") return json({ error: "Forbidden" }, 403);
+      const allowedRoles = {
+        "Customer Care": ["Customer Care"],
+        Sales: ["Marketer", "Team Lead", "Branch Manager", "Managing Director", "Super Admin"],
+        Finance: ["Finance Officer", "Head Accountant", "Accountant", "Managing Director", "Super Admin"],
+        Management: ["Managing Director", "Super Admin", "Branch Manager", "Project Manager"],
+        "Branch Operations": ["Branch Manager", "Project Manager", "Managing Director", "Super Admin"]
+      };
+      const departments = Object.entries(allowedRoles).filter(([, roles]) => roles.includes(role)).map(([dept]) => dept);
+      const departmentPlaceholders = departments.map(() => "?").join(",") || "NULL";
+      const { results } = await env.DB.prepare(`
+        SELECT h.id, h.handover_ref, h.department, h.status, h.summary, h.created_at,
+               c.full_name AS client_name, c.client_reference,
+               u.full_name AS requested_by_name
+        FROM assistant_handovers h
+        LEFT JOIN clients c ON c.id=h.client_id
+        LEFT JOIN users u ON u.id=h.requested_by_user_id
+        WHERE h.status IN ('pending','unassigned')
+          AND (h.assigned_user_id=? OR (h.assigned_user_id IS NULL AND h.department IN (${departmentPlaceholders})))
+        ORDER BY h.id DESC LIMIT 20
+      `).bind(actor.id, ...departments).all();
+      return json({ handovers: results || [] });
+    }
+
+    const assistantHandoverMatch = path.match(/^\/api\/assistant\/handovers\/(\d+)$/);
+    if (assistantHandoverMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const handover = await env.DB.prepare("SELECT * FROM assistant_handovers WHERE id=?").bind(assistantHandoverMatch[1]).first();
+      if (!handover) return json({ error: "Handover not found" }, 404);
+      const role = digitalHumanRole(actor);
+      const isRequester = Number(handover.requested_by_user_id) === Number(actor.id);
+      const isStaff = role !== "Client" && (Number(handover.assigned_user_id) === Number(actor.id) || Number(handover.accepted_by_user_id) === Number(actor.id));
+      if (role === "Client" && !isRequester) return json({ error: "Forbidden" }, 403);
+      if (role !== "Client" && !isStaff && !["Managing Director", "Super Admin"].includes(role)) return json({ error: "Forbidden" }, 403);
+      const { results: messages } = await env.DB.prepare(`
+        SELECT role, persona_key, content, created_at FROM assistant_messages
+        WHERE conversation_id=? ORDER BY id ASC LIMIT 60
+      `).bind(handover.conversation_id).all();
+      return json({ handover, messages: messages || [] });
+    }
+
+    const assistantHandoverAcceptMatch = path.match(/^\/api\/assistant\/handovers\/(\d+)\/accept$/);
+    if (assistantHandoverAcceptMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const role = digitalHumanRole(actor);
+      if (role === "Client") return json({ error: "Forbidden" }, 403);
+      const handover = await env.DB.prepare("SELECT * FROM assistant_handovers WHERE id=?").bind(assistantHandoverAcceptMatch[1]).first();
+      if (!handover) return json({ error: "Handover not found" }, 404);
+      if (handover.status === "accepted") {
+        if (Number(handover.accepted_by_user_id) === Number(actor.id)) {
+          return json({ ok: true, handover, already_accepted: true });
+        }
+        return json({ error: "This handover was already accepted" }, 409);
+      }
+      if (!["pending", "unassigned"].includes(handover.status)) return json({ error: "This handover is no longer open" }, 409);
+      if (handover.assigned_user_id && Number(handover.assigned_user_id) !== Number(actor.id) && !["Managing Director", "Super Admin"].includes(role)) {
+        return json({ error: "This handover is assigned to another staff member" }, 403);
+      }
+      if (!handover.assigned_user_id) {
+        const allowedRoles = {
+          "Customer Care": ["Customer Care"],
+          Sales: ["Marketer", "Team Lead", "Branch Manager", "Managing Director", "Super Admin"],
+          Finance: ["Finance Officer", "Head Accountant", "Accountant", "Managing Director", "Super Admin"],
+          Management: ["Managing Director", "Super Admin", "Branch Manager", "Project Manager"],
+          "Branch Operations": ["Branch Manager", "Project Manager", "Managing Director", "Super Admin"]
+        };
+        if (!(allowedRoles[handover.department] || []).includes(role)) return json({ error: "Your role cannot accept this handover" }, 403);
+      }
+      await env.DB.prepare(`
+        UPDATE assistant_handovers SET status='accepted', accepted_by_user_id=?, assigned_user_id=COALESCE(assigned_user_id, ?),
+          accepted_at=datetime('now') WHERE id=?
+      `).bind(actor.id, actor.id, handover.id).run();
+      const updated = await env.DB.prepare("SELECT * FROM assistant_handovers WHERE id=?").bind(handover.id).first();
+      if (updated.client_id) {
+        await createNotification(env, {
+          clientId: updated.client_id,
+          type: "assistant.handover.accepted",
+          title: "A Bliss Legacy staff member joined your conversation",
+          message: `${actor.full_name} (${role}) accepted your handover request ${updated.handover_ref}. You can now continue with a real staff member.`,
+          metadata: { handover_id: updated.id, handover_ref: updated.handover_ref, staff_id: actor.id }
+        }).catch(() => {});
+      }
+      if (updated.requested_by_user_id && Number(updated.requested_by_user_id) !== Number(actor.id)) {
+        await createNotification(env, {
+          userId: updated.requested_by_user_id,
+          type: "assistant.handover.accepted",
+          title: "Handover accepted",
+          message: `${actor.full_name} accepted handover ${updated.handover_ref}.`,
+          metadata: { handover_id: updated.id, handover_ref: updated.handover_ref, staff_id: actor.id }
+        }).catch(() => {});
+      }
+      await audit(env, actor.id, "assistant.handover.accept", "assistant_handover", String(updated.id), {
+        handover_ref: updated.handover_ref, department: updated.department
+      }, updated.branch_id || actor.branch_id || null);
+      return json({ ok: true, handover: updated });
+    }
+
+    const assistantHandoverDeclineMatch = path.match(/^\/api\/assistant\/handovers\/(\d+)\/decline$/);
+    if (assistantHandoverDeclineMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const role = digitalHumanRole(actor);
+      if (role === "Client") return json({ error: "Forbidden" }, 403);
+      const handover = await env.DB.prepare("SELECT * FROM assistant_handovers WHERE id=?").bind(assistantHandoverDeclineMatch[1]).first();
+      if (!handover) return json({ error: "Handover not found" }, 404);
+      if (handover.assigned_user_id && Number(handover.assigned_user_id) !== Number(actor.id) && !["Managing Director", "Super Admin"].includes(role)) {
+        return json({ error: "This handover is assigned to another staff member" }, 403);
+      }
+      await env.DB.prepare(`
+        UPDATE assistant_handovers SET status='unassigned', assigned_user_id=NULL, declined_at=datetime('now') WHERE id=?
+      `).bind(handover.id).run();
+      await audit(env, actor.id, "assistant.handover.decline", "assistant_handover", String(handover.id), {
+        handover_ref: handover.handover_ref
+      }, handover.branch_id || actor.branch_id || null);
+      return json({ ok: true, handover: { ...handover, status: "unassigned", assigned_user_id: null } });
+    }
+
+    if (path === "/api/assistant/handover-status" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (assistantPasswordGate(actor)) return json({ error: "Password change required", code: "PASSWORD_CHANGE_REQUIRED" }, 403);
+      const role = digitalHumanRole(actor);
+      const client = role === "Client" ? await getClientForActor(env, actor) : null;
+      const handover = await env.DB.prepare(`
+        SELECT h.id, h.handover_ref, h.status, h.department, h.summary, h.created_at, h.accepted_at,
+               u.full_name AS accepted_by_name, r.name AS accepted_by_role
+        FROM assistant_handovers h
+        LEFT JOIN users u ON u.id=h.accepted_by_user_id
+        LEFT JOIN roles r ON r.id=u.role_id
+        WHERE h.requested_by_user_id=? OR (h.client_id IS NOT NULL AND h.client_id=?)
+        ORDER BY h.id DESC LIMIT 1
+      `).bind(actor.id, client ? client.id : -1).first();
+      return json({ handover: handover || null });
+    }
+
+    if (path === "/api/assistant/availability" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (digitalHumanRole(actor) === "Client") return json({ error: "Forbidden" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const status = ["available", "busy", "away"].includes(String(body.status || "").toLowerCase())
+        ? String(body.status).toLowerCase() : "available";
+      await env.DB.prepare(`
+        INSERT INTO staff_profiles (user_id, availability_status, availability_updated_at, updated_at)
+        VALUES (?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(user_id) DO UPDATE SET
+          availability_status=excluded.availability_status,
+          availability_updated_at=datetime('now'), updated_at=datetime('now')
+      `).bind(actor.id, status).run();
+      return json({ ok: true, status });
     }
 
     // Unknown API routes must never fall through to static assets.

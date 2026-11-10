@@ -212,7 +212,7 @@ credentials, account numbers, or claims of live integration).
 - Session cookie: `HttpOnly; Secure; SameSite=Lax`, 8-hour server-side expiry; logout deletes the session server-side.
 - No passwords or session tokens are written to localStorage.
 - Password reset tokens are server-side, single-use, expire, and invalidate all sessions. Authenticated password change invalidates all other sessions.
-- Login brute-force throttling: 10 failures in 15 minutes returns 429 (audit-log backed).
+- Login brute-force throttling: 5 failures per account and 10 per IP in 15 minutes returns 429 (audit-log backed).
 
 ### Client portal
 - Dashboard: welcome/full name, client reference, profile info, allocated/reserved property (title, reference, location, contract price), verified total, outstanding balance, payment progress, next-payment section, virtual-account status and recent in-app notifications.

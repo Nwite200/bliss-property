@@ -1,6 +1,6 @@
 /* Bliss Legacy Limited — PWA service worker.
    Static assets only. API and authenticated financial data are never cached. */
-const CACHE_VERSION = "bliss-pwa-v5";
+const CACHE_VERSION = "bliss-pwa-v8";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/",
@@ -13,8 +13,19 @@ const CORE_ASSETS = [
   "/assets/js/pwa.js",
   "/assets/js/mobile-nav.js",
   "/assets/js/components.js",
+  "/assets/js/digital-human.js",
+  "/assets/css/digital-human.css",
   "/assets/js/data/properties.js",
   "/assets/images/bliss-legacy-logo.png",
+  "/assets/images/personas/adaora.jpg",
+  "/assets/images/personas/solomon.jpg",
+  "/assets/images/personas/chiamaka.jpg",
+  "/assets/images/personas/emeka.jpg",
+  "/assets/images/personas/amara.jpg",
+  "/assets/images/personas/david.jpg",
+  "/assets/images/personas/ngozi.jpg",
+  "/assets/images/personas/daniel.jpg",
+  "/assets/images/personas/ifeoma.jpg",
   "/assets/icons/icon-192.png",
   "/assets/icons/icon-512.png",
   "/assets/icons/icon-maskable-512.png",

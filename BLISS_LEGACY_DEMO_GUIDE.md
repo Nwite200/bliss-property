@@ -4,7 +4,7 @@
 
 **Local application URL:** `http://localhost:8787`
 
-**Live staging URL:** `https://bliss-property.easterntechexpo.workers.dev`
+**Live staging URL:** `https://bliss-property.blisslegacyfiles.workers.dev`
 
 **Staging accounts:** `staging.md@blisslegacy.test`, `staging.bm@blisslegacy.test`, `staging.tl@blisslegacy.test`, `staging.marketer@blisslegacy.test`, `staging.finance@blisslegacy.test`, `staging.client@blisslegacy.test`. The staging password is supplied in the secure handover/final response only.
 
@@ -263,7 +263,7 @@ The staging site is installable on iPhone, iPad and Android.
 - The site also shows an **Install app** / **Add to Home Screen** button when the browser supports installation.
 - Installed mode opens without browser chrome and caches the app shell for the branded offline fallback.
 - Live API data, receipts, reports and financial records are **not** cached.
-- Offline fallback: `https://bliss-property.easterntechexpo.workers.dev/offline`
+- Offline fallback: `https://bliss-property.blisslegacyfiles.workers.dev/offline`
 
 PWA files:
 

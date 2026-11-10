@@ -8,13 +8,13 @@ Use this checklist before staging and again before production. Do not tick an it
 
 - [x] Phase 1–7 functionality preserved.
 - [x] Phase 8 integration and security suite added.
-- [x] Full local regression suite passes: **145 passed, 0 failed, 0 skipped**.
+- [x] Full local regression suite passes: **226 passed, 0 failed, 0 skipped** (including 32 digital-human / multi-property tests).
 - [x] JavaScript syntax checks pass.
 - [x] Inline HTML scripts syntax-checked.
 - [x] `git diff --check` clean.
 - [x] No secrets, local databases, logs or temporary audit files in the working tree.
 - [x] `.dev.vars` ignored and untracked.
-- [x] All nine local migrations reproduce on a clean SQLite database.
+- [x] All thirty local migrations reproduce on a clean SQLite database.
 - [x] Clean migration database passes integrity and foreign-key checks.
 - [ ] Phase 8 changes committed and reviewed.
 - [ ] Phase 8 pushed to GitHub after explicit authorization.
@@ -31,7 +31,7 @@ Use this checklist before staging and again before production. Do not tick an it
 - [ ] Create production KV namespace and replace `REPLACE_WITH_KV_NAMESPACE_ID`.
 - [ ] Create Queue `bliss-legacy-tasks` for producer and consumer.
 - [ ] Confirm Workers Static Assets binding `ASSETS` serves only intended files.
-- [ ] Confirm `.assetsignore` excludes `src`, `migrations`, tests, docs, `.dev.vars` and local state.
+- [x] Confirm `.assetsignore` excludes `src`, `migrations`, tests, docs, `.dev.vars`, scripts and local state.
 - [ ] Confirm Worker compatibility date and runtime limits.
 - [ ] Configure custom domain and DNS.
 - [ ] Enable TLS and HTTPS-only access.
@@ -58,7 +58,7 @@ Production secrets must be set through Wrangler secrets or the Cloudflare dashbo
 ## D. Database and migrations
 
 - [ ] Back up production D1 before migration (export or snapshot).
-- [ ] Review migration `0001`–`0009` against production schema.
+- [ ] Review migrations `0001`–`0030` against the production schema, including `0030_digital_humans.sql`.
 - [ ] Apply migrations in order with `wrangler d1 migrations apply ... --remote`.
 - [ ] Verify `PRAGMA foreign_key_check` / integrity through the approved operational process.
 - [ ] Seed roles, branches and property categories using an approved operational script.
@@ -174,3 +174,27 @@ Production secrets must be set through Wrangler secrets or the Cloudflare dashbo
 - [ ] Deploy only after explicit written authorization.
 
 **Current status:** local Phase 8 complete; staging-ready after review. Not authorized for production deployment.
+
+
+---
+
+## I. Digital human and multi-property readiness (Phase 30)
+
+- [x] `0030_digital_humans.sql` applies cleanly and preserves existing data.
+- [x] Assistant conversations, messages, handovers, event acks and preferences are user-scoped.
+- [x] Assistant routes never perform financial mutations or grant permissions.
+- [x] Contract pricing remains MD/Branch Manager authority.
+- [x] Client self-service accepts only published properties and published plans.
+- [x] Branch/marketer/client data scopes are covered by tests.
+- [x] Temporary-password clients cannot read portfolio or payment data through the assistant.
+- [x] Human handover requires explicit confirmation and staff acceptance.
+- [x] Handover transcript access is limited to the requester/assigned staff/MD.
+- [x] Payment and commission announcements come from verified notification records only.
+- [x] Event announcements are deduplicated and can be muted without breaking the app.
+- [x] Voice degrades to text when speech recognition or system voices are unavailable.
+- [x] Client phone reset works without email; SMS provider readiness is checked.
+- [ ] Run a real device/browser voice compatibility check on the approved target devices (Chrome Android, Safari iOS, desktop Chrome/Edge).
+- [ ] Decide whether to license background instrumental music for the company introduction.
+- [ ] Configure Cloudflare WAF/rate limiting for `/api/assistant/message` in addition to the application-level limit.
+- [ ] Confirm staff availability process and handover ownership policy operationally.
+- [ ] Confirm whether a permanent static wallet should be allocated to one property; currently per-property dynamic accounts are recommended.

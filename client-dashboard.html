@@ -457,7 +457,10 @@
         <div class="dash-box">
           <div class="dash-box-title">
             <span>My Property Allocation</span>
-            <a href="client-property.html">View Property Details →</a>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button type="button" class="btn btn-green btn-sm" id="addPropertyBtn">+ Add another property</button>
+              <a href="client-property.html">View Property Details →</a>
+            </div>
           </div>
           <div id="propertyContainer">
             <p style="color:var(--muted);font-size:13px">Loading property record...</p>
@@ -516,6 +519,51 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <!-- Client self-service: add another published property to the portfolio -->
+  <div class="modal-backdrop" id="addPropertyModal" role="dialog" aria-modal="true" aria-labelledby="addPropertyTitle">
+    <div class="modal-box" style="max-width:660px">
+      <div class="modal-header">
+        <h3 id="addPropertyTitle">Add another property</h3>
+        <button type="button" class="btn btn-outline btn-sm" id="closeAddPropertyBtn" aria-label="Close">✕</button>
+      </div>
+      <p style="font-size:12.5px;color:var(--muted);line-height:1.6;margin-top:0">
+        Choose a published Bliss Legacy property and one of its published payment plans. The price shown is the published plan price. Any negotiated contract price must be approved by a Managing Director or Branch Manager.
+      </p>
+      <div class="form-group">
+        <label for="addPropertySelect">Property</label>
+        <select id="addPropertySelect" required>
+          <option value="">Loading published properties…</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="addPlanSelect">Payment plan</label>
+        <select id="addPlanSelect" required>
+          <option value="">Select a property first</option>
+        </select>
+        <p class="form-hint" id="addPlanHint" style="font-size:11px;color:var(--muted);margin-top:5px">Plans are published by Bliss Legacy. You cannot set or approve your own contract price here.</p>
+      </div>
+      <div class="form-group">
+        <label for="addPlanStart">Plan start date</label>
+        <input type="date" id="addPlanStart" />
+      </div>
+      <div id="addPropertyMsg" class="msg" style="display:none"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:18px">
+        <button type="button" class="btn btn-outline" id="cancelAddPropertyBtn">Cancel</button>
+        <button type="button" class="btn btn-green" id="confirmAddPropertyBtn">Add property</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="propertyPaymentModal" role="dialog" aria-modal="true" aria-labelledby="propertyPaymentTitle">
+    <div class="modal-box" style="max-width:500px">
+      <div class="modal-header">
+        <h3 id="propertyPaymentTitle">Pay for this property</h3>
+        <button type="button" class="btn btn-outline btn-sm" id="closePropertyPaymentBtn" aria-label="Close">✕</button>
+      </div>
+      <div id="propertyPaymentBody"></div>
+    </div>
   </div>
 
   <script src="assets/js/site-config.js"></script>
@@ -652,9 +700,15 @@
                   <span>${item.verified_payments_count || 0} verified payment(s)</span>
                   <strong style="color:var(--green)">${progressValue}%</strong>
                 </div>
+                ${Number(item.outstanding_kobo || 0) > 0
+                  ? `<button type="button" class="btn btn-outline btn-sm" style="margin-top:10px;width:100%" data-pay-allocation="${item.id}" data-pay-property="${item.property_id}" data-pay-title="${esc(item.title)}" data-pay-outstanding="${Number(item.outstanding_ngn || 0)}">Pay for this property</button>`
+                  : `<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--green-dark)">Fully paid ✓</div>`}
               </div>
             `;
           }).join('');
+          propBox.querySelectorAll('[data-pay-allocation]').forEach(button => {
+            button.addEventListener('click', () => openPropertyPayment(button));
+          });
         } else {
           propBox.innerHTML = `
             <div class="no-schedule-msg">
@@ -735,7 +789,206 @@
       });
     });
   </script>
+  <script>
+    /* Client self-service multi-property allocation. Prices come only from
+       published property plans; the client cannot set a negotiated price. */
+    (function () {
+      var modal = document.getElementById('addPropertyModal');
+      var propertySelect = document.getElementById('addPropertySelect');
+      var planSelect = document.getElementById('addPlanSelect');
+      var planHint = document.getElementById('addPlanHint');
+      var startInput = document.getElementById('addPlanStart');
+      var messageBox = document.getElementById('addPropertyMsg');
+      var confirmBtn = document.getElementById('confirmAddPropertyBtn');
+      var loadedProperties = [];
+      var currentPlans = [];
+
+      function setMessage(text, kind) {
+        messageBox.textContent = text || '';
+        messageBox.className = 'msg ' + (kind || '');
+        messageBox.style.display = text ? 'block' : 'none';
+        messageBox.style.padding = text ? '10px 12px' : '0';
+        messageBox.style.borderRadius = '6px';
+        messageBox.style.marginTop = '10px';
+        messageBox.style.fontSize = '12px';
+        messageBox.style.background = kind === 'error' ? '#FDE8E8' : (kind === 'success' ? '#E8F9EB' : '#F9FBF9');
+        messageBox.style.color = kind === 'error' ? '#B42318' : (kind === 'success' ? '#008F1B' : 'var(--muted)');
+      }
+
+      function openModal() {
+        modal.classList.add('open');
+        setMessage('', '');
+        if (!loadedProperties.length) loadProperties();
+        propertySelect.focus();
+      }
+      function closeModal() {
+        modal.classList.remove('open');
+      }
+
+      async function loadProperties() {
+        propertySelect.innerHTML = '<option value="">Loading published properties…</option>';
+        try {
+          const res = await fetch('/api/properties?is_published=1&limit=50', { credentials: 'include' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Unable to load properties.');
+          loadedProperties = Array.isArray(data.properties) ? data.properties : [];
+          if (!loadedProperties.length) {
+            propertySelect.innerHTML = '<option value="">No published properties available right now</option>';
+            return;
+          }
+          propertySelect.innerHTML = '<option value="">Select a property</option>' + loadedProperties.map(function (p) {
+            const price = Number(p.promotional_price || 0) > 0 ? Number(p.promotional_price) : Number(p.sale_price || 0);
+            const place = [p.city, p.state].filter(Boolean).join(', ');
+            return '<option value="' + p.id + '">' + String(p.title || 'Property').replace(/</g, '&lt;') +
+              (place ? ' — ' + place : '') + (price ? ' — ₦' + price.toLocaleString('en-NG') : '') + '</option>';
+          }).join('');
+        } catch (error) {
+          propertySelect.innerHTML = '<option value="">Unable to load properties</option>';
+          setMessage(error.message || 'Unable to load properties.', 'error');
+        }
+      }
+
+      async function loadPlans(propertyId) {
+        planSelect.innerHTML = '<option value="">Loading plans…</option>';
+        currentPlans = [];
+        if (!propertyId) {
+          planSelect.innerHTML = '<option value="">Select a property first</option>';
+          return;
+        }
+        try {
+          const res = await fetch('/api/properties/' + encodeURIComponent(propertyId) + '/payment-plans', { credentials: 'include' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Unable to load payment plans.');
+          currentPlans = Array.isArray(data.plans) ? data.plans : [];
+          if (!currentPlans.length) {
+            planSelect.innerHTML = '<option value="">No fixed plan — add at published price</option>';
+            planHint.textContent = 'This property has no published instalment plan. It will be added at the published property price. A payment schedule can be arranged with finance.';
+          } else {
+            planSelect.innerHTML = currentPlans.map(function (plan) {
+              const total = Number(plan.total_price_kobo || 0) / 100;
+              const type = String(plan.plan_type || '').replace(/_/g, ' ');
+              const suffix = plan.number_of_installments ? ' · ' + plan.number_of_installments + ' instalments' : (plan.duration_months ? ' · ' + plan.duration_months + ' months' : '');
+              return '<option value="' + plan.id + '">' + type + ' — ₦' + total.toLocaleString('en-NG') + suffix + '</option>';
+            }).join('');
+            planHint.textContent = 'This is the published plan price. Your contract price cannot be changed by this form.';
+          }
+        } catch (error) {
+          planSelect.innerHTML = '<option value="">Unable to load plans</option>';
+          setMessage(error.message || 'Unable to load payment plans.', 'error');
+        }
+      }
+
+      async function submit() {
+        const propertyId = propertySelect.value;
+        if (!propertyId) { setMessage('Select a property to add.', 'error'); return; }
+        if (currentPlans.length && !planSelect.value) { setMessage('Select one of the published payment plans.', 'error'); return; }
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Adding…';
+        setMessage('', '');
+        try {
+          const res = await fetch('/api/client/properties', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              property_id: Number(propertyId),
+              plan_id: planSelect.value ? Number(planSelect.value) : null,
+              start_date: startInput.value || null
+            })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            setMessage(data.error || 'Unable to add this property.', 'error');
+            return;
+          }
+          setMessage('Property added to your portfolio. Refreshing your dashboard…', 'success');
+          setTimeout(function () { window.location.reload(); }, 900);
+        } catch (error) {
+          setMessage(error.message || 'Network error. Please try again.', 'error');
+        } finally {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Add property';
+        }
+      }
+
+      document.getElementById('addPropertyBtn').addEventListener('click', openModal);
+      document.getElementById('closeAddPropertyBtn').addEventListener('click', closeModal);
+      document.getElementById('cancelAddPropertyBtn').addEventListener('click', closeModal);
+      confirmBtn.addEventListener('click', submit);
+      propertySelect.addEventListener('change', function () { loadPlans(propertySelect.value); });
+      modal.addEventListener('click', function (event) { if (event.target === modal) closeModal(); });
+      document.addEventListener('keydown', function (event) { if (event.key === 'Escape' && modal.classList.contains('open')) closeModal(); });
+
+      const today = new Date().toISOString().slice(0, 10);
+      startInput.value = today;
+      if (window.location.hash === '#add-property') setTimeout(openModal, 400);
+
+      /* Per-property payment account (dynamic ALATPay account tied to this
+         property), so a payment is attributed to the right allocation. */
+      var paymentModal = document.getElementById('propertyPaymentModal');
+      var paymentBody = document.getElementById('propertyPaymentBody');
+      function safe(value) {
+        return String(value == null ? '' : value)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+      }
+      function closePaymentModal() { paymentModal.classList.remove('open'); }
+      document.getElementById('closePropertyPaymentBtn').addEventListener('click', closePaymentModal);
+      paymentModal.addEventListener('click', function (event) { if (event.target === paymentModal) closePaymentModal(); });
+
+      window.openPropertyPayment = async function (button) {
+        const allocationId = button.getAttribute('data-pay-allocation');
+        const title = button.getAttribute('data-pay-title') || 'this property';
+        const outstanding = Number(button.getAttribute('data-pay-outstanding') || 0);
+        const answer = window.prompt('How much would you like to pay towards ' + title + '? (₦)', outstanding ? outstanding.toLocaleString('en-NG') : '');
+        if (answer === null) return;
+        const amount = Number(String(answer).replace(/,/g, '').trim());
+        if (!Number.isFinite(amount) || amount < 100) { window.alert('Enter an amount of at least ₦100.'); return; }
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Creating account…';
+        try {
+          const res = await fetch('/api/client/properties/' + encodeURIComponent(allocationId) + '/payment-account', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: amount })
+          });
+          const data = await res.json();
+          if (!res.ok) { window.alert(data.error || 'Unable to create a payment account.'); return; }
+          paymentBody.innerHTML =
+            '<p style="font-size:12.5px;color:var(--muted);line-height:1.6;margin-top:0">Transfer the amount below to this dedicated account. The account is for <strong>' + safe(title) + '</strong> and the payment is matched by ALATPay, not by a screenshot or redirect.</p>' +
+            '<div style="border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--soft)">' +
+              '<div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700">Bank</div>' +
+              '<div style="font-size:14px;font-weight:800;color:var(--ink)">' + safe(data.bank_name || 'Wema Bank') + '</div>' +
+              '<div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700;margin-top:10px">Account name</div>' +
+              '<div style="font-size:14px;font-weight:800;color:var(--ink)">' + safe(data.account_name || '') + '</div>' +
+              '<div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700;margin-top:10px">Account number</div>' +
+              '<div style="font-family:monospace;font-size:24px;font-weight:800;color:var(--green-dark);letter-spacing:1px">' + safe(data.account_number || '') + '</div>' +
+              '<div style="font-size:12px;color:var(--muted);margin-top:8px">Amount: <strong>₦' + (Number(data.amount_kobo || 0) / 100).toLocaleString('en-NG') + '</strong>' + (data.expires_at ? ' · expires ' + safe(String(data.expires_at).slice(0, 16)) : '') + '</div>' +
+            '</div>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">' +
+              '<button type="button" class="btn btn-green btn-sm" id="copyPropertyAccountBtn">Copy account number</button>' +
+              '<a class="btn btn-outline btn-sm" href="client-virtual-account.html">Open My Virtual Account</a>' +
+            '</div>' +
+            '<p style="font-size:11px;color:var(--muted);margin-top:12px">This account was created for the amount you entered. If you need a different amount, create a new account. Verified payments appear in your receipt list automatically.</p>';
+          paymentModal.classList.add('open');
+          const copyBtn = document.getElementById('copyPropertyAccountBtn');
+          if (copyBtn) copyBtn.addEventListener('click', async function () {
+            try { await navigator.clipboard.writeText(String(data.account_number || '')); copyBtn.textContent = 'Copied'; }
+            catch (error) { window.prompt('Copy the account number below:', String(data.account_number || '')); }
+          });
+        } catch (error) {
+          window.alert(error.message || 'Network error. Please try again.');
+        } finally {
+          button.disabled = false;
+          button.textContent = originalText;
+        }
+      };
+    })();
+  </script>
   <script src="assets/js/mobile-nav.js"></script>
   <script src="assets/js/pwa.js"></script>
+  <script src="assets/js/digital-human.js" defer></script>
 </body>
 </html>

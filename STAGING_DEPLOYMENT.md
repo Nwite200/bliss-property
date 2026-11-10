@@ -1,8 +1,15 @@
-# Bliss Legacy Limited — Staging Deployment Record
+# Bliss Legacy Limited — Staging Deployment
+
+> **Phase 30 update (2026-11-10):** migration `0030_digital_humans.sql` was
+> applied to the remote staging D1 and the Worker was deployed. Wrangler
+> reported `https://bliss-property.blisslegacyfiles.workers.dev`. The
+> production Worker is `https://blisspayment.com.ng`.
+> Hostnames in the older walkthrough text below have been updated to the
+> current `blisslegacyfiles.workers.dev` account. Record
 
 **Worker:** `bliss-property`
 
-**Staging URL:** `https://bliss-property.easterntechexpo.workers.dev`
+**Staging URL:** `https://bliss-property.blisslegacyfiles.workers.dev`
 
 **Branch:** `staging` (see the final response for the exact tip)
 
@@ -71,7 +78,7 @@ Also passed: `node --check` for the Worker, all external JS and all test suites;
 
 ## 4. Live staging verification
 
-Verified against `https://bliss-property.easterntechexpo.workers.dev`:
+Verified against `https://bliss-property.blisslegacyfiles.workers.dev`:
 
 - `/api/health` returns 200.
 - Public homepage returns 200 and renders live D1 staging property cards.
@@ -185,7 +192,7 @@ Until that dashboard step is completed, Git pushes will not automatically trigge
 - Client endpoint: `POST /api/client/virtual-account`; staff-assisted endpoint: `POST /api/finance/clients/:id/virtual-account`.
 - Webhook: `POST /api/webhooks/alatpay`, verified by re-querying ALATPay with the secret key.
 - A live staging virtual account was successfully issued for ₦1,000 and stored; the account number is masked in logs/final reporting.
-- The ALATPay dashboard must have its callback URL set to `https://bliss-property.easterntechexpo.workers.dev/api/webhooks/alatpay`.
+- The ALATPay dashboard must have its callback URL set to `https://bliss-property.blisslegacyfiles.workers.dev/api/webhooks/alatpay`.
 
 ### Referrals
 

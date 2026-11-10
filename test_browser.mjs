@@ -21,7 +21,7 @@ function resolveDevDb() {
   return resolveLiveDb();
 }
 const LIVE_DB = resolveDevDb();
-const PORT = Number(process.env.BROWSER_TEST_PORT || 8790);
+const PORT = Number(process.env.BROWSER_TEST_PORT || (8800 + Math.floor(Math.random() * 90)));
 const BASE = `http://localhost:${PORT}`;
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const PASSWORD = randomBytes(18).toString('base64url');
@@ -45,7 +45,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function waitForServer(url, timeoutMs = 45000) {
+async function waitForServer(url, timeoutMs = 120000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -59,13 +59,13 @@ async function waitForServer(url, timeoutMs = 45000) {
 
 async function goto(page, url) {
   let last;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
       return;
     } catch (error) {
       last = error;
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(1500);
     }
   }
   throw last;
@@ -124,7 +124,7 @@ for (const [ref, temp] of [['TEST-BROWSER-HOT', 'Hot'], ['TEST-BROWSER-WARM', 'W
 db.close();
 
 const server = spawn('npx', ['wrangler', 'dev', '--port', String(PORT), '--ip', '127.0.0.1'], {
-  cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }
+  cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }
 });
 let serverLog = '';
 server.stdout.on('data', chunk => { serverLog += chunk.toString(); });
@@ -138,8 +138,10 @@ try {
   browser = await chromium.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();
+  const contextC = await browser.newContext();
   const pageA = await contextA.newPage();
   const pageB = await contextB.newPage();
+  const pageC = await contextC.newPage();
 
   await test('drill-down breadcrumbs show National > Branch > Team Lead and can drill back up', async () => {
     await login(pageA, 'browser.md@bliss.test');
@@ -210,13 +212,70 @@ try {
       return Array.from(document.querySelectorAll('#chatMessages .chat-message-bubble')).some(node => node.textContent === expected);
     }, message, { timeout: 15000 });
   });
+  await test('the public site shows Adaora and answers a typed question without voice', async () => {
+    await goto(pageC, BASE + '/index.html');
+    await pageC.waitForSelector('#dhLauncher', { timeout: 20000 });
+    await pageC.waitForFunction(() => /Adaora/i.test(document.getElementById('dhLauncher')?.getAttribute('aria-label') || ''), { timeout: 20000 });
+    const label = await pageC.getAttribute('#dhLauncher', 'aria-label');
+    assert(/assistant/i.test(label || ''), `launcher label missing: ${label}`);
+    const initialLabel = label || '';
+    assert(/Adaora/i.test(initialLabel), `launcher label should name Adaora: ${initialLabel}`);
+    await pageC.click('#dhLauncher');
+    await pageC.waitForFunction(() => document.querySelector('.dh-root')?.classList.contains('is-open'), { timeout: 10000 });
+    await pageC.waitForFunction(() => document.getElementById('dhName')?.textContent.trim() === 'Adaora', { timeout: 20000 });
+    const name = await pageC.evaluate(() => document.getElementById('dhName')?.textContent.trim() || '');
+    assert(name === 'Adaora', `expected Adaora, got ${name}`);
+    const avatarSrc = await pageC.evaluate(() => document.querySelector('#dhAvatar img')?.getAttribute('src') || '');
+    assert(/personas\/adaora\.jpg/.test(avatarSrc), `Adaora portrait missing: ${avatarSrc}`);
+    const greeting = await pageC.locator('#dhThread .dh-msg-assistant .dh-bubble').first().innerText();
+    assert(/Bliss Legacy/i.test(greeting), `greeting missing: ${greeting}`);
+    await pageC.fill('#dhInput', 'Tell me about Bliss Legacy Limited');
+    await pageC.click('#dhSend');
+    await pageC.waitForFunction(() => {
+      const bubbles = Array.from(document.querySelectorAll('#dhThread .dh-msg-assistant .dh-bubble'));
+      return bubbles.some(node => /Bliss Legacy/i.test(node.textContent || ''));
+    }, { timeout: 20000 });
+    const reply = await pageC.evaluate(() => {
+      const bubbles = Array.from(document.querySelectorAll('#dhThread .dh-msg-assistant .dh-bubble'));
+      const found = bubbles.filter(node => /Bliss Legacy/i.test(node.textContent || '')).pop();
+      return found ? found.textContent : '';
+    });
+    assert(/Bliss Legacy/i.test(reply), `assistant reply missing: ${reply}`);
+    await pageC.click('#dhMute');
+    const pressed = await pageC.getAttribute('#dhMute', 'aria-pressed');
+    assert(pressed === 'false', `mute did not switch to text-only: ${pressed}`);
+  });
+
+  await test('a dashboard starts with the role specialist and transforms persona in the browser', async () => {
+    await goto(pageA, BASE + '/dashboard.html');
+    await pageA.waitForSelector('#dhLauncher', { timeout: 20000 });
+    await pageA.click('#dhLauncher');
+    await pageA.waitForFunction(() => document.querySelector('.dh-root')?.classList.contains('is-open'), { timeout: 10000 });
+    await pageA.waitForFunction(() => document.getElementById('dhName')?.textContent.trim() === 'Ifeoma', { timeout: 20000 });
+    const initial = await pageA.evaluate(() => document.getElementById('dhName')?.textContent.trim() || '');
+    assert(initial === 'Ifeoma', `MD dashboard expected Ifeoma, got ${initial}`);
+    await pageA.fill('#dhInput', 'Find a property');
+    await pageA.click('#dhSend');
+    await pageA.waitForFunction(() => {
+      const node = document.getElementById('dhName');
+      return node && node.textContent.trim() === 'Solomon';
+    }, { timeout: 20000 });
+    await pageA.waitForFunction(() => {
+      const img = document.querySelector('#dhAvatar img');
+      return img && /personas\/solomon\.jpg/.test(img.getAttribute('src') || '');
+    }, { timeout: 10000 });
+    const reply = await pageA.locator('#dhThread .dh-msg-assistant .dh-bubble').last().innerText();
+    assert(/Solomon|property/i.test(reply), `persona handover reply missing: ${reply}`);
+  });
+
 } catch (error) {
   failed++;
   console.error('  ❌ browser harness\n     ' + error.message);
 } finally {
   if (browser) await browser.close();
-  server.kill('SIGTERM');
-  await new Promise(resolve => setTimeout(resolve, 800));
+  try { process.kill(-server.pid, 'SIGTERM'); } catch (error) { try { server.kill('SIGTERM'); } catch (e) {} }
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  try { execFileSync('pkill', ['-f', `wrangler dev --port ${PORT}`], { stdio: 'ignore' }); } catch (error) {}
   try {
     const cleanup = new DatabaseSync(LIVE_DB);
     cleanup.exec('PRAGMA foreign_keys = ON;');

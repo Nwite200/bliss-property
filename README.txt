@@ -32,17 +32,18 @@ Main screens
 - leads.html — lead pipeline, follow-ups and conversion
 - activity-centre.html — role-scoped audit/activity feed
 - clients.html / properties.html / finance-dashboard.html / provider-config.html — Phases 1–5
-- client-dashboard.html — client portal with multi-property allocations, verified payments, remaining balance and per-property progress
+- client-dashboard.html — client portal with multi-property allocations, self-service "Add another property", per-property payment accounts, verified payments, remaining balance and per-property progress
 
 Tests
 -----
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm run test:phase8  (43 tests)
+- npm run test:phase8  (75 tests)
+- npm run test:assistant (32 digital human / multi-property tests)
 - npm run test:seed    (5 tests)
-- npm run test:browser (3 browser tests; needs Google Chrome)
-- npm test              (all suites, 145 tests)
+- npm run test:browser (5 browser tests; needs Google Chrome)
+- npm test              (all suites, 226 tests)
 
 Documentation
 -------------
@@ -57,13 +58,15 @@ Documentation
 - KNOWN_LIMITATIONS.md
 - BLISS_LEGACY_OPERATIONAL_WORKFLOW.md
 - ROLE_AND_ONBOARDING_AUDIT.md
+- DIGITAL_HUMAN_ECOSYSTEM.md — multi-persona assistant, voice, handover, multi-property and delivery checklist
 
 Architecture and safety
 -----------------------
 - Bindings: DB, FILES, CACHE, TASKS, ASSETS.
 - No Supabase, Firebase or alternative primary backend.
-- Staging deployment: https://bliss-property.easterntechexpo.workers.dev
-- Production deployment: https://bliss-legacy-limited.easterntechexpo.workers.dev
+- Staging deployment: https://bliss-property.blisslegacyfiles.workers.dev
+- Production deployment: https://blisspayment.com.ng
+- Production version deployed 2026-11-10: 0030_digital_humans migration applied; ALATPay live secrets present; SMS production secret still required for phone reset.
 - PWA: installable on iPhone/iPad (Safari → Share → Add to Home Screen) and Android (Chrome → Install app)
 - PWA manifest: manifest.json; service worker: sw.js; offline: offline.html
 - Logo intro: assets/js/intro-config.js (INTRO_STYLE = hype | classic), assets/js/motion.js, assets/css/motion.css
@@ -85,8 +88,12 @@ Architecture and safety
 - SMS provider adapter, templates, opt-out, queued delivery log and credit alerts
 - Lead temperature, contact count/last contact and required lost reason
 - Client onboarding OTP verification by SMS or email, with staff-assisted and self-service verification
+- Phone-first client password recovery: 6-digit SMS code; no email address is required
+- Client self-service multi-property: add published properties/plans and pay per property; contract prices remain MD/BM authority
+- Digital human ecosystem: Adaora plus eight specialists with professional portraits, free browser voice, persona transfer, role-aware dashboard intelligence, scoped property/lead/finance data, form awareness, event announcements and genuine staff-accepted handover
+- Staff handover availability (available/busy/away) and assistant event acknowledgement/dedupe
 - ALATPay documented webhook validation, transaction monitoring, static wallets and test/live separation
 - See PAYMENT_PROVIDER_SECRETS.md, ALATPAY_INTEGRATION.md, SMS_PROVIDER_SETUP.md and CLIENT_OTP_VERIFICATION.md for secret/provider setup
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.
 - Email/WhatsApp delivery adapters remain pending; the queue records interface state only.
-- There is no separate Super Admin role; the Managing Director is the highest implemented role.
+- Super Admin is a real role with permission-guarded admin routes; it inherits MD business scope for legacy routes and keeps its actual role for granular admin permissions.

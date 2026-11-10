@@ -77,7 +77,7 @@ Source of truth read from the rendered ALATPay documentation on 2026-11-05:
 For staging test mode:
 
 ```text
-https://bliss-property.easterntechexpo.workers.dev/api/webhooks/alatpay/test
+https://bliss-property.blisslegacyfiles.workers.dev/api/webhooks/alatpay/test
 ```
 
 For live mode later:

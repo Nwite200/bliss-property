@@ -1,6 +1,6 @@
 # Bliss Legacy Limited — Phase 8 Final Integration Audit
 
-**Status:** local audit and hardening complete. The later explicit owner instruction authorized a live demo deployment; the demo is deployed at `https://bliss-legacy-limited.easterntechexpo.workers.dev` with temporary demo accounts. The Phase 8 code changes remain uncommitted at the time of writing.
+**Status:** local audit and hardening complete. The later explicit owner instruction authorized a live demo deployment; the demo is deployed at `https://blisspayment.com.ng` with temporary demo accounts. The Phase 8 code changes remain uncommitted at the time of writing.
 
 **Audit date:** 04 November 2026
 
@@ -165,7 +165,7 @@ Syntax checks passed for `src/index.js`, every `assets/js/*.js` file, every test
 
 ## 8. Remaining production dependencies
 
-The application is deployed to a **live Cloudflare demo** at `https://bliss-legacy-limited.easterntechexpo.workers.dev`. It is not yet a fully signed-off production service. Remaining external and infrastructure dependencies are listed in `KNOWN_LIMITATIONS.md` and `PRODUCTION_READINESS_CHECKLIST.md`, including:
+The application is deployed to a **live Cloudflare demo** at `https://blisspayment.com.ng`. It is not yet a fully signed-off production service. Remaining external and infrastructure dependencies are listed in `KNOWN_LIMITATIONS.md` and `PRODUCTION_READINESS_CHECKLIST.md`, including:
 
 - Real Cloudflare D1/R2/KV/Queue resource IDs.
 - Production secrets and custom domain/DNS.
@@ -180,4 +180,4 @@ The application is deployed to a **live Cloudflare demo** at `https://bliss-lega
 
 **READY FOR CONTROLLED DEMO / STAGING ACCEPTANCE.**
 
-Evidence: all 145 local tests pass, the migration chain is reproducible, critical integration defects were repaired, private files are access-controlled, 75 responsive renders show no document-level horizontal overflow, and a live Cloudflare demo is running with temporary role accounts. Super Admin, permission-guarded admin routes, staff notifications, Durable Object chat and hierarchical revenue drill-down are implemented. Full production sign-off still requires the external provider credentials, security headers, monitoring, backup validation, custom domain and owner acceptance listed in the readiness checklist. Staff onboarding approvals and permanent ALATPay static wallets remain outstanding.
+Evidence: all 226 local tests pass (including the Phase 30 assistant and multi-property suite), the migration chain is reproducible, critical integration defects were repaired, private files are access-controlled, 75 responsive renders show no document-level horizontal overflow, and a live Cloudflare demo is running with temporary role accounts. Super Admin, permission-guarded admin routes, staff notifications, Durable Object chat and hierarchical revenue drill-down are implemented. Full production sign-off still requires the external provider credentials, security headers, monitoring, backup validation, custom domain and owner acceptance listed in the readiness checklist. Staff onboarding approvals and permanent ALATPay static wallets remain outstanding.

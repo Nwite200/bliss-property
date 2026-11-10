@@ -6,7 +6,7 @@
 
 ## Execution update — 2026-11-06
 
-- Production Worker deployed: `https://bliss-property-production.easterntechexpo.workers.dev`
+- Production Worker deployed: `https://blisspayment.com.ng`
 - Production D1 migrated through `0022`.
 - Pre-migration production export completed.
 - Demo property marked demo/unpublished; demo staff/client/payment data hidden or deactivated.
@@ -14,7 +14,7 @@
 - Production branch list contains Ikeja, Ajah, Asaba, Ihama, Obakhavba and Head Office, and is served to the signup branch picker.
 - Production Worker is in `PAYMENT_MODE=live` with live ALATPay secret, business ID and webhook secret configured.
 - **ALATPay live API returned HTTP 401 on a read-only business transaction query.** Live payment provisioning is therefore not yet verified.
-- `blisspayment.com.ng` is not present in the Cloudflare account used by this deployment. The existing domain still serves an older site. It cannot be attached until the zone is moved/added to this account and the token has the required zone permission.
+- `blisspayment.com.ng` is attached to the `bliss-legacy-limited` production Worker as a Cloudflare custom domain (zone `63914ed44f0f70d5e9e8051d17c8074a`).
 - SMS remains disabled. No real SMS was sent.
 
 ---

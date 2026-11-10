@@ -15,7 +15,7 @@
 | Password hashing | PBKDF2-HMAC-SHA-256, 100,000 iterations, random 16-byte salt |
 | Password comparison | Derived hash equality check; plaintext is never stored |
 | Login identifiers | Email, client reference or phone; normalised input |
-| Login throttling | 10 failures per identifier per 15 minutes through audit log |
+| Login throttling | 5 failures per account and 10 per IP in 15 minutes through audit log |
 | Session ID | Cryptographically random UUID |
 | Session lifetime | 8 hours; expired sessions deleted when presented |
 | Cookie flags | `HttpOnly; Secure; SameSite=Lax` |
@@ -27,9 +27,10 @@
 
 ### Outstanding
 
-- Password-reset token delivery depends on an external email provider. The interface currently generates the token but does not send an email.
+- Staff password-reset token delivery depends on an external email provider. The interface currently generates the token but does not send an email.
+- Clients without email can reset by SMS 6-digit code to their registered phone (Termii/Africa's Talking adapter, mock outside production).
 - Login throttling is identifier-based, not IP-based. A production edge rate limit or WAF rule is recommended.
-- `users.must_reset_password` exists in schema but is not enforced. This is not used by the current UI.
+- `users.must_reset_password` is enforced for client API access: a client holding a temporary password may only read their profile or change the password until the temporary password is replaced.
 
 ---
 
@@ -190,3 +191,36 @@ Property documents and unpublished property images are now explicitly branch-sco
 **Fixed in Phase 8:** session fixation, CSRF fetch-metadata gap, unhandled JSON errors, public enquiry persistence, public enquiry/signup/reset rate limits, property document lifecycle, magic-byte validation, private document R2 isolation, unpublished image cache leakage, receipt key-prefix validation, several frontend XSS vectors, broken auth guards, lead deep links and mobile navigation.
 
 **Still required before production:** provider email/WhatsApp adapters, Wema/ALAT official signing/integration, email verification/Turnstile/edge rate limiting, CSP/security headers, monitoring/alerting, secret-management decision, backup/restore validation and a full penetration test against the deployed staging environment.
+
+
+---
+
+## 8. Digital human ecosystem (added after Phase 8)
+
+The assistant is a conversational interface over the same authorised backend. It
+does not replace the permission system.
+
+Verified controls:
+
+| Control | Status |
+|---|---|
+| Session/user detection | Existing `getSessionUser` session lookup |
+| Role/branch scoping | Existing `resolvePhase6Scope`, `leadScopeSql`, `clientScopeSql`, revenue/branch filters |
+| Contract pricing | Assistant cannot set prices; client self-service accepts only published plans |
+| Financial mutations | No assistant route verifies, reverses, approves or pays |
+| Client portfolio isolation | `/api/client/properties` and payment accounts require the signed-in client |
+| Handover | Created only after explicit confirmation; accepted only by an authorised staff member |
+| Transcript access | Requester, assigned/accepted staff, or MD/Super Admin |
+| Anonymous access | Published properties and company information only; no handover or private data |
+| CSRF | All state-changing assistant routes call `csrfOk` |
+| Message rate limiting | 60 messages per 5 minutes per authenticated user/visitor through audit rows |
+| Secret handling | Form values are never sent; secret field names are excluded; stored messages redact obvious password/OTP/PIN/BVN/CVV assignments; audit rows do not store message text |
+| Event isolation | Only the caller's own `user_id`/`client_id` notifications are returned |
+| Duplicate announcements | `assistant_event_acks` plus local storage |
+| Private R2 files | The assistant only links to `reports.html`; it never returns object URLs |
+
+Outstanding production hardening:
+
+- Edge/WAF rate limiting for anonymous visitors (visitor ids are client-generated).
+- The rule-based intent router is not an LLM and will not answer arbitrary natural-language questions outside its supported intents.
+- Browser voice availability and voice quality depend on the operating system.

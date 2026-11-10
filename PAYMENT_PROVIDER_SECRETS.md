@@ -52,7 +52,7 @@ https://<worker-host>/api/webhooks/alatpay
 For the staging Worker:
 
 ```text
-https://bliss-property.easterntechexpo.workers.dev/api/webhooks/alatpay
+https://blisspayment.com.ng/api/webhooks/alatpay
 ```
 
 ALATPay callbacks are trusted by re-querying ALATPay with `ALATPAY_SECRET_KEY`;

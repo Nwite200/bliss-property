@@ -2,7 +2,7 @@
 
 **Base URL (local):** `http://localhost:8787`
 
-**Base URL (deployed demo):** `https://bliss-legacy-limited.easterntechexpo.workers.dev`
+**Base URL (deployed demo):** `https://blisspayment.com.ng`
 
 All APIs are served by the Cloudflare Worker in `src/index.js`. JSON responses use `Content-Type: application/json`. Authentication is a session cookie named `bliss_session`.
 
@@ -530,3 +530,49 @@ See `ALATPAY_INTEGRATION.md`.
 - No automatic commission generation hook on payment credit; generation remains an explicit authorised operation.
 
 See `KNOWN_LIMITATIONS.md`.
+
+---
+
+## Digital human ecosystem (Phase 30)
+
+All state-changing routes use the existing same-origin/CSRF checks. Sensitive
+data is scoped with the existing role, branch and assignment helpers.
+
+### Assistant
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| GET | `/api/assistant/bootstrap?page=/path&visitor=ID` | Optional | Personas, role greeting, page context, quick prompts, restored conversation, voice preferences, pending handovers and staff availability |
+| POST | `/api/assistant/message` | Optional | Intent routing. Body: `conversation_ref`, `visitor_id`, `message`, `page`, optional `confirm_handover`, optional `form_context` with field names/booleans only |
+| POST | `/api/assistant/preferences` | Required | `voice_enabled`, `muted`, `rate`, `pitch`, `volume`, `preferred_persona` |
+| GET | `/api/assistant/events` | Required | Unread relevant notifications not already announced |
+| POST | `/api/assistant/events/ack` | Required | `{ "keys": ["notification:123"] }` to deduplicate announcements |
+| GET | `/api/assistant/handovers` | Staff | Pending/unassigned handovers visible to the caller |
+| GET | `/api/assistant/handovers/:id` | Requester/assigned staff | Handover detail and transcript |
+| POST | `/api/assistant/handovers/:id/accept` | Staff | Genuine acceptance; notifies the requester |
+| POST | `/api/assistant/handovers/:id/decline` | Staff | Returns the request to the unassigned queue |
+| GET | `/api/assistant/handover-status` | Required | Latest handover state for the requester's client/user |
+| POST | `/api/assistant/availability` | Staff | `{ "status": "available|busy|away" }` for handover routing |
+
+### Client multi-property
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/client/properties` | Add a published property to the signed-in client's portfolio. Body: `property_id`, optional `plan_id`, optional `start_date`. Extra price fields are ignored. Creates the plan schedule when a published plan is chosen. |
+| POST | `/api/client/properties/:allocationId/payment-account` | Create a dynamic ALATPay account tied to that allocation. Body: optional `amount`. Defaults to the property's outstanding balance. |
+
+The existing `GET /api/client/dashboard`, `/api/client/property`,
+`/api/client/payments`, `/api/client/installments`, `/api/client/receipts` and
+notification routes remain unchanged. Portfolio totals now include every active
+`client_properties` allocation.
+
+### Client phone password reset
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/client/password-reset/availability` | SMS provider readiness and customer-care contact |
+| POST | `/api/client/password-reset/request` | Body: `phone`. Sends a 6-digit SMS code when the phone is registered; generic response otherwise |
+| POST | `/api/client/password-reset/verify` | Body: `phone`, `code`, `new_password`. Hashed, single-use, 10-minute expiry, 3 attempts; revokes all sessions |
+
+No email address is required for client reset. Staff continue to use
+`/api/password-reset-request` and `/api/password-reset`.

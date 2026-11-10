@@ -2,9 +2,9 @@
 
 > **Staging:** the current staging deployment is recorded separately in `STAGING_DEPLOYMENT.md`. It uses the `bliss-property` Worker and isolated staging D1, R2, KV and Queue resources. This guide retains the production deployment sequence; do not use production bindings for staging.
 
-**Production deployment:** `https://bliss-legacy-limited.easterntechexpo.workers.dev`
+**Production deployment:** `https://blisspayment.com.ng`
 
-**Account:** `easterntechexpo@gmail.com` (Cloudflare account `788e3870b53ed6cb61f5c12cc04fdbc0`)
+**Account:** authenticated as `Blisslegacyfiles@gmail.com` (Cloudflare account `1473f1b95ef866edf0b286046e9e81f3`) for the local/staging deployment; verify owner access before production changes.
 
 **Environment:** `production` (Worker variable), `DEMO_MODE_ENABLED=0`
 
