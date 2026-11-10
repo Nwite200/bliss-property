@@ -360,15 +360,85 @@
   function renderTeamMembers() {
     const card = el("teamMembersCard");
     const rows = dashboard.team_members || [];
-    if (me.role !== "Team Lead" || !rows.length) { card.style.display = "none"; return; }
+    if (me.role !== "Team Lead") { card.style.display = "none"; return; }
     card.style.display = "";
-    el("teamMembersBody").innerHTML = rows.map(row => `
+    const team = (dashboard.teams || [])[0] || null;
+    if (el("manageTeamsLink")) el("manageTeamsLink").style.display = "none";
+    const addBtn = el("addTeamMemberBtn");
+    if (addBtn) addBtn.style.display = team ? "" : "none";
+    el("teamMembersBody").innerHTML = rows.length ? rows.map(row => `
       <tr>
         <td><div class="staff-cell"><span class="staff-avatar">${S.initials(row.full_name)}</span><div><strong>${S.escape(row.full_name)}</strong><div class="small muted">${S.escape(row.email)}</div></div></div></td>
         <td>${S.escape(row.role_name)}</td>
         <td>${S.escape(row.branch_name || "-")}</td>
         <td>${S.staffBadge(row.is_active)}</td>
-      </tr>`).join("");
+        <td>${Number(row.id) === Number(me.id) ? '<span class="small muted">Team lead</span>' : `<button class="btn btn-ghost btn-xs" type="button" data-remove-team-member="${row.id}">Remove</button>`}</td>
+      </tr>`).join("") : '<tr><td colspan="5"><div class="empty-state">No staff on this team yet. Use “+ Add staff” to add an active marketer from your branch.</div></td></tr>';
+    el("teamMembersBody").querySelectorAll("[data-remove-team-member]").forEach(button => {
+      button.addEventListener("click", () => removeTeamMember(Number(button.getAttribute("data-remove-team-member"))));
+    });
+  }
+
+  function currentLeadTeam() {
+    return (dashboard.teams || [])[0] || null;
+  }
+
+  async function openAddTeamMemberModal() {
+    const team = currentLeadTeam();
+    if (!team) { S.toast("No team is assigned to you yet. Ask your branch manager to assign one.", true); return; }
+    const box = el("availableTeamMembers");
+    box.innerHTML = '<div class="empty-state">Loading staff…</div>';
+    el("addTeamMemberTeam").textContent = `${team.name} · ${team.branch_name || ""}`;
+    S.openModal("addTeamMemberModal");
+    try {
+      const data = await S.fetchJson(`/api/teams/${team.id}/available-members`);
+      const available = data.available || [];
+      box.innerHTML = available.length ? available.map(row => `
+        <label class="tag" style="cursor:pointer;display:inline-flex;align-items:center;gap:7px;padding:8px 10px">
+          <input type="checkbox" value="${row.id}">
+          <span>${S.escape(row.full_name)}</span>
+          <span class="muted">${S.escape(row.role_name)}</span>
+        </label>`).join("") : '<div class="empty-state">Every active marketer in this branch is already on your team.</div>';
+      el("saveTeamMembersBtn").disabled = !available.length;
+    } catch (error) {
+      box.innerHTML = `<div class="empty-state">${S.escape(error.message || "Unable to load staff.")}</div>`;
+      el("saveTeamMembersBtn").disabled = true;
+    }
+  }
+
+  async function saveTeamMembers() {
+    const team = currentLeadTeam();
+    if (!team) return;
+    const selected = [...el("availableTeamMembers").querySelectorAll("input[type=checkbox]:checked")].map(input => Number(input.value));
+    if (!selected.length) { S.toast("Select at least one staff member.", true); return; }
+    const button = el("saveTeamMembersBtn");
+    button.disabled = true;
+    try {
+      const result = await S.fetchJson(`/api/teams/${team.id}/members`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_ids: selected })
+      });
+      S.closeModal("addTeamMemberModal");
+      S.toast(`${result.added ? result.added.length : 0} staff member(s) added to ${team.name}.`);
+      await load();
+    } catch (error) {
+      S.toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function removeTeamMember(userId) {
+    const team = currentLeadTeam();
+    if (!team) return;
+    if (!confirm("Remove this staff member from your team?")) return;
+    try {
+      await S.fetchJson(`/api/teams/${team.id}/members/${userId}`, { method: "DELETE" });
+      S.toast("Staff member removed from the team.");
+      await load();
+    } catch (error) {
+      S.toast(error.message, true);
+    }
   }
 
   function renderReferral() {
@@ -466,6 +536,10 @@
     if (["Managing Director", "Finance Officer"].includes(me.role)) await loadBranches();
     el("applyFilters").addEventListener("click", load);
     el("resetFilters").addEventListener("click", () => { setDefaults(); el("branchFilter").value = ""; load(); });
+    if (el("addTeamMemberBtn")) el("addTeamMemberBtn").addEventListener("click", openAddTeamMemberModal);
+    if (el("saveTeamMembersBtn")) el("saveTeamMembersBtn").addEventListener("click", saveTeamMembers);
+    if (el("closeTeamMemberModal")) el("closeTeamMemberModal").addEventListener("click", () => S.closeModal("addTeamMemberModal"));
+    if (el("cancelTeamMemberBtn")) el("cancelTeamMemberBtn").addEventListener("click", () => S.closeModal("addTeamMemberModal"));
     await load();
   });
 })();

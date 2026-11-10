@@ -107,7 +107,12 @@ function upsert(email, name, role, branch) {
 }
 const mdId = upsert('browser.md@bliss.test', 'Browser MD', mdRole, ikeja);
 const marketerId = upsert('browser.marketer@bliss.test', 'Browser Marketer', marketerRole, ikeja);
+const browserTeamLeadId = upsert('browser.lead@bliss.test', 'Browser Team Lead', roleId('Team Lead'), ikeja);
 const teamLeadRole = roleId('Team Lead');
+db.prepare("DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE name='Browser Test Team')").run();
+db.prepare("DELETE FROM teams WHERE name='Browser Test Team'").run();
+const browserTeamId = Number(db.prepare("INSERT INTO teams (name, branch_id, team_lead_user_id, is_active) VALUES ('Browser Test Team', ?, ?, 1)")
+  .run(ikeja, browserTeamLeadId).lastInsertRowid);
 const teamLead = db.prepare("SELECT id FROM users WHERE email='tl.ikeja@bliss.com'").get()
   || { id: upsert('tl.ikeja@bliss.com', 'Ikeja Team Lead', teamLeadRole, ikeja) };
 const existingMarketer = db.prepare("SELECT id FROM users WHERE email='mkt.ikeja@bliss.com'").get();
@@ -139,9 +144,11 @@ try {
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();
   const contextC = await browser.newContext();
+  const contextD = await browser.newContext();
   const pageA = await contextA.newPage();
   const pageB = await contextB.newPage();
   const pageC = await contextC.newPage();
+  const pageD = await contextD.newPage();
 
   await test('drill-down breadcrumbs show National > Branch > Team Lead and can drill back up', async () => {
     await login(pageA, 'browser.md@bliss.test');
@@ -268,6 +275,22 @@ try {
     assert(/Solomon|property/i.test(reply), `persona handover reply missing: ${reply}`);
   });
 
+  await test('a team lead can add an active branch marketer to their team from the dashboard', async () => {
+    await login(pageD, 'browser.lead@bliss.test');
+    await goto(pageD, BASE + '/dashboard.html');
+    await pageD.waitForSelector('#addTeamMemberBtn', { state: 'visible', timeout: 20000 });
+    await pageD.click('#addTeamMemberBtn');
+    await pageD.waitForSelector('#addTeamMemberModal.open', { timeout: 10000 });
+    const checkbox = `#availableTeamMembers input[value="${marketerId}"]`;
+    await pageD.waitForSelector(checkbox, { timeout: 20000 });
+    await pageD.check(checkbox);
+    await pageD.click('#saveTeamMembersBtn');
+    await pageD.waitForFunction(expected => {
+      const body = document.getElementById('teamMembersBody');
+      return body && body.textContent.includes(expected);
+    }, 'Browser Marketer', { timeout: 20000 });
+  });
+
 } catch (error) {
   failed++;
   console.error('  ❌ browser harness\n     ' + error.message);
@@ -290,6 +313,8 @@ try {
       cleanup.prepare(`DELETE FROM lead_temperature_history WHERE changed_by IN (${marks}) OR lead_id IN (SELECT id FROM leads WHERE lead_reference LIKE 'TEST-BROWSER-%')`).run(...ids);
       cleanup.prepare(`DELETE FROM leads WHERE lead_reference LIKE 'TEST-BROWSER-%'`).run();
       cleanup.prepare(`DELETE FROM sessions WHERE user_id IN (${marks})`).run(...ids);
+      cleanup.prepare(`DELETE FROM team_members WHERE user_id IN (${marks}) OR team_id IN (SELECT id FROM teams WHERE name='Browser Test Team')`).run(...ids);
+      cleanup.prepare("DELETE FROM teams WHERE name='Browser Test Team'").run();
       cleanup.prepare(`DELETE FROM staff_profiles WHERE user_id IN (${marks})`).run(...ids);
       cleanup.prepare(`DELETE FROM team_members WHERE user_id IN (${marks})`).run(...ids);
       cleanup.prepare(`DELETE FROM notifications WHERE user_id IN (${marks})`).run(...ids);

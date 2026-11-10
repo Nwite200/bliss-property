@@ -40,10 +40,10 @@ Tests
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
 - npm run test:phase8  (75 tests)
-- npm run test:assistant (32 digital human / multi-property tests)
+- npm run test:assistant (37 digital human / multi-property tests)
 - npm run test:seed    (5 tests)
-- npm run test:browser (5 browser tests; needs Google Chrome)
-- npm test              (all suites, 226 tests)
+- npm run test:browser (6 browser tests; needs Google Chrome)
+- npm test              (all suites, 232 tests)
 
 Documentation
 -------------
@@ -90,8 +90,9 @@ Architecture and safety
 - Client onboarding OTP verification by SMS or email, with staff-assisted and self-service verification
 - Phone-first client password recovery: 6-digit SMS code; no email address is required
 - Client self-service multi-property: add published properties/plans and pay per property; contract prices remain MD/BM authority
-- Digital human ecosystem: Adaora plus eight specialists with professional portraits, free browser voice, persona transfer, role-aware dashboard intelligence, scoped property/lead/finance data, form awareness, event announcements and genuine staff-accepted handover
+- Digital human ecosystem: Adaora plus eight specialists with professional portraits, optional ElevenLabs hyper-realistic voice with free browser fallback, persona transfer, role-aware dashboard intelligence, scoped property/lead/finance data, form awareness, event announcements and genuine staff-accepted handover
 - Staff handover availability (available/busy/away) and assistant event acknowledgement/dedupe
+- Team Lead dashboard staffing: add/remove active marketers from their own branch team, with server-side branch and role checks
 - ALATPay documented webhook validation, transaction monitoring, static wallets and test/live separation
 - See PAYMENT_PROVIDER_SECRETS.md, ALATPAY_INTEGRATION.md, SMS_PROVIDER_SETUP.md and CLIENT_OTP_VERIFICATION.md for secret/provider setup
 - ALAT/Wema remains an honest placeholder until official credentials and documentation are supplied.

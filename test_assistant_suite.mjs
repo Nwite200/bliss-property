@@ -93,6 +93,8 @@ const mkt1 = createUser('dh.mkt1@bliss.com', 'Digital Human Marketer One', 'Mark
 const mkt2 = createUser('dh.mkt2@bliss.com', 'Digital Human Marketer Two', 'Marketer', 2);
 const fin = createUser('dh.fin@bliss.com', 'Digital Human Finance', 'Finance Officer', 1);
 const care = createUser('dh.care@bliss.com', 'Digital Human Care', 'Customer Care', 1);
+const teamLead = createUser('dh.lead@bliss.com', 'Digital Human Team Lead', 'Team Lead', 1);
+const otherLead = createUser('dh.lead2@bliss.com', 'Other Digital Team Lead', 'Team Lead', 1);
 const clientUser = createUser('dh.client@bliss.com', 'Digital Human Client', 'Client', 1);
 const otherClientUser = createUser('dh.other@bliss.com', 'Other Digital Client', 'Client', 1);
 
@@ -168,6 +170,13 @@ db.prepare(`
   INSERT INTO notifications (client_id,type,title,message,is_read,created_at)
   VALUES (?,'payment.verified','Other client private update','This must never reach the first client.',0,datetime('now'))
 `).run(otherClientId);
+
+db.prepare("DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE name='Digital Human Team')").run();
+db.prepare("DELETE FROM teams WHERE name='Digital Human Team'").run();
+const teamId = Number(db.prepare(`
+  INSERT INTO teams (name, branch_id, team_lead_user_id, is_active)
+  VALUES ('Digital Human Team', 1, ?, 1)
+`).run(teamLead.id).lastInsertRowid);
 
 const env = {
   DB: createD1Adapter(db),
@@ -498,6 +507,61 @@ await test('temporary-password clients cannot read portfolio data through the as
   const events = await request('/api/assistant/events', { headers: { Cookie: clientUser.cookie } });
   assert(events.status === 200 && events.data.events.length === 0, 'gated client received events');
   db.prepare('UPDATE users SET must_reset_password=0 WHERE id=?').run(clientUser.id);
+});
+
+await test('team lead can add an existing marketer in the branch to their team', async () => {
+  const available = await request(`/api/teams/${teamId}/available-members`, { headers: { Cookie: teamLead.cookie } });
+  assert(available.status === 200, `expected 200, got ${available.status}`);
+  assert(available.data.available.some(row => row.id === mkt1.id), 'eligible branch marketer not listed');
+  assert(!available.data.available.some(row => row.id === mkt2.id), 'cross-branch marketer was listed');
+  const added = await request(`/api/teams/${teamId}/members`, {
+    method: 'POST', headers: { Cookie: teamLead.cookie }, body: { user_ids: [mkt1.id] }
+  });
+  assert(added.status === 200 && added.data.added.includes(mkt1.id), `add failed: ${JSON.stringify(added.data)}`);
+  assert(db.prepare('SELECT 1 AS ok FROM team_members WHERE team_id=? AND user_id=?').get(teamId, mkt1.id), 'team membership not persisted');
+  const note = db.prepare("SELECT * FROM notifications WHERE user_id=? AND type='team.member.added' ORDER BY id DESC LIMIT 1").get(mkt1.id);
+  assert(note, 'added marketer was not notified');
+});
+
+await test('team lead cannot add staff from another branch or a non-marketer', async () => {
+  const cross = await request(`/api/teams/${teamId}/members`, {
+    method: 'POST', headers: { Cookie: teamLead.cookie }, body: { user_ids: [mkt2.id] }
+  });
+  assert(cross.status === 400, `cross-branch add should be 400, got ${cross.status}`);
+  const careAdd = await request(`/api/teams/${teamId}/members`, {
+    method: 'POST', headers: { Cookie: teamLead.cookie }, body: { user_ids: [care.id] }
+  });
+  assert(careAdd.status === 400, `non-marketer add should be 400, got ${careAdd.status}`);
+});
+
+await test('a different team lead cannot add staff to a team they do not lead', async () => {
+  const res = await request(`/api/teams/${teamId}/members`, {
+    method: 'POST', headers: { Cookie: otherLead.cookie }, body: { user_ids: [mkt1.id] }
+  });
+  assert(res.status === 403, `expected 403, got ${res.status}`);
+});
+
+await test('team lead can remove a member but not the team lead', async () => {
+  const removeSelf = await request(`/api/teams/${teamId}/members/${teamLead.id}`, {
+    method: 'DELETE', headers: { Cookie: teamLead.cookie }
+  });
+  assert(removeSelf.status === 400, `removing the lead should be 400, got ${removeSelf.status}`);
+  const remove = await request(`/api/teams/${teamId}/members/${mkt1.id}`, {
+    method: 'DELETE', headers: { Cookie: teamLead.cookie }
+  });
+  assert(remove.status === 200, `expected 200, got ${remove.status}`);
+  assert(!db.prepare('SELECT 1 AS ok FROM team_members WHERE team_id=? AND user_id=?').get(teamId, mkt1.id), 'membership was not removed');
+});
+
+await test('premium voice is optional and falls back to the browser cleanly', async () => {
+  const boot = await request('/api/assistant/bootstrap?page=/index.html');
+  assert(boot.data.tts && boot.data.tts.enabled === false, 'test environment should not have a premium voice key');
+  const speech = await request('/api/assistant/speech', {
+    method: 'POST', headers: { Cookie: clientUser.cookie },
+    body: { text: 'Welcome to Bliss Legacy Limited.', persona_key: 'adaora' }
+  });
+  assert(speech.status === 503, `expected 503 without a provider key, got ${speech.status}`);
+  assert(speech.data.fallback === 'browser', 'missing browser fallback signal');
 });
 
 await test('unknown requests fall back honestly instead of inventing data', async () => {

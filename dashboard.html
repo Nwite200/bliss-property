@@ -177,9 +177,15 @@
 
       <div class="split-grid" id="teamMembersAndProfile">
         <div class="card" id="teamMembersCard">
-          <div class="card-head"><h3>Team members</h3><a class="small muted" href="staff-management.html">Manage teams →</a></div>
+          <div class="card-head">
+            <h3>Team members</h3>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button type="button" class="btn btn-green btn-xs" id="addTeamMemberBtn" style="display:none">+ Add staff</button>
+              <a class="small muted" id="manageTeamsLink" href="staff-management.html">Manage teams →</a>
+            </div>
+          </div>
           <div class="table-responsive"><table class="table">
-            <thead><tr><th>Staff</th><th>Role</th><th>Branch</th><th>Status</th></tr></thead>
+            <thead><tr><th>Staff</th><th>Role</th><th>Branch</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="teamMembersBody"></tbody>
           </table></div>
         </div>
@@ -195,6 +201,26 @@
       </div>
     </main>
   </div>
+  <div class="modal-backdrop" id="addTeamMemberModal" role="dialog" aria-modal="true" aria-labelledby="addTeamMemberTitle">
+    <div class="modal-box" style="max-width:560px">
+      <div class="modal-header">
+        <h3 id="addTeamMemberTitle">Add staff to your team</h3>
+        <button type="button" class="icon-btn" id="closeTeamMemberModal" aria-label="Close">✕</button>
+      </div>
+      <p style="font-size:12.5px;color:var(--muted);line-height:1.6;margin-top:0">
+        These are active marketers in your branch who are not yet on your team. Adding them grants the normal team visibility for their assigned clients and leads.
+      </p>
+      <div class="small muted" id="addTeamMemberTeam" style="margin-bottom:10px"></div>
+      <div id="availableTeamMembers" class="quick-links" style="max-height:300px;overflow:auto">
+        <div class="empty-state">Loading staff…</div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap">
+        <button type="button" class="btn btn-ghost" id="cancelTeamMemberBtn">Cancel</button>
+        <button type="button" class="btn btn-green" id="saveTeamMembersBtn">Add selected staff</button>
+      </div>
+    </div>
+  </div>
+
   <script src="assets/js/staff-shell.js"></script>
   <script src="assets/js/dashboard.js"></script>
   <script src="assets/js/mobile-nav.js"></script>

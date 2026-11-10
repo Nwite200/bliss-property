@@ -148,8 +148,9 @@ This is an honest list of what the current implementation does **not** provide. 
 1. **Rule-based, not an unrestricted LLM.** The assistant uses deterministic intent routing and scoped SQL. It does not invent answers; it also cannot answer arbitrary questions outside its supported intents.
 2. **Portrait photos, not photorealistic video.** Speaking is indicated by motion/glow; there is no mouth replacement or perfect lip sync. All nine personas now have unique supplied portraits.
 3. **Voice availability differs by browser and OS.** Chrome/Edge support speech recognition more consistently than Safari. The text interface always works; the microphone disables itself with an explanation when unsupported or denied.
-4. **No licensed background instrumental music.** The existing visual logo intro remains; speech starts only after a user interaction.
-5. **No paid AI/voice services.** Responses are generated from application data, and speech uses browser-native APIs.
+4. **Hyper-realistic voice needs the ElevenLabs key.** The premium TTS integration is implemented but production currently has no `ELEVENLABS_API_KEY`, so it falls back to browser voices. Adding the key enables hyper-realistic audio immediately; spoken text is then sent to ElevenLabs.
+5. **No licensed background instrumental music.** The existing visual logo intro remains; speech starts only after a user interaction.
+6. **No paid AI/voice services are active yet.** Responses are generated from application data. Browser speech is free; ElevenLabs premium speech is optional and billed by the provider once a key is added.
 6. **Static wallets are not property-specific.** Clients with a permanent static wallet should use the per-property dynamic payment account in the dashboard when paying for a specific allocation. Static wallet transfers are credited to the client account and are not automatically allocated to one property.
 7. **Staff phone-based reset is not implemented.** Staff phone numbers live in `staff_profiles`; staff continue to reset by email. Client phone reset is fully implemented.
 8. **Handover is in-app.** It notifies and routes to an available staff member and records acceptance. It does not place a phone call.

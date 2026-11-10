@@ -73,8 +73,9 @@ persona by name (“Talk to Adaora”) to return to the concierge.
 | Capability | Implementation | Notes |
 |---|---|---|
 | Speech-to-text | `SpeechRecognition` / `webkitSpeechRecognition` | Browser/OS dependent; Chrome/Edge on desktop and Android generally support it. Safari support varies. |
-| Text-to-speech | `speechSynthesis` with available system voices | Works offline with local voices; remote voices may need network. |
-| Male/female voice selection | Scored voice list by name, language and local availability | The UI reports “Nearest available voice” when an exact gender voice is unavailable. It does not claim a synthetic gender match. |
+| Hyper-realistic speech | ElevenLabs TTS through the Worker, when `ELEVENLABS_API_KEY` is configured | Returns MP3 audio to the assistant. Falls back to browser speech if the provider is unavailable. |
+| Browser fallback speech | `speechSynthesis` with available system voices | Prefers voices containing `Natural`, `Neural`, `Premium` or `Enhanced`. Works offline with local voices. |
+| Male/female voice selection | ElevenLabs voice per persona, or scored browser voices | ElevenLabs public default voices are mapped per persona and can be overridden with `ELEVENLABS_VOICE_<PERSONA>`. Browser fallback reports “Nearest available voice” when an exact gender voice is unavailable. |
 | Speaking / listening / thinking | CSS states, captions, status label | Approximate mouth movement, not photorealistic lip sync. |
 | Interruption | Microphone start cancels speech; “Stop voice” button | Repeat uses the last response. |
 | Text-only fallback | Always available | The microphone is disabled with an explanation when unsupported or denied. |
@@ -82,6 +83,32 @@ persona by name (“Talk to Adaora”) to return to the concierge.
 
 The assistant never autoplays speech before a user interaction, and it does not
 announce events aloud while the user is typing or listening.
+
+### Premium voice setup
+
+1. Add the provider key as a production Worker secret:
+
+   ```bash
+   npx wrangler secret put ELEVENLABS_API_KEY --env production
+   ```
+
+2. Optional per-persona voice IDs:
+
+   ```bash
+   npx wrangler secret put ELEVENLABS_VOICE_ADAORA --env production
+   npx wrangler secret put ELEVENLABS_VOICE_SOLOMON --env production
+   ```
+
+3. Optional model override:
+
+   ```bash
+   npx wrangler secret put ELEVENLABS_MODEL_ID --env production
+   ```
+
+Without the key, the assistant uses browser speech. With the key, every spoken
+reply requests ElevenLabs audio from `/api/assistant/speech`; text is sent to the
+voice provider for synthesis. If the provider fails, the same response is spoken
+using the browser voice instead.
 
 ### Voice honesty
 
@@ -95,6 +122,18 @@ announce events aloud while the user is typing or listening.
 
 ---
 
+## 3b. Team Lead team staffing
+
+When a Branch Manager or MD assigns a team lead, that team lead can open their
+dashboard and use **Team members → + Add staff**:
+
+- Lists active marketers in the same branch who are not already on the team.
+- Adds selected staff to the team, notifies each added marketer and audits the change.
+- The team lead can remove standard members, but cannot remove themselves/ the team lead.
+- Cross-branch staff, clients and non-marketers are rejected server-side.
+- A different team lead cannot add staff to a team they do not lead; a Branch Manager is limited to their branch; the MD can manage any team.
+- Adding a marketer expands the team's normal client/lead visibility rules; it does not change roles or permissions.
+
 ## 4. Backend architecture
 
 ### Files
@@ -106,7 +145,7 @@ announce events aloud while the user is typing or listening.
 | `assets/js/digital-human.js` | Global widget, photo/SVG portraits, voice engine, form awareness, event polling, handover UI |
 | `assets/images/personas/*.jpg` | Supplied professional persona portraits |
 | `assets/css/digital-human.css` | Panel, portraits, animations, responsive layouts |
-| `test_assistant_suite.mjs` | 32 backend regression tests |
+| `test_assistant_suite.mjs` | 37 backend regression tests |
 | `test_browser.mjs` | Browser checks including public voice UI and persona transformation |
 
 ### Endpoints
@@ -251,10 +290,10 @@ is not implemented because staff records store phone numbers in
 | Phase 6 | 21 passed |
 | Phase 7 | 26 passed |
 | Phase 8 | 75 passed |
-| Digital human / multi-property | 32 passed |
+| Digital human / multi-property | 37 passed |
 | Seed/wipe security | 5 passed |
-| Browser (Chrome) | 5 passed |
-| **Total** | **226 passed, 0 failed** |
+| Browser (Chrome) | 6 passed |
+| **Total** | **232 passed, 0 failed** |
 
 The assistant suite covers anonymous access, published-listing filtering,
 client isolation, phone reset guidance, registration/email-optional guidance,
@@ -314,7 +353,7 @@ No new Cloudflare bindings are required. The assistant uses the existing `DB`,
 | 1 | Assistant appears throughout the public website | ✅ |
 | 2 | Assistant appears across authorised dashboards | ✅ |
 | 3 | Adaora welcomes a visitor | ✅ |
-| 4 | Users can speak and hear responses with free browser APIs | ✅ where browser supports it |
+| 4 | Users can speak and hear responses with free browser APIs or configured premium voice | ✅ with browser fallback; ElevenLabs key required for hyper-realistic audio |
 | 5 | Text fallback works | ✅ |
 | 6 | Adaora can introduce Solomon | ✅ |
 | 7 | Avatar and voice profile change | ✅ |
@@ -330,6 +369,8 @@ No new Cloudflare bindings are required. The assistant uses the existing `DB`,
 | 17 | Finance officer dashboard greeting | ✅ |
 | 18 | MD executive assistance | ✅ |
 | 19 | Super Admin administrative assistance | ✅ |
+| 20a | Team lead can add existing branch marketers to their assigned team | ✅ |
+| 20b | Cross-branch and non-marketer team additions are blocked | ✅ |
 | 20 | Solomon searches actual property records | ✅ |
 | 21 | David retrieves only authorised leads | ✅ |
 | 22 | Daniel retrieves only authorised finance data | ✅ |
@@ -346,7 +387,7 @@ No new Cloudflare bindings are required. The assistant uses the existing `DB`,
 | 33 | Mute works without breaking the app | ✅ |
 | 34 | Mobile/tablet/desktop layouts | ✅ |
 | 35 | Existing financial/commission/lead/property workflows | ✅ |
-| 36 | Existing regression tests continue to pass | ✅ 226/226 |
+| 36 | Existing regression tests continue to pass | ✅ 232/232 |
 
 Items that remain operational/limitation rather than “done”:
 

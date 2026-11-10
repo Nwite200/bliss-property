@@ -51,6 +51,9 @@
     formContextAvailable: false,
     currentCards: [],
     voiceFallback: false,
+    premiumVoice: false,
+    audio: null,
+    speechToken: 0,
     startedAt: Date.now()
   };
 
@@ -656,6 +659,7 @@
     else if (lang.indexOf("en-za") === 0) score += 18;
     else if (lang.indexOf("en-us") === 0) score += 14;
     else if (lang.indexOf("en") === 0) score += 8;
+    if (/natural|neural|premium|enhanced/.test(name)) score += 50;
     if (voice.localService) score += 4;
     if (voice.default) score += 2;
     return score;
@@ -696,8 +700,9 @@
     return chunks.slice(0, 8);
   }
 
-  function speak(text) {
+  function speakBrowser(text) {
     if (!text) return;
+    state.speechToken += 1;
     state.lastSpeech = String(text);
     if (!state.voiceEnabled) {
       setStatus("Voice off", "muted");
@@ -753,7 +758,20 @@
     });
   }
 
+  function stopAudio() {
+    if (state.audio) {
+      try { state.audio.pause(); } catch (error) { /* ignore */ }
+      try { state.audio.currentTime = 0; } catch (error) { /* ignore */ }
+      if (state.audio.src && state.audio.src.indexOf("blob:") === 0) {
+        try { URL.revokeObjectURL(state.audio.src); } catch (error) { /* ignore */ }
+      }
+      state.audio = null;
+    }
+  }
+
   function stopSpeaking() {
+    state.speechToken += 1;
+    stopAudio();
     if (state.synth) {
       try { state.synth.cancel(); } catch (error) { /* ignore */ }
     }
@@ -761,6 +779,77 @@
     el.avatar.classList.remove("is-speaking");
     el.root.classList.remove("is-speaking");
     setStatus("Online", "ok");
+  }
+
+  function speakPremium(text) {
+    var token = ++state.speechToken;
+    var persona = state.persona || {};
+    setStatus("Preparing voice…", "ok");
+    el.voiceNote.textContent = "Hyper-realistic voice";
+    fetch(API + "/speech", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: String(text || "").slice(0, 900), persona_key: persona.key || "adaora" })
+    }).then(function (response) {
+      if (!response.ok) throw new Error("Premium voice unavailable");
+      return response.blob();
+    }).then(function (blob) {
+      if (token !== state.speechToken) return;
+      if (!blob || !blob.size) throw new Error("Empty voice response");
+      var url = URL.createObjectURL(blob);
+      var audio = new Audio(url);
+      state.audio = audio;
+      audio.onplay = function () {
+        if (token !== state.speechToken) return;
+        state.speaking = true;
+        el.avatar.classList.add("is-speaking");
+        el.root.classList.add("is-speaking");
+        setStatus("Speaking…", "ok");
+      };
+      audio.onended = function () {
+        if (token !== state.speechToken) return;
+        state.speaking = false;
+        el.avatar.classList.remove("is-speaking");
+        el.root.classList.remove("is-speaking");
+        setStatus("Online", "ok");
+        try { URL.revokeObjectURL(url); } catch (error) { /* ignore */ }
+        if (state.audio === audio) state.audio = null;
+      };
+      audio.onerror = function () {
+        if (token !== state.speechToken) return;
+        state.premiumVoice = false;
+        stopAudio();
+        speakBrowser(text);
+      };
+      return audio.play().catch(function () {
+        if (token !== state.speechToken) return;
+        state.premiumVoice = false;
+        stopAudio();
+        el.voiceNote.textContent = "Browser voice fallback";
+        speakBrowser(text);
+      });
+    }).catch(function () {
+      if (token !== state.speechToken) return;
+      state.premiumVoice = false;
+      el.voiceNote.textContent = "Browser voice fallback";
+      speakBrowser(text);
+    });
+  }
+
+  function speak(text) {
+    if (!text) return;
+    state.lastSpeech = String(text);
+    if (!state.voiceEnabled) {
+      setStatus("Voice off", "muted");
+      return;
+    }
+    stopSpeaking();
+    if (state.premiumVoice) {
+      speakPremium(String(text));
+      return;
+    }
+    speakBrowser(String(text));
   }
 
   function renderAvailability(status) {
@@ -790,7 +879,9 @@
     el.mute.textContent = state.voiceEnabled ? "🔊" : "🔇";
     el.mute.setAttribute("aria-label", state.voiceEnabled ? "Turn assistant voice off" : "Turn assistant voice on");
     el.mute.title = state.voiceEnabled ? "Voice on" : "Voice off";
-    el.voiceNote.textContent = state.voiceEnabled ? "Free browser voice" : "Voice muted · text only";
+    el.voiceNote.textContent = state.voiceEnabled
+      ? (state.premiumVoice ? "Hyper-realistic voice" : "Free browser voice")
+      : "Voice muted · text only";
     if (!state.voiceEnabled) stopSpeaking();
     writeStore({ voiceEnabled: state.voiceEnabled });
     if (state.boot && state.boot.authenticated) {
@@ -1189,6 +1280,8 @@
       state.rate = data.preferences.rate || 1;
       state.pitch = data.preferences.pitch || 1;
       state.volume = data.preferences.volume || 1;
+      state.premiumVoice = Boolean(data.tts && data.tts.enabled);
+      if (state.premiumVoice && state.voiceEnabled) el.voiceNote.textContent = "Hyper-realistic voice";
       state.messages = (data.messages || []).slice(-MAX_MESSAGES);
       applyPersona(data.persona, false);
       if (data.authenticated && data.role !== "Client" && data.staff_availability) {

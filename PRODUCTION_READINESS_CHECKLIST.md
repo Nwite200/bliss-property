@@ -8,7 +8,7 @@ Use this checklist before staging and again before production. Do not tick an it
 
 - [x] Phase 1–7 functionality preserved.
 - [x] Phase 8 integration and security suite added.
-- [x] Full local regression suite passes: **226 passed, 0 failed, 0 skipped** (including 32 digital-human / multi-property tests).
+- [x] Full local regression suite passes: **232 passed, 0 failed, 0 skipped** (including 37 digital-human / multi-property tests).
 - [x] JavaScript syntax checks pass.
 - [x] Inline HTML scripts syntax-checked.
 - [x] `git diff --check` clean.
@@ -198,3 +198,14 @@ Production secrets must be set through Wrangler secrets or the Cloudflare dashbo
 - [ ] Configure Cloudflare WAF/rate limiting for `/api/assistant/message` in addition to the application-level limit.
 - [ ] Confirm staff availability process and handover ownership policy operationally.
 - [ ] Confirm whether a permanent static wallet should be allocated to one property; currently per-property dynamic accounts are recommended.
+
+
+---
+
+## J. Optional hyper-realistic voice and Team Lead staffing
+
+- [ ] Add `ELEVENLABS_API_KEY` as a production Worker secret to enable hyper-realistic voice.
+- [ ] Optionally set per-persona `ELEVENLABS_VOICE_<PERSONA>` overrides.
+- [ ] Confirm the voice provider data-processing and billing terms.
+- [x] Team Lead can add/remove active marketers in their own branch team.
+- [x] Cross-branch, client and non-marketer additions are rejected server-side.

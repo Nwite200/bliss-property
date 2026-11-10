@@ -5574,6 +5574,30 @@ const DIGITAL_HUMAN_PERSONAS = [
   }
 ];
 const DIGITAL_HUMAN_PERSONA_MAP = Object.fromEntries(DIGITAL_HUMAN_PERSONAS.map(p => [p.key, p]));
+
+// Premium voice mapping. These are ElevenLabs public default voices; each can
+// be overridden per persona with ELEVENLABS_VOICE_<PERSONA> in Worker secrets.
+const DIGITAL_HUMAN_ELEVENLABS_VOICES = {
+  adaora: "21m00Tcm4TlvDq8ikWAM",
+  solomon: "pNInz6obpgDQGcFmaJgB",
+  chiamaka: "EXAVITQu4vr4xnSDxMaL",
+  emeka: "ErXwobaYiN019PkySvjV",
+  amara: "MF3mGyEYCl7XYWbV9V6O",
+  david: "TxGEqnHWrfWFTfGW9XjX",
+  ngozi: "AZnzlk1XvdvUeBnXmlld",
+  daniel: "VR6AewLTigWG4xSOukaG",
+  ifeoma: "21m00Tcm4TlvDq8ikWAM"
+};
+
+function digitalHumanTtsConfig(env) {
+  const key = String(env.ELEVENLABS_API_KEY || "").trim();
+  return {
+    provider: key ? "elevenlabs" : null,
+    enabled: Boolean(key),
+    model: String(env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2")
+  };
+}
+
 const ASSISTANT_FORM_FIELD_LABELS = {
   full_name: "Full name", email: "Email address", email_address: "Email address",
   phone_number: "Phone number", password: "Password", confirm_password: "Confirm password",
@@ -14818,6 +14842,104 @@ async function handleFetch(request, env) {
       return json({ ok: true, team_ids: teamIds });
     }
 
+    // ---- Team member self-service (Team Lead / Branch Manager / MD) ----
+    const teamMembersMatch = path.match(/^\/api\/teams\/(\d+)\/available-members$/);
+    if (teamMembersMatch && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const team = await env.DB.prepare("SELECT * FROM teams WHERE id=?").bind(teamMembersMatch[1]).first();
+      if (!team) return json({ error: "Team not found" }, 404);
+      const role = actor.actual_role_name || actor.role_name;
+      const allowed = role === "Managing Director" || role === "Super Admin"
+        || (role === "Branch Manager" && Number(team.branch_id) === Number(actor.branch_id))
+        || (role === "Team Lead" && Number(team.team_lead_user_id) === Number(actor.id) && Number(team.is_active) === 1);
+      if (!allowed) return json({ error: "Forbidden" }, 403);
+      const { results } = await env.DB.prepare(`
+        SELECT u.id, u.full_name, u.email, u.branch_id, r.name AS role_name
+        FROM users u JOIN roles r ON r.id=u.role_id
+        WHERE u.is_active=1 AND r.name='Marketer' AND u.branch_id=?
+          AND u.id NOT IN (SELECT user_id FROM team_members WHERE team_id=?)
+        ORDER BY u.full_name LIMIT 100
+      `).bind(team.branch_id, team.id).all();
+      return json({ team: { id: team.id, name: team.name, branch_id: team.branch_id }, available: results || [] });
+    }
+
+    const teamMembersAddMatch = path.match(/^\/api\/teams\/(\d+)\/members$/);
+    if (teamMembersAddMatch && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const team = await env.DB.prepare("SELECT * FROM teams WHERE id=?").bind(teamMembersAddMatch[1]).first();
+      if (!team) return json({ error: "Team not found" }, 404);
+      if (Number(team.is_active) !== 1) return json({ error: "This team is inactive" }, 409);
+      const role = actor.actual_role_name || actor.role_name;
+      const allowed = role === "Managing Director" || role === "Super Admin"
+        || (role === "Branch Manager" && Number(team.branch_id) === Number(actor.branch_id))
+        || (role === "Team Lead" && Number(team.team_lead_user_id) === Number(actor.id));
+      if (!allowed) return json({ error: "Only this team's lead, its branch manager or the MD can add members" }, 403);
+      const body = await request.json().catch(() => ({}));
+      const requested = Array.isArray(body.user_ids) ? body.user_ids : (body.user_id !== undefined ? [body.user_id] : []);
+      const userIds = [...new Set(requested.map(Number).filter(Number.isInteger))].slice(0, 50);
+      if (!userIds.length) return json({ error: "Select at least one staff member" }, 400);
+      const { results: eligible } = await env.DB.prepare(`
+        SELECT u.id, u.full_name, u.branch_id, r.name AS role_name
+        FROM users u JOIN roles r ON r.id=u.role_id
+        WHERE u.id IN (${placeholders(userIds)}) AND u.is_active=1 AND r.name='Marketer'
+      `).bind(...userIds).all();
+      if (eligible.length !== userIds.length || eligible.some(row => Number(row.branch_id) !== Number(team.branch_id))) {
+        return json({ error: "Members must be active marketers in this team's branch" }, 400);
+      }
+      const added = [];
+      for (const member of eligible) {
+        const existing = await env.DB.prepare(
+          "SELECT 1 AS ok FROM team_members WHERE team_id=? AND user_id=?"
+        ).bind(team.id, member.id).first();
+        if (existing) continue;
+        await env.DB.prepare("INSERT OR IGNORE INTO team_members (team_id, user_id) VALUES (?, ?)")
+          .bind(team.id, member.id).run();
+        added.push(member.id);
+        await createNotification(env, {
+          userId: member.id,
+          type: "team.member.added",
+          title: "Added to a team",
+          message: `You were added to ${team.name}${actor.full_name ? " by " + actor.full_name : ""}.`,
+          metadata: { team_id: team.id, team_name: team.name, added_by: actor.id }
+        }).catch(() => {});
+      }
+      await audit(env, actor.id, "team.member.add", "team", String(team.id), {
+        team_name: team.name, user_ids: added, requested_by_role: role
+      }, team.branch_id);
+      return json({ ok: true, added, skipped: userIds.length - added.length, team_id: team.id });
+    }
+
+    const teamMemberRemoveMatch = path.match(/^\/api\/teams\/(\d+)\/members\/(\d+)$/);
+    if (teamMemberRemoveMatch && request.method === "DELETE") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const team = await env.DB.prepare("SELECT * FROM teams WHERE id=?").bind(teamMemberRemoveMatch[1]).first();
+      if (!team) return json({ error: "Team not found" }, 404);
+      const role = actor.actual_role_name || actor.role_name;
+      const allowed = role === "Managing Director" || role === "Super Admin"
+        || (role === "Branch Manager" && Number(team.branch_id) === Number(actor.branch_id))
+        || (role === "Team Lead" && Number(team.team_lead_user_id) === Number(actor.id));
+      if (!allowed) return json({ error: "Forbidden" }, 403);
+      const targetId = Number(teamMemberRemoveMatch[2]);
+      if (Number(team.team_lead_user_id) === targetId) {
+        return json({ error: "The team lead cannot be removed from their own team" }, 400);
+      }
+      const removed = await env.DB.prepare(
+        "DELETE FROM team_members WHERE team_id=? AND user_id=?"
+      ).bind(team.id, targetId).run();
+      if (!removed.meta || Number(removed.meta.changes) === 0) {
+        return json({ error: "Staff member is not on this team" }, 404);
+      }
+      await audit(env, actor.id, "team.member.remove", "team", String(team.id), {
+        team_name: team.name, removed_user_id: targetId
+      }, team.branch_id);
+      return json({ ok: true });
+    }
+
     // ---- Team detail and management ----
     const teamMatch = path.match(/^\/api\/teams\/(\d+)$/);
     if (teamMatch && request.method === "GET") {
@@ -17006,7 +17128,17 @@ async function handleFetch(request, env) {
           email: siteConfig.email || "",
           whatsapp: siteConfig.whatsapp || ""
         },
-        voice_note: "Voice uses the browser's free SpeechRecognition and SpeechSynthesis APIs. Availability differs by browser and operating system. Text input always works."
+        tts: (() => {
+          const tts = digitalHumanTtsConfig(env);
+          return {
+            enabled: tts.enabled,
+            provider: tts.provider,
+            label: tts.enabled ? "Hyper-realistic neuro voice" : "Browser voice"
+          };
+        })(),
+        voice_note: digitalHumanTtsConfig(env).enabled
+          ? "Hyper-realistic voice is enabled. If it is unavailable, the assistant falls back to your browser voice."
+          : "Voice uses the browser's free SpeechRecognition and SpeechSynthesis APIs. Availability differs by browser and operating system. Text input always works."
       });
     }
 
@@ -17268,6 +17400,65 @@ async function handleFetch(request, env) {
           availability_updated_at=datetime('now'), updated_at=datetime('now')
       `).bind(actor.id, status).run();
       return json({ ok: true, status });
+    }
+
+    if (path === "/api/assistant/speech" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const tts = digitalHumanTtsConfig(env);
+      if (!tts.enabled) {
+        return json({ error: "Premium voice is not configured", fallback: "browser" }, 503);
+      }
+      const actor = await getSessionUser(env, request);
+      const body = await request.json().catch(() => ({}));
+      const persona = digitalHumanPersona(body.persona_key);
+      const text = String(body.text || "").replace(/\s+/g, " ").trim().slice(0, 900);
+      if (!text) return json({ error: "Text is required" }, 400);
+      const rateKey = actor ? `user:${actor.id}` : `ip:${clientIp(request)}`;
+      if (await recentAuditCount(env, "assistant.speech", rateKey, 5) >= 40) {
+        return json({ error: "Voice requests are temporarily limited. Please try again shortly.", fallback: "browser" }, 429);
+      }
+      await audit(env, actor ? actor.id : null, "assistant.speech", "assistant_voice", rateKey, {
+        persona: persona.key, characters: text.length, provider: tts.provider
+      }, actor ? actor.branch_id : null);
+      const envVoiceKey = "ELEVENLABS_VOICE_" + persona.key.toUpperCase();
+      const voiceId = String(env[envVoiceKey] || DIGITAL_HUMAN_ELEVENLABS_VOICES[persona.key] || DIGITAL_HUMAN_ELEVENLABS_VOICES.adaora);
+      let upstream;
+      try {
+        upstream = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
+          method: "POST",
+          headers: {
+            "xi-api-key": String(env.ELEVENLABS_API_KEY || ""),
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg"
+          },
+          body: JSON.stringify({
+            text,
+            model_id: tts.model,
+            voice_settings: {
+              stability: 0.42,
+              similarity_boost: 0.82,
+              style: 0.28,
+              use_speaker_boost: true
+            }
+          })
+        });
+      } catch (error) {
+        return json({ error: "Premium voice provider is unreachable", fallback: "browser" }, 502);
+      }
+      if (!upstream.ok) {
+        const detail = await upstream.text().catch(() => "");
+        console.error("ElevenLabs TTS error", upstream.status, detail.slice(0, 300));
+        return json({ error: "Premium voice provider rejected the request", fallback: "browser" }, 502);
+      }
+      const audio = await upstream.arrayBuffer();
+      return new Response(audio, {
+        status: 200,
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "Cache-Control": "private, max-age=3600",
+          "X-Voice-Provider": "elevenlabs"
+        }
+      });
     }
 
     // Unknown API routes must never fall through to static assets.
