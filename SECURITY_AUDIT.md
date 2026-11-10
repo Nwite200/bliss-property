@@ -231,7 +231,7 @@ Outstanding production hardening:
 ## 9. Post-launch security hardening (2026-11-10)
 
 The following controls were added after the initial Phase 8 audit and are covered by
-the current 252-test suite:
+the current 260-test suite:
 
 | Control | Implementation |
 |---|---|
@@ -257,3 +257,40 @@ Remaining hardening work:
 - The Cloudflare Workers rate-limit binding is enabled in code. Dashboard-level WAF rules remain recommended for volumetric/DDoS protection.
 - The per-session double-submit CSRF token is enforced for browser-origin state changes.
 - Add a real RUM/analytics pipeline for security anomaly detection; current observability is Worker logs/audit rows.
+
+
+---
+
+## 10. Passkey / WebAuthn authentication (2026-11-10)
+
+Passkeys were added additively; password login, sessions, roles and permissions were not replaced.
+
+| Control | Implementation |
+|---|---|
+| WebAuthn library | `@simplewebauthn/server` 14.1.0, Worker-compatible; bundle ~1.81 MiB / 324 KiB gzip |
+| Challenge generation | 32 random bytes via `crypto.getRandomValues` |
+| Challenge lifetime | Five minutes; expired challenges rejected |
+| Challenge replay | Consumed before verification; a second use is rejected |
+| Origin / RP ID | Stored challenge values plus `expectedOrigin` / `expectedRPID`; production pinned to `blisspayment.com.ng` |
+| Signature | Verified server-side against the stored public key |
+| User verification | Required for registration and authentication |
+| Credential ownership | Registration tied to the session user; login/delete scoped to the credential owner |
+| Cross-user attempt | Challenge user and credential owner must match |
+| Counter | Updated from verified authentication info |
+| CSRF | Existing double-submit token, Origin/Host and Fetch-Metadata checks |
+| Rate limiting | Edge binding plus 10 failed passkey attempts per IP / 15 minutes |
+| Session creation | Existing rotated `bliss_session`; role and account-status checks reused |
+| Device removal | Current password required; ownership verified |
+| Audit | Register, rename, delete, success, failure, denied removal and lockout |
+| Data minimisation | Public key and WebAuthn metadata only; no biometrics, PINs, private keys or session tokens stored or logged |
+
+Automated coverage:
+
+- Phase 8 suite: 79 tests, including passkey registration authorization, CSRF, challenge one-time use, unknown/expired/replayed/wrong-origin/wrong-RP/cross-user assertions, ownership, password reauthentication, password recovery and rate limiting.
+- Browser suite: 11 tests using Chrome CDP virtual authenticator for registration, login, role preservation, replay, tampered signature, expired challenge, wrong origin/RP ID, multiple devices, rename, removal and recovery.
+
+Outstanding:
+
+- Physical Touch ID, Face ID, Windows Hello and Android fingerprint acceptance must be performed on real devices and recorded. Virtual authenticators cannot validate biometric hardware.
+- Browser UI cannot truthfully reveal whether the authenticator used fingerprint, face or PIN; it reports only the device label and metadata.
+- Account recovery still relies on the existing password-reset/SMS/email channels.

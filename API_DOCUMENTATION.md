@@ -46,6 +46,38 @@ Status codes used: `200`, `400`, `401`, `403`, `404`, `409`, `429`, `500`, `503`
 | POST | `/api/password-reset-request` | Public | Create reset token (rate limited) |
 | POST | `/api/password-reset` | Public | Consume reset token, revoke sessions |
 | POST | `/api/change-password` | Any user | Change own password |
+| POST | `/api/passkey/register/options` | Any user | Create WebAuthn registration options |
+| POST | `/api/passkey/register/verify` | Any user | Verify attestation and store a public key |
+| POST | `/api/passkey/login/options` | Public | Create a WebAuthn authentication challenge |
+| POST | `/api/passkey/login/verify` | Public | Verify assertion and create a normal session |
+| GET | `/api/passkeys` | Any user | List owned passkeys |
+| PATCH | `/api/passkeys/:id` | Owner | Rename a passkey |
+| DELETE | `/api/passkeys/:id` | Owner + current password | Remove a passkey |
+
+### Passkey / WebAuthn endpoints
+
+Responses follow the SimpleWebAuthn JSON shape. `challenge_id` is returned by the options endpoint and must be sent to the matching verify endpoint. Challenges expire after five minutes and are single-use.
+
+Registration verify body:
+
+```json
+{
+  "challenge_id": "uuid",
+  "device_name": "Work laptop",
+  "response": { "id": "...", "rawId": "...", "type": "public-key", "response": { "..." : "..." } }
+}
+```
+
+Login verify body:
+
+```json
+{
+  "challenge_id": "uuid",
+  "response": { "id": "...", "rawId": "...", "type": "public-key", "response": { "..." : "..." } }
+}
+```
+
+Removal requires `{"current_password":"..."}`. The list endpoint never returns `public_key` or `credential_id`. See `PASSKEY_AUTHENTICATION.md` for the full security model.
 
 ### `POST /api/public/enquiries`
 

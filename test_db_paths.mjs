@@ -19,16 +19,14 @@ function hasBusinessSchema(path) {
 // hard-coded miniflare hash. The hash changes when the production database_id
 // is configured in wrangler.toml.
 export function resolveLiveDb() {
-  const preferred = join(D1_DIR, 'c6c9fe2e839a026d2bc28c3710008b8d91b43bb2bed7c7b18fa3ea4062dfb1a0.sqlite');
-  if (existsSync(preferred) && hasBusinessSchema(preferred)) return preferred;
-  if (!existsSync(D1_DIR)) return preferred;
+  const fallback = join(D1_DIR, 'c6c9fe2e839a026d2bc28c3710008b8d91b43bb2bed7c7b18fa3ea4062dfb1a0.sqlite');
+  if (!existsSync(D1_DIR)) return fallback;
   const candidates = readdirSync(D1_DIR)
-    .filter(name => name.endsWith('.sqlite'))
-    .filter(name => !name.includes('-test'))
-    .filter(name => name !== 'metadata.sqlite')
-    .filter(name => !name.startsWith('phase8-clean'))
+    // Real Wrangler D1 files are named with a 64-character hash. Restricting
+    // the search keeps manual debug copies out of the test database selection.
+    .filter(name => /^[a-f0-9]{64}\.sqlite$/.test(name))
     .map(name => join(D1_DIR, name))
     .filter(hasBusinessSchema)
     .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  return candidates[0] || preferred;
+  return candidates[0] || fallback;
 }

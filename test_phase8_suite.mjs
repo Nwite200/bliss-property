@@ -299,6 +299,185 @@ await test('cross-site state-changing requests are rejected by fetch metadata an
   assert(origin.status === 403, `cross-origin request expected 403, got ${origin.status}`);
 });
 
+console.log('--- 1b. Passkeys / WebAuthn security ---');
+const passkeyB64 = (bytes) => randomBytes(bytes).toString('base64url');
+function insertPasskeyCredential(userId, credentialId, name = 'Test device') {
+  db.prepare(`INSERT INTO passkey_credentials
+    (user_id, credential_id, public_key, counter, transports, device_type, backed_up, credential_name)
+    VALUES (?, ?, ?, 0, '["internal"]', 'singleDevice', 0, ?)`)
+    .run(userId, credentialId, passkeyB64(65), name);
+  return db.prepare('SELECT id FROM passkey_credentials WHERE credential_id=?').get(credentialId).id;
+}
+function insertPasskeyChallenge({ userId, type = 'authenticate', rpId = 'localhost', origin = 'http://localhost', expires = '+5 minutes', consumed = null }) {
+  const id = crypto.randomUUID();
+  const challenge = passkeyB64(32);
+  db.prepare(`INSERT INTO passkey_challenges (id, challenge, user_id, type, rp_id, origin, expires_at, consumed_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?), ?)`)
+    .run(id, challenge, userId, type, rpId, origin, expires, consumed);
+  return { id, challenge };
+}
+function fakePasskeyAssertion(challengeId, credentialId) {
+  return {
+    challenge_id: challengeId,
+    response: {
+      id: credentialId,
+      rawId: credentialId,
+      type: 'public-key',
+      clientExtensionResults: {},
+      response: {
+        clientDataJSON: passkeyB64(20),
+        authenticatorData: passkeyB64(37),
+        signature: passkeyB64(64),
+        userHandle: null
+      }
+    }
+  };
+}
+
+await test('passkey registration and device management require an authenticated owner', async () => {
+  const unauthenticated = await request('/api/passkey/register/options', { method: 'POST' });
+  assert(unauthenticated.status === 401, `unauthenticated registration options expected 401, got ${unauthenticated.status}`);
+  const crossOrigin = await request('/api/passkey/register/options', {
+    method: 'POST', headers: { Cookie: mdCookie, Origin: 'https://evil.example' }
+  });
+  assert(crossOrigin.status === 403, `cross-origin registration options expected 403, got ${crossOrigin.status}`);
+  const listUnauthenticated = await request('/api/passkeys');
+  assert(listUnauthenticated.status === 401, 'unauthenticated passkey list must be rejected');
+
+  const options = await request('/api/passkey/register/options', { method: 'POST', headers: { Cookie: tlCookie } });
+  assert(options.status === 200 && options.data.challenge_id && options.data.options, 'registration options were not issued');
+  assert(options.data.options.rp.id === 'localhost', `wrong registration RP ID: ${options.data.options.rp.id}`);
+  assert(options.data.options.authenticatorSelection.userVerification === 'required', 'registration must require user verification');
+  assert(options.data.options.authenticatorSelection.residentKey === 'required', 'registration must require a discoverable credential');
+  const challengeRow = db.prepare('SELECT * FROM passkey_challenges WHERE id=?').get(options.data.challenge_id);
+  assert(challengeRow && Number(challengeRow.user_id) === Number(tlId) && challengeRow.type === 'register', 'registration challenge not bound to the user');
+
+  const bogusRegistration = {
+    challenge_id: options.data.challenge_id,
+    response: {
+      id: passkeyB64(16), rawId: passkeyB64(16), type: 'public-key', clientExtensionResults: {},
+      response: { clientDataJSON: passkeyB64(20), attestationObject: passkeyB64(40) }
+    }
+  };
+  const first = await request('/api/passkey/register/verify', {
+    method: 'POST', headers: { Cookie: tlCookie }, body: bogusRegistration
+  });
+  assert(first.status === 400, `invalid registration response expected 400, got ${first.status}`);
+  const consumed = db.prepare('SELECT consumed_at FROM passkey_challenges WHERE id=?').get(options.data.challenge_id);
+  assert(consumed && consumed.consumed_at, 'registration challenge must be consumed before verification');
+  const replay = await request('/api/passkey/register/verify', {
+    method: 'POST', headers: { Cookie: tlCookie }, body: bogusRegistration
+  });
+  assert(replay.status === 400, `replayed registration challenge expected 400, got ${replay.status}`);
+});
+
+await test('passkey login rejects unknown credentials, bad challenges, wrong origin/RP ID and cross-user attempts', async () => {
+  const credentialId = passkeyB64(16);
+  const bmCredentialId = passkeyB64(16);
+  insertPasskeyCredential(mdId, credentialId);
+  insertPasskeyCredential(bm1Id, bmCredentialId);
+  const ip = '203.0.113.202';
+
+  const unknown = await request('/api/passkey/login/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip }, body: fakePasskeyAssertion(passkeyB64(16), passkeyB64(16))
+  });
+  assert(unknown.status === 401, `unknown credential expected 401, got ${unknown.status}`);
+
+  const expired = insertPasskeyChallenge({ userId: mdId, expires: '-1 minute' });
+  const expiredResult = await request('/api/passkey/login/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip }, body: fakePasskeyAssertion(expired.id, credentialId)
+  });
+  assert(expiredResult.status === 401, `expired challenge expected 401, got ${expiredResult.status}`);
+
+  const replayed = insertPasskeyChallenge({ userId: mdId, consumed: new Date().toISOString().replace('T', ' ').slice(0, 19) });
+  const replayedResult = await request('/api/passkey/login/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip }, body: fakePasskeyAssertion(replayed.id, credentialId)
+  });
+  assert(replayedResult.status === 401, `replayed challenge expected 401, got ${replayedResult.status}`);
+
+  const wrongOrigin = insertPasskeyChallenge({ userId: mdId, origin: 'https://evil.example' });
+  const wrongOriginResult = await request('/api/passkey/login/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip }, body: fakePasskeyAssertion(wrongOrigin.id, credentialId)
+  });
+  assert(wrongOriginResult.status === 401, `wrong origin expected 401, got ${wrongOriginResult.status}`);
+
+  const wrongRp = insertPasskeyChallenge({ userId: mdId, rpId: 'evil.example' });
+  const wrongRpResult = await request('/api/passkey/login/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip }, body: fakePasskeyAssertion(wrongRp.id, credentialId)
+  });
+  assert(wrongRpResult.status === 401, `wrong RP ID expected 401, got ${wrongRpResult.status}`);
+
+  const crossUser = insertPasskeyChallenge({ userId: tlId });
+  const crossUserResult = await request('/api/passkey/login/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip }, body: fakePasskeyAssertion(crossUser.id, credentialId)
+  });
+  assert(crossUserResult.status === 401, `cross-user credential expected 401, got ${crossUserResult.status}`);
+
+  const badSignature = insertPasskeyChallenge({ userId: mdId });
+  const badSignatureResult = await request('/api/passkey/login/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip }, body: fakePasskeyAssertion(badSignature.id, credentialId)
+  });
+  assert(badSignatureResult.status === 401, `invalid signature expected 401, got ${badSignatureResult.status}`);
+  const audit = db.prepare("SELECT action FROM audit_logs WHERE action='passkey.login.failure' ORDER BY id DESC LIMIT 1").get();
+  assert(audit && audit.action === 'passkey.login.failure', 'passkey login failure was not audited');
+});
+
+await test('passkey list, rename and removal enforce ownership and password reauthentication', async () => {
+  const credentialId = passkeyB64(16);
+  const credentialRowId = insertPasskeyCredential(mdId, credentialId, 'Old device name');
+  const bmCredentialId = passkeyB64(16);
+  const bmRowId = insertPasskeyCredential(bm1Id, bmCredentialId, 'BM device');
+
+  const list = await request('/api/passkeys', { headers: { Cookie: mdCookie } });
+  assert(list.status === 200, `passkey list expected 200, got ${list.status}`);
+  const listed = list.data.passkeys.find(item => Number(item.id) === Number(credentialRowId));
+  assert(listed && listed.credential_name === 'Old device name', 'owned passkey missing from list');
+  assert(!('public_key' in listed) && !('credential_id' in listed), 'private credential material must not be returned to the browser');
+
+  const rename = await request(`/api/passkeys/${credentialRowId}`, {
+    method: 'PATCH', headers: { Cookie: mdCookie }, body: { credential_name: 'Work laptop' }
+  });
+  assert(rename.status === 200, `passkey rename expected 200, got ${rename.status}`);
+  const renamed = db.prepare('SELECT credential_name FROM passkey_credentials WHERE id=?').get(credentialRowId);
+  assert(renamed.credential_name === 'Work laptop', 'passkey rename was not saved');
+
+  const crossUserRename = await request(`/api/passkeys/${bmRowId}`, {
+    method: 'PATCH', headers: { Cookie: mdCookie }, body: { credential_name: 'Hijacked' }
+  });
+  assert(crossUserRename.status === 404, `cross-user rename expected 404, got ${crossUserRename.status}`);
+
+  const denied = await request(`/api/passkeys/${credentialRowId}`, {
+    method: 'DELETE', headers: { Cookie: mdCookie }, body: { current_password: 'wrong-password' }
+  });
+  assert(denied.status === 403, `passkey removal without password expected 403, got ${denied.status}`);
+  const stillThere = db.prepare('SELECT id FROM passkey_credentials WHERE id=?').get(credentialRowId);
+  assert(stillThere, 'passkey was removed without valid reauthentication');
+
+  const removed = await request(`/api/passkeys/${credentialRowId}`, {
+    method: 'DELETE', headers: { Cookie: mdCookie }, body: { current_password: 'password123' }
+  });
+  assert(removed.status === 200, `passkey removal expected 200, got ${removed.status}`);
+  const gone = db.prepare('SELECT id FROM passkey_credentials WHERE id=?').get(credentialRowId);
+  assert(!gone, 'passkey was not removed after valid reauthentication');
+
+  const stillPasswordLogin = await request('/api/login', {
+    method: 'POST', body: { email: 'md.p8@bliss.com', password: 'password123' }
+  });
+  assert(stillPasswordLogin.status === 200, 'password login must remain available after removing a passkey');
+});
+
+await test('passkey login is rate limited per source address', async () => {
+  const ip = '198.51.100.77';
+  for (let i = 0; i < 10; i++) {
+    db.prepare("INSERT INTO audit_logs (action, target_type, target_id, metadata) VALUES ('passkey.login.ip_failure','ip',?, '{}')").run(ip);
+  }
+  const limited = await request('/api/passkey/login/verify', {
+    method: 'POST', headers: { 'CF-Connecting-IP': ip },
+    body: fakePasskeyAssertion(passkeyB64(16), passkeyB64(16))
+  });
+  assert(limited.status === 429, `rate limited passkey login expected 429, got ${limited.status}`);
+});
+
 await test('malformed JSON returns a controlled 400 instead of an unhandled worker error', async () => {
   const res = await request('/api/signup', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{'
@@ -3032,7 +3211,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 32, `expected 32 migrations, found ${files.length}`);
+  assert(files.length === 33, `expected 33 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { randomBytes, pbkdf2Sync } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
+import { createServer } from 'node:net';
 import { chromium } from 'playwright-core';
 import { resolveLiveDb } from './test_db_paths.mjs';
 
@@ -21,7 +22,17 @@ function resolveDevDb() {
   return resolveLiveDb();
 }
 const LIVE_DB = resolveDevDb();
-const PORT = Number(process.env.BROWSER_TEST_PORT || (8800 + Math.floor(Math.random() * 90)));
+async function findFreePort() {
+  return await new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const port = probe.address().port;
+      probe.close(() => resolve(port));
+    });
+  });
+}
+const PORT = Number(process.env.BROWSER_TEST_PORT || await findFreePort());
 const BASE = `http://localhost:${PORT}`;
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const PASSWORD = randomBytes(18).toString('base64url');
@@ -107,6 +118,8 @@ function upsert(email, name, role, branch) {
 }
 const mdId = upsert('browser.md@bliss.test', 'Browser MD', mdRole, ikeja);
 const marketerId = upsert('browser.marketer@bliss.test', 'Browser Marketer', marketerRole, ikeja);
+const passkeyUserId = upsert('browser.passkey@bliss.test', 'Browser Passkey', marketerRole, ikeja);
+upsert('browser.passkey.other@bliss.test', 'Browser Passkey Other', marketerRole, ikeja);
 const browserTeamLeadId = upsert('browser.lead@bliss.test', 'Browser Team Lead', roleId('Team Lead'), ikeja);
 const teamLeadRole = roleId('Team Lead');
 db.prepare("DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE name='Browser Test Team')").run();
@@ -132,8 +145,12 @@ const server = spawn('npx', ['wrangler', 'dev', '--port', String(PORT), '--ip', 
   cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }
 });
 let serverLog = '';
+let shuttingDown = false;
 server.stdout.on('data', chunk => { serverLog += chunk.toString(); });
 server.stderr.on('data', chunk => { serverLog += chunk.toString(); });
+server.on('exit', (code, signal) => {
+  if (!shuttingDown && code) console.error(`\n  ⚠ wrangler dev exited early (${code}/${signal}):\n${serverLog.slice(-1500)}\n`);
+});
 
 let browser;
 try {
@@ -149,6 +166,11 @@ try {
   const pageB = await contextB.newPage();
   const pageC = await contextC.newPage();
   const pageD = await contextD.newPage();
+  let passkeyContext;
+  let passkeyPage;
+  let passkeyCdp;
+  let passkeyAuthenticatorId;
+  let passkeyCapturedLogin = null;
 
   await test('drill-down breadcrumbs show National > Branch > Team Lead and can drill back up', async () => {
     await login(pageA, 'browser.md@bliss.test');
@@ -291,6 +313,246 @@ try {
     }, 'Browser Marketer', { timeout: 20000 });
   });
 
+  await test('a user can register a passkey after password login and manage it', async () => {
+    passkeyContext = await browser.newContext();
+    passkeyPage = await passkeyContext.newPage();
+    passkeyCdp = await passkeyContext.newCDPSession(passkeyPage);
+    await passkeyCdp.send('WebAuthn.enable', { enableUI: false });
+    const authenticator = await passkeyCdp.send('WebAuthn.addVirtualAuthenticator', {
+      options: {
+        protocol: 'ctap2',
+        transport: 'internal',
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true
+      }
+    });
+    passkeyAuthenticatorId = authenticator.authenticatorId;
+
+    await goto(passkeyPage, BASE + '/login.html');
+    await passkeyPage.fill('#email', 'browser.passkey@bliss.test');
+    await passkeyPage.fill('#password', PASSWORD);
+    await passkeyPage.click('#submitBtn');
+    await passkeyPage.waitForSelector('#blissPasskeyModal.open', { timeout: 25000 });
+    const suggested = await passkeyPage.inputValue('#blissPasskeyName');
+    assert(suggested && suggested.length > 0, 'the enrollment prompt must suggest a generic device name');
+    await passkeyPage.fill('#blissPasskeyName', 'Test laptop');
+    await passkeyPage.click('#blissPasskeyEnable');
+    await passkeyPage.waitForURL(url => url.pathname === '/dashboard', { timeout: 25000 });
+
+    await goto(passkeyPage, BASE + '/security.html');
+    await passkeyPage.waitForSelector('#passkeyList .pk-device', { timeout: 20000 });
+    const listText = await passkeyPage.locator('#passkeyList').innerText();
+    assert(/Test laptop/.test(listText), `registered passkey missing from device list: ${listText}`);
+
+    const live = new DatabaseSync(LIVE_DB);
+    const stored = live.prepare('SELECT * FROM passkey_credentials WHERE user_id=?').get(passkeyUserId);
+    const columns = live.prepare('PRAGMA table_info(passkey_credentials)').all().map(row => row.name);
+    live.close();
+    assert(stored && stored.credential_name === 'Test laptop', 'passkey was not stored in D1');
+    assert(stored.public_key && stored.credential_id, 'public key credential metadata was not stored');
+    assert(!columns.some(name => /private|biometric|fingerprint|face|pin/i.test(name)), 'passkey table must not contain biometric or private-key fields');
+
+    await passkeyPage.click('[data-passkey-action="rename"]');
+    await passkeyPage.waitForSelector('#renamePasskeyModal.open', { timeout: 10000 });
+    await passkeyPage.fill('#renamePasskeyName', 'Work laptop');
+    await passkeyPage.click('#savePasskeyNameBtn');
+    await passkeyPage.waitForFunction(() => /Work laptop/.test(document.getElementById('passkeyList')?.textContent || ''), { timeout: 10000 });
+    await goto(passkeyPage, BASE + '/security.html');
+    await passkeyPage.waitForSelector('#passkeyList .pk-device', { timeout: 20000 });
+    assert(/Work laptop/.test(await passkeyPage.locator('#passkeyList').innerText()), 'renamed passkey did not survive a reload');
+  });
+
+  await test('passkey sign-in creates a normal session, preserves role and rejects replay', async () => {
+    const reset = new DatabaseSync(LIVE_DB);
+    reset.prepare("DELETE FROM audit_logs WHERE action='passkey.login.ip_failure'").run();
+    reset.close();
+    await passkeyPage.evaluate(async () => { await fetch('/api/logout', { method: 'POST', credentials: 'include' }); });
+    await goto(passkeyPage, BASE + '/login.html');
+    await passkeyPage.route('**/api/passkey/login/verify', async route => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      passkeyCapturedLogin = body;
+      await route.continue();
+    });
+    await passkeyPage.click('#passkeyLoginBtn');
+    try {
+      await passkeyPage.waitForURL(url => url.pathname === '/dashboard', { timeout: 25000 });
+    } catch (error) {
+      const state = await passkeyPage.evaluate(() => ({
+        url: location.href,
+        message: document.getElementById('msg')?.textContent || '',
+        button: document.getElementById('passkeyLoginBtn')?.outerHTML || '',
+        hasLibrary: Boolean(window.BlissPasskeys),
+        supported: window.BlissPasskeys ? window.BlissPasskeys.supported() : false,
+        readyState: document.readyState
+      }));
+      throw new Error(`passkey login did not navigate: ${JSON.stringify(state)}`);
+    }
+    await passkeyPage.unroute('**/api/passkey/login/verify');
+    assert(passkeyCapturedLogin && passkeyCapturedLogin.challenge_id && passkeyCapturedLogin.response?.id, 'passkey verification request was not observed');
+    const me = await passkeyPage.evaluate(() => fetch('/api/me').then(response => response.json()));
+    assert(me.role === 'Marketer', `passkey login changed the role: ${me.role}`);
+
+    await passkeyPage.evaluate(async () => { await fetch('/api/logout', { method: 'POST', credentials: 'include' }); });
+    await goto(passkeyPage, BASE + '/login.html');
+    const replay = await passkeyPage.evaluate(async payload => {
+      const response = await fetch('/api/passkey/login/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      return { status: response.status, data: await response.json().catch(() => ({})) };
+    }, passkeyCapturedLogin);
+    assert(replay.status === 401, `replayed passkey assertion expected 401, got ${replay.status}`);
+    assert(!/abc/i.test(String(replay.data.error || '')), 'passkey errors must stay generic');
+  });
+
+  await test('tampered, expired, wrong-origin, wrong-RP and cross-user passkey assertions are rejected', async () => {
+    await goto(passkeyPage, BASE + '/login.html');
+    const live = new DatabaseSync(LIVE_DB);
+    live.exec('PRAGMA foreign_keys = ON;');
+    // Earlier runs may have left failure counters in the shared local audit log.
+    live.prepare("DELETE FROM audit_logs WHERE action='passkey.login.ip_failure'").run();
+
+    async function rejectedAttempt(routeHandler) {
+      await passkeyPage.unroute('**/api/passkey/login/verify').catch(() => {});
+      await passkeyPage.route('**/api/passkey/login/verify', routeHandler);
+      await passkeyPage.click('#passkeyLoginBtn');
+      await passkeyPage.waitForFunction(() => {
+        const message = document.getElementById('msg')?.textContent || '';
+        return /failed|cancelled|expired|not verified|too many/i.test(message);
+      }, { timeout: 25000 });
+      const message = await passkeyPage.textContent('#msg');
+      await passkeyPage.unroute('**/api/passkey/login/verify');
+      await passkeyPage.waitForFunction(() => !document.getElementById('passkeyLoginBtn')?.disabled, { timeout: 10000 });
+      return message;
+    }
+
+    const tampered = await rejectedAttempt(async route => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      const signature = String(body.response?.response?.signature || '');
+      body.response.response.signature = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
+      await route.continue({ postData: JSON.stringify(body) });
+    });
+    assert(/failed/i.test(tampered), `tampered signature was not rejected: ${tampered}`);
+
+    const expired = await rejectedAttempt(async route => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      live.prepare("UPDATE passkey_challenges SET expires_at=datetime('now','-1 minute') WHERE id=?").run(body.challenge_id);
+      await route.continue();
+    });
+    assert(/failed/i.test(expired), `expired challenge was not rejected: ${expired}`);
+
+    const wrongOrigin = await rejectedAttempt(async route => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      live.prepare("UPDATE passkey_challenges SET origin='https://evil.example' WHERE id=?").run(body.challenge_id);
+      await route.continue();
+    });
+    assert(/failed/i.test(wrongOrigin), `wrong origin was not rejected: ${wrongOrigin}`);
+
+    const wrongRp = await rejectedAttempt(async route => {
+      const body = JSON.parse(route.request().postData() || '{}');
+      live.prepare("UPDATE passkey_challenges SET rp_id='evil.example' WHERE id=?").run(body.challenge_id);
+      await route.continue();
+    });
+    assert(/failed/i.test(wrongRp), `wrong RP ID was not rejected: ${wrongRp}`);
+
+    const unknown = await passkeyPage.evaluate(async () => {
+      const start = await fetch('/api/passkey/login/options', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      }).then(response => response.json());
+      const response = await fetch('/api/passkey/login/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          challenge_id: start.challenge_id,
+          response: {
+            id: 'unknown-credential', rawId: 'unknown-credential', type: 'public-key',
+            clientExtensionResults: {}, response: { clientDataJSON: 'AA', authenticatorData: 'AA', signature: 'AA' }
+          }
+        })
+      });
+      return response.status;
+    });
+    assert(unknown === 401, `unknown credential expected 401, got ${unknown}`);
+
+    const crossUser = await passkeyPage.evaluate(async ({ email, response }) => {
+      const start = await fetch('/api/passkey/login/options', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: email })
+      }).then(result => result.json());
+      const verified = await fetch('/api/passkey/login/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challenge_id: start.challenge_id, response })
+      });
+      return verified.status;
+    }, { email: 'browser.passkey.other@bliss.test', response: passkeyCapturedLogin.response });
+    assert(crossUser === 401, `cross-user passkey assertion expected 401, got ${crossUser}`);
+    live.close();
+  });
+
+  await test('multiple passkeys can be added and removed, with password recovery intact', async () => {
+    await goto(passkeyPage, BASE + '/login.html');
+    await passkeyPage.evaluate(() => sessionStorage.setItem('bliss_passkey_prompt_skipped', '1'));
+    await passkeyPage.fill('#email', 'browser.passkey@bliss.test');
+    await passkeyPage.fill('#password', PASSWORD);
+    await passkeyPage.click('#submitBtn');
+    await passkeyPage.waitForURL(url => url.pathname === '/dashboard', { timeout: 25000 });
+
+    await passkeyCdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId: passkeyAuthenticatorId });
+    const secondAuthenticator = await passkeyCdp.send('WebAuthn.addVirtualAuthenticator', {
+      options: {
+        protocol: 'ctap2',
+        transport: 'internal',
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true
+      }
+    });
+    passkeyAuthenticatorId = secondAuthenticator.authenticatorId;
+
+    await goto(passkeyPage, BASE + '/security.html');
+    await passkeyPage.waitForSelector('#passkeyList .pk-device', { timeout: 20000 });
+    await passkeyPage.click('#addPasskeyBtn');
+    await passkeyPage.waitForSelector('#blissPasskeyModal.open', { timeout: 20000 });
+    await passkeyPage.fill('#blissPasskeyName', 'Tablet');
+    await passkeyPage.click('#blissPasskeyEnable');
+    await passkeyPage.waitForFunction(() => document.querySelectorAll('#passkeyList .pk-device').length === 2, { timeout: 25000 });
+
+    const live = new DatabaseSync(LIVE_DB);
+    let count = live.prepare('SELECT COUNT(*) AS c FROM passkey_credentials WHERE user_id=?').get(passkeyUserId).c;
+    live.close();
+    assert(Number(count) === 2, `expected two passkeys, found ${count}`);
+
+    await passkeyPage.locator('[data-passkey-action="remove"]').first().click();
+    await passkeyPage.waitForSelector('#removePasskeyModal.open', { timeout: 10000 });
+    await passkeyPage.fill('#removePasskeyPassword', 'not-the-password');
+    await passkeyPage.click('#confirmRemovePasskeyBtn');
+    await passkeyPage.waitForFunction(() => /password/i.test(document.getElementById('removePasskeyStatus')?.textContent || ''), { timeout: 10000 });
+    const stillTwo = new DatabaseSync(LIVE_DB);
+    count = stillTwo.prepare('SELECT COUNT(*) AS c FROM passkey_credentials WHERE user_id=?').get(passkeyUserId).c;
+    stillTwo.close();
+    assert(Number(count) === 2, 'passkey must not be removed without the current password');
+
+    await passkeyPage.fill('#removePasskeyPassword', PASSWORD);
+    await passkeyPage.click('#confirmRemovePasskeyBtn');
+    await passkeyPage.waitForFunction(() => document.querySelectorAll('#passkeyList .pk-device').length === 1, { timeout: 20000 });
+
+    await passkeyPage.locator('[data-passkey-action="remove"]').first().click();
+    await passkeyPage.waitForSelector('#removePasskeyModal.open', { timeout: 10000 });
+    await passkeyPage.fill('#removePasskeyPassword', PASSWORD);
+    await passkeyPage.click('#confirmRemovePasskeyBtn');
+    await passkeyPage.waitForFunction(() => /No passkeys yet/.test(document.getElementById('passkeyList')?.textContent || ''), { timeout: 20000 });
+
+    await passkeyPage.evaluate(async () => { await fetch('/api/logout', { method: 'POST', credentials: 'include' }); });
+    await goto(passkeyPage, BASE + '/login.html');
+    await passkeyPage.evaluate(() => sessionStorage.setItem('bliss_passkey_prompt_skipped', '1'));
+    await passkeyPage.fill('#email', 'browser.passkey@bliss.test');
+    await passkeyPage.fill('#password', PASSWORD);
+    await passkeyPage.click('#submitBtn');
+    await passkeyPage.waitForURL(url => url.pathname === '/dashboard', { timeout: 25000 });
+    const me = await passkeyPage.evaluate(() => fetch('/api/me').then(response => response.json()));
+    assert(me.role === 'Marketer', 'password recovery login must preserve the user role');
+  });
+
   await test('logging out removes dashboard power from the assistant', async () => {
     await pageA.evaluate(async () => {
       await fetch('/api/logout', { method: 'POST', credentials: 'include' });
@@ -306,6 +568,7 @@ try {
   failed++;
   console.error('  ❌ browser harness\n     ' + error.message);
 } finally {
+  shuttingDown = true;
   if (browser) await browser.close();
   try { process.kill(-server.pid, 'SIGTERM'); } catch (error) { try { server.kill('SIGTERM'); } catch (e) {} }
   await new Promise(resolve => setTimeout(resolve, 1200));
@@ -330,6 +593,10 @@ try {
       cleanup.prepare(`DELETE FROM team_members WHERE user_id IN (${marks})`).run(...ids);
       cleanup.prepare(`DELETE FROM notifications WHERE user_id IN (${marks})`).run(...ids);
       cleanup.prepare(`DELETE FROM password_reset_tokens WHERE user_id IN (${marks})`).run(...ids);
+      try {
+        cleanup.prepare(`DELETE FROM passkey_credentials WHERE user_id IN (${marks})`).run(...ids);
+        cleanup.prepare(`DELETE FROM passkey_challenges WHERE user_id IN (${marks}) OR (user_id IS NULL AND created_at >= datetime('now','-1 day'))`).run(...ids);
+      } catch (error) { /* passkey migration may not be present in an older local database */ }
       cleanup.prepare(`UPDATE audit_logs SET actor_user_id=NULL WHERE actor_user_id IN (${marks})`).run(...ids);
       cleanup.prepare(`UPDATE users SET manager_id=NULL, reactivated_by=NULL WHERE manager_id IN (${marks}) OR reactivated_by IN (${marks})`).run(...ids, ...ids);
       cleanup.prepare(`DELETE FROM users WHERE id IN (${marks})`).run(...ids);

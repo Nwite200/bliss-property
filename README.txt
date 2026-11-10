@@ -33,18 +33,19 @@ Main screens
 - activity-centre.html — role-scoped audit/activity feed
 - clients.html / properties.html / finance-dashboard.html / provider-config.html — Phases 1–5
 - client-dashboard.html — client portal with multi-property allocations, self-service "Add another property", per-property payment accounts, verified payments, remaining balance and per-property progress
+- security.html — passkeys and device management for staff and clients (add, rename, remove, last-used date, recovery guidance)
 
 Tests
 -----
 - npm run test:phase5  (62 tests)
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
-- npm run test:phase8  (75 tests)
+- npm run test:phase8  (79 tests)
 - npm run test:assistant (45 digital human / multi-property tests)
 - npm run test:seed    (5 tests)
 - npm run test:voice   (11 HeadTTS and pronunciation tests)
-- npm run test:browser (7 browser tests; needs Google Chrome)
-- npm test              (all suites, 252 tests)
+- npm run test:browser (11 browser tests; needs Google Chrome)
+- npm test              (all suites, 260 tests)
 
 Documentation
 -------------
@@ -56,6 +57,7 @@ Documentation
 - CLOUDFLARE_DEPLOYMENT_GUIDE.md
 - API_DOCUMENTATION.md
 - SECURITY_AUDIT.md
+- PASSKEY_AUTHENTICATION.md — WebAuthn architecture, security controls, test coverage and real-device checklist
 - KNOWN_LIMITATIONS.md
 - BLISS_LEGACY_OPERATIONAL_WORKFLOW.md
 - ROLE_AND_ONBOARDING_AUDIT.md

@@ -168,7 +168,32 @@ def wipe(conn, dry_run=False):
                 not_null = info[0][3]
                 if not not_null:
                     run(f"UPDATE {table} SET {column}=NULL WHERE {column} IN ({user_marks})", users)
+        # Configuration records are not test activity; keep them and hand them
+        # to a real administrator instead of deleting shared business settings.
+        fallback = cur.execute(
+            "SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id "
+            "WHERE u.is_test=0 AND u.is_active=1 "
+            "ORDER BY CASE r.name WHEN 'Super Admin' THEN 0 WHEN 'Managing Director' THEN 1 ELSE 2 END, u.id LIMIT 1"
+        ).fetchone()
+        if fallback:
+            for table, column in [
+                ("commission_plans", "created_by"),
+                ("commission_plan_versions", "created_by"),
+                ("property_payment_plans", "created_by"),
+                ("financial_report_jobs", "requested_by"),
+            ]:
+                run(f"UPDATE {table} SET {column}=? WHERE {column} IN ({user_marks})",
+                    [fallback[0], *users])
+        else:
+            # A database with no real accounts is entirely test data, so its
+            # test-owned configuration can be removed instead of reassigned.
+            run(f"DELETE FROM commission_plan_versions WHERE created_by IN ({user_marks})", users)
+            run(f"DELETE FROM commission_plans WHERE created_by IN ({user_marks})", users)
+            run(f"DELETE FROM property_payment_plans WHERE created_by IN ({user_marks})", users)
+            run(f"DELETE FROM financial_report_jobs WHERE requested_by IN ({user_marks})", users)
         run(f"DELETE FROM password_reset_tokens WHERE user_id IN ({user_marks})", users)
+        run(f"DELETE FROM passkey_credentials WHERE user_id IN ({user_marks})", users)
+        run(f"DELETE FROM passkey_challenges WHERE user_id IN ({user_marks})", users)
         run(f"DELETE FROM sessions WHERE user_id IN ({user_marks})", users)
         run(f"DELETE FROM staff_profiles WHERE user_id IN ({user_marks})", users)
         run(f"DELETE FROM team_members WHERE user_id IN ({user_marks})", users)

@@ -1,3 +1,5 @@
+import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
+
 const SESSION_COOKIE = "bliss_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8; // 8 hours
 
@@ -206,6 +208,119 @@ async function getSessionUser(env, request) {
   else if (row.role_name === "Project Manager") row.role_name = "Branch Manager";
   else if (row.role_name === "Head Accountant") row.role_name = "Finance Officer";
   return row;
+}
+
+function base64UrlToBytes(value) {
+  const raw = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padded = raw + "=".repeat((4 - raw.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function bytesToBase64Url(value) {
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function passkeyConfig(env, request) {
+  const url = new URL(request.url);
+  const rpID = String(env.WEBAUTHN_RP_ID || url.hostname).trim().toLowerCase();
+  const origins = String(env.WEBAUTHN_ORIGIN || url.origin)
+    .split(",").map(value => value.trim()).filter(Boolean);
+  return { rpID, origins, rpName: "Bliss Legacy Limited" };
+}
+
+async function createPasskeyChallenge(env, { userId, type, config }) {
+  await env.DB.prepare("DELETE FROM passkey_challenges WHERE expires_at < datetime('now','-1 hour')").run().catch(() => {});
+  const id = crypto.randomUUID();
+  const challenge = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  await env.DB.prepare(`
+    INSERT INTO passkey_challenges (id, challenge, user_id, type, rp_id, origin, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(id, challenge, userId || null, type, config.rpID, config.origins[0], expiresAt).run();
+  return { id, challenge, expiresAt };
+}
+
+async function consumePasskeyChallenge(env, id, type, userId) {
+  const row = await env.DB.prepare("SELECT * FROM passkey_challenges WHERE id=?").bind(String(id || "")).first();
+  if (!row || row.type !== type || row.consumed_at) return null;
+  if (parseDbDate(row.expires_at) < new Date()) return null;
+  if (userId !== undefined && userId !== null && Number(row.user_id) !== Number(userId)) return null;
+  const consumed = await env.DB.prepare(
+    "UPDATE passkey_challenges SET consumed_at=datetime('now') WHERE id=? AND consumed_at IS NULL"
+  ).bind(row.id).run();
+  if (!consumed.meta || Number(consumed.meta.changes) === 0) return null;
+  return row;
+}
+
+async function passkeyUserRecord(env, userId) {
+  return await env.DB.prepare(`
+    SELECT u.id, u.email, u.phone_e164, u.full_name, u.is_active, u.is_test, u.test_expires_at,
+           u.access_valid_until, u.must_reset_password, u.role_id, u.branch_id, r.name AS role_name
+    FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?
+  `).bind(userId).first();
+}
+
+async function issuePasskeySession(env, request, user) {
+  if (testAccountExpired(user, env)) {
+    await env.DB.prepare("UPDATE users SET is_active=0, deactivated_at=datetime('now') WHERE id=?").bind(user.id).run();
+    await audit(env, user.id, "test_account.expired", "user", String(user.id), { test_expires_at: user.test_expires_at });
+    return { error: "This test account has expired after 14 days. Contact the administrator.", status: 403 };
+  }
+  const lapsedMonthly = user.role_name === "Marketer" && monthlyAccessLapsed(user, env) &&
+    await monthlyReactivationEnabled(env, "Marketer");
+  if (lapsedMonthly) {
+    await env.DB.prepare("UPDATE users SET access_lapsed_at=COALESCE(access_lapsed_at, datetime('now')) WHERE id=?")
+      .bind(user.id).run();
+    await audit(env, user.id, "marketer.access_lapsed", "user", String(user.id), { access_valid_until: user.access_valid_until });
+    return { error: "Your monthly access has lapsed. Contact your branch manager or the MD for reactivation.", status: 403 };
+  }
+  if (!user.is_active) return { error: "Invalid credentials", status: 401 };
+  const priorSession = parseCookies(request)[SESSION_COOKIE];
+  if (priorSession) await env.DB.prepare("DELETE FROM sessions WHERE id=?").bind(priorSession).run();
+  const sess = await createSession(env, user.id);
+  await env.DB.prepare("UPDATE users SET last_login_at=datetime('now') WHERE id=?").bind(user.id).run();
+  let clientRef = null;
+  let clientId = null;
+  let clientPhone = user.phone_e164 || null;
+  if (user.role_name === "Client") {
+    const c = await getClientForActor(env, { id: user.id, role_name: "Client", email: user.email });
+    if (c) {
+      clientRef = c.client_reference;
+      clientId = c.id;
+      clientPhone = clientPhone || normalizeNigerianPhone(c.phone_number);
+    }
+  }
+  const cookie = `${SESSION_COOKIE}=${sess.id}; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=${new Date(sess.expires).toUTCString()}`;
+  return {
+    cookie,
+    user: {
+      id: user.id, email: user.email, phone: clientPhone, full_name: user.full_name,
+      role: user.role_name, client_reference: clientRef, client_id: clientId,
+      must_change_password: Number(user.must_reset_password) === 1
+    }
+  };
+}
+
+async function passkeyLoginLocked(env, request) {
+  const row = await env.DB.prepare(`
+    SELECT COUNT(*) AS c FROM audit_logs
+    WHERE action='passkey.login.ip_failure' AND target_id=?
+      AND created_at >= datetime('now','-15 minutes')
+  `).bind(clientIp(request)).first();
+  return Number(row ? row.c : 0) >= 10;
+}
+
+async function recordPasskeyLoginFailure(env, request, userId, credentialId, reason) {
+  const targetType = userId ? "user" : "passkey";
+  const targetId = userId ? String(userId) : String(credentialId || "unknown");
+  await audit(env, userId || null, "passkey.login.failure", targetType, targetId, { reason });
+  await audit(env, null, "passkey.login.ip_failure", "ip", clientIp(request), { reason });
 }
 
 async function roleHasPermission(env, roleId, permission) {
@@ -6868,7 +6983,7 @@ async function handleFetch(request, env) {
     // Application-level audit limits remain the stricter second layer.
     if (env.SENSITIVE_LIMITER && typeof env.SENSITIVE_LIMITER.limit === "function") {
       const sensitive = path === "/api/login" || path === "/api/signup" ||
-        path === "/api/assistant/message" || path.startsWith("/api/client/password-reset/") ||
+        path === "/api/assistant/message" || path.startsWith("/api/passkey") || path.startsWith("/api/client/password-reset/") ||
         path.startsWith("/api/webhooks/");
       if (sensitive) {
         const limited = await env.SENSITIVE_LIMITER.limit({ key: `ip:${clientIp(request)}:${path}` });
@@ -7330,6 +7445,243 @@ async function handleFetch(request, env) {
     // =========================================================================
     // UNIFIED AUTHENTICATION (Staff & Clients)
     // =========================================================================
+    // =========================================================================
+    // PASSKEYS / WEBAUTHN
+    // =========================================================================
+    if (path === "/api/passkey/register/options" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const config = passkeyConfig(env, request);
+      const { results: existing } = await env.DB.prepare(
+        "SELECT credential_id, transports FROM passkey_credentials WHERE user_id=?"
+      ).bind(actor.id).all();
+      const challenge = await createPasskeyChallenge(env, { userId: actor.id, type: "register", config });
+      const options = await generateRegistrationOptions({
+        rpName: config.rpName,
+        rpID: config.rpID,
+        userID: new TextEncoder().encode(`bliss-user-${actor.id}`),
+        userName: actor.email || actor.phone_e164 || `user-${actor.id}`,
+        userDisplayName: actor.full_name,
+        challenge: base64UrlToBytes(challenge.challenge),
+        attestationType: "none",
+        excludeCredentials: (existing || []).map(row => ({
+          id: row.credential_id,
+          transports: (() => { try { return JSON.parse(row.transports || "[]"); } catch { return undefined; } })()
+        })),
+        authenticatorSelection: {
+          residentKey: "required",
+          userVerification: "required",
+          authenticatorAttachment: "platform"
+        }
+      });
+      return json({ challenge_id: challenge.id, options, expires_at: challenge.expiresAt });
+    }
+
+    if (path === "/api/passkey/register/verify" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const body = await request.json().catch(() => ({}));
+      const config = passkeyConfig(env, request);
+      const challenge = await consumePasskeyChallenge(env, body.challenge_id, "register", actor.id);
+      if (!challenge || challenge.rp_id !== config.rpID || !config.origins.includes(challenge.origin)) {
+        await audit(env, actor.id, "passkey.register.failure", "user", String(actor.id), { reason: "invalid_or_expired_challenge" });
+        return json({ error: "Registration challenge is invalid or expired" }, 400);
+      }
+      let verification;
+      try {
+        verification = await verifyRegistrationResponse({
+          response: body.response,
+          expectedChallenge: challenge.challenge,
+          expectedOrigin: config.origins,
+          expectedRPID: config.rpID,
+          requireUserVerification: true
+        });
+      } catch (error) {
+        console.warn("Passkey registration verification failed");
+        await audit(env, actor.id, "passkey.register.failure", "user", String(actor.id), { reason: "verification_failed" });
+        return json({ error: "Passkey registration could not be verified" }, 400);
+      }
+      if (!verification.verified || !verification.registrationInfo) {
+        await audit(env, actor.id, "passkey.register.failure", "user", String(actor.id), { reason: "not_verified" });
+        return json({ error: "Passkey registration could not be verified" }, 400);
+      }
+      const info = verification.registrationInfo;
+      const credential = info.credential;
+      if (!credential || !credential.id || !credential.publicKey) return json({ error: "Invalid credential response" }, 400);
+      const duplicate = await env.DB.prepare("SELECT user_id FROM passkey_credentials WHERE credential_id=?").bind(credential.id).first();
+      if (duplicate) {
+        return json({ error: duplicate.user_id === actor.id ? "This passkey is already registered" : "This passkey is already registered to another account" }, 409);
+      }
+      const requestedName = String(body.device_name || body.credential_name || "This device").trim().slice(0, 60) || "This device";
+      const transports = Array.isArray(credential.transports) ? credential.transports : [];
+      const inserted = await env.DB.prepare(`
+        INSERT INTO passkey_credentials
+          (user_id, credential_id, public_key, counter, transports, device_type, backed_up, credential_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        actor.id, credential.id, bytesToBase64Url(credential.publicKey), Number(credential.counter || 0),
+        JSON.stringify(transports), info.credentialDeviceType || "singleDevice", info.credentialBackedUp ? 1 : 0,
+        requestedName
+      ).run();
+      await audit(env, actor.id, "passkey.register", "passkey", String(inserted.meta.last_row_id), {
+        device_type: info.credentialDeviceType || "singleDevice", backed_up: Boolean(info.credentialBackedUp), transports
+      });
+      return json({
+        ok: true,
+        passkey: {
+          id: inserted.meta.last_row_id, credential_name: requestedName,
+          device_type: info.credentialDeviceType || "singleDevice",
+          backed_up: Boolean(info.credentialBackedUp), created_at: new Date().toISOString(), last_used_at: null
+        }
+      });
+    }
+
+    if (path === "/api/passkey/login/options" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const config = passkeyConfig(env, request);
+      const body = await request.json().catch(() => ({}));
+      const identifier = String(body.identifier || "").trim().toLowerCase();
+      let user = null;
+      let allowCredentials;
+      if (identifier) {
+        const phone = normalizeNigerianPhone(identifier);
+        user = await env.DB.prepare(`
+          SELECT u.id FROM users u WHERE LOWER(u.email)=? OR u.phone_e164=? LIMIT 1
+        `).bind(identifier, phone || " ").first();
+        if (user) {
+          const { results } = await env.DB.prepare(
+            "SELECT credential_id, transports FROM passkey_credentials WHERE user_id=?"
+          ).bind(user.id).all();
+          const credentials = (results || []).map(row => ({
+            id: row.credential_id,
+            transports: (() => { try { return JSON.parse(row.transports || "[]"); } catch { return undefined; } })()
+          }));
+          // An empty allowCredentials array means "no credential is allowed" in
+          // WebAuthn, so fall back to discoverable credentials instead.
+          if (credentials.length) allowCredentials = credentials;
+        }
+      }
+      const challenge = await createPasskeyChallenge(env, { userId: user ? user.id : null, type: "authenticate", config });
+      const options = await generateAuthenticationOptions({
+        rpID: config.rpID,
+        challenge: base64UrlToBytes(challenge.challenge),
+        allowCredentials,
+        userVerification: "required",
+        timeout: 60000
+      });
+      return json({ challenge_id: challenge.id, options, expires_at: challenge.expiresAt });
+    }
+
+    if (path === "/api/passkey/login/verify" && request.method === "POST") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      if (await passkeyLoginLocked(env, request)) {
+        await audit(env, null, "passkey.login.ip_lockout", "ip", clientIp(request), { reason: "active_lockout" });
+        return json({ error: "Too many passkey attempts. Please try again later." }, 429);
+      }
+      const body = await request.json().catch(() => ({}));
+      const config = passkeyConfig(env, request);
+      const response = body.response || {};
+      const credentialRow = await env.DB.prepare(
+        "SELECT * FROM passkey_credentials WHERE credential_id=?"
+      ).bind(String(response.id || "")).first();
+      if (!credentialRow) {
+        await recordPasskeyLoginFailure(env, request, null, response.id, "unknown_credential");
+        return json({ error: "Passkey authentication failed" }, 401);
+      }
+      const challenge = await consumePasskeyChallenge(env, body.challenge_id, "authenticate", null);
+      if (!challenge || challenge.rp_id !== config.rpID || !config.origins.includes(challenge.origin) ||
+          (challenge.user_id && Number(challenge.user_id) !== Number(credentialRow.user_id))) {
+        await recordPasskeyLoginFailure(env, request, credentialRow.user_id, credentialRow.credential_id, "invalid_or_expired_challenge");
+        return json({ error: "Passkey authentication failed" }, 401);
+      }
+      let verification;
+      try {
+        verification = await verifyAuthenticationResponse({
+          response,
+          expectedChallenge: challenge.challenge,
+          expectedOrigin: config.origins,
+          expectedRPID: config.rpID,
+          requireUserVerification: true,
+          credential: {
+            id: credentialRow.credential_id,
+            publicKey: base64UrlToBytes(credentialRow.public_key),
+            counter: Number(credentialRow.counter || 0),
+            transports: (() => { try { return JSON.parse(credentialRow.transports || "[]"); } catch { return undefined; } })()
+          }
+        });
+      } catch (error) {
+        console.warn("Passkey authentication verification failed");
+        await recordPasskeyLoginFailure(env, request, credentialRow.user_id, credentialRow.credential_id, "verification_failed");
+        return json({ error: "Passkey authentication failed" }, 401);
+      }
+      if (!verification.verified) {
+        await recordPasskeyLoginFailure(env, request, credentialRow.user_id, credentialRow.credential_id, "not_verified");
+        return json({ error: "Passkey authentication failed" }, 401);
+      }
+      await env.DB.prepare("UPDATE passkey_credentials SET counter=?, last_used_at=datetime('now') WHERE id=?")
+        .bind(Number(verification.authenticationInfo.newCounter || credentialRow.counter || 0), credentialRow.id).run();
+      const user = await passkeyUserRecord(env, credentialRow.user_id);
+      if (!user) return json({ error: "Passkey authentication failed" }, 401);
+      const session = await issuePasskeySession(env, request, user);
+      if (session.error) {
+        await audit(env, user.id, "passkey.login.failure", "user", String(user.id), { reason: session.status === 403 ? "access_denied" : "inactive" });
+        return json({ error: session.error }, session.status);
+      }
+      await audit(env, user.id, "passkey.login.success", "user", String(user.id), { role: user.role_name, credential_id: credentialRow.id });
+      return json({ ok: true, user: session.user }, 200, { "Set-Cookie": session.cookie });
+    }
+
+    if (path === "/api/passkeys" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const { results } = await env.DB.prepare(`
+        SELECT id, credential_name, device_type, backed_up, transports, created_at, last_used_at
+        FROM passkey_credentials WHERE user_id=? ORDER BY created_at DESC
+      `).bind(actor.id).all();
+      return json({ passkeys: (results || []).map(row => ({
+        ...row,
+        transports: (() => { try { return JSON.parse(row.transports || "[]"); } catch { return []; } })(),
+        backed_up: Number(row.backed_up) === 1
+      })) });
+    }
+
+    const passkeyIdMatch = path.match(/^\/api\/passkeys\/(\d+)$/);
+    if (passkeyIdMatch && request.method === "PATCH") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const body = await request.json().catch(() => ({}));
+      const name = String(body.credential_name || "").trim().slice(0, 60);
+      if (!name) return json({ error: "Device name is required" }, 400);
+      const row = await env.DB.prepare("SELECT id FROM passkey_credentials WHERE id=? AND user_id=?")
+        .bind(passkeyIdMatch[1], actor.id).first();
+      if (!row) return json({ error: "Passkey not found" }, 404);
+      await env.DB.prepare("UPDATE passkey_credentials SET credential_name=? WHERE id=? AND user_id=?")
+        .bind(name, row.id, actor.id).run();
+      await audit(env, actor.id, "passkey.rename", "passkey", String(row.id), { credential_name: name });
+      return json({ ok: true, credential_name: name });
+    }
+
+    if (passkeyIdMatch && request.method === "DELETE") {
+      if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const body = await request.json().catch(() => ({}));
+      const password = String(body.current_password || body.password || "");
+      if (!password || !(await verifyPassword(password, (await env.DB.prepare("SELECT password_hash FROM users WHERE id=?").bind(actor.id).first()).password_hash))) {
+        await audit(env, actor.id, "passkey.delete.denied", "passkey", passkeyIdMatch[1], { reason: "reauth_failed" });
+        return json({ error: "Current password is required to remove a passkey" }, 403);
+      }
+      const row = await env.DB.prepare("SELECT id FROM passkey_credentials WHERE id=? AND user_id=?")
+        .bind(passkeyIdMatch[1], actor.id).first();
+      if (!row) return json({ error: "Passkey not found" }, 404);
+      await env.DB.prepare("DELETE FROM passkey_credentials WHERE id=? AND user_id=?").bind(row.id, actor.id).run();
+      await audit(env, actor.id, "passkey.delete", "passkey", String(row.id), null);
+      return json({ ok: true });
+    }
+
     if (path === "/api/login" && request.method === "POST") {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const body = await request.json();

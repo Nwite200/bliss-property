@@ -1,0 +1,344 @@
+/* Bliss Legacy Limited — passkey / WebAuthn UI.
+   Shared by the staff login, client login and Security & Devices page. */
+
+.pk-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 14px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.pk-divider::before,
+.pk-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.pk-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 18px;
+  border: 1px solid #17231A;
+  border-radius: var(--radius-sm);
+  background: #17231A;
+  color: #FFFFFF;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.pk-btn:hover {
+  background: #223329;
+  border-color: #223329;
+}
+.pk-btn:focus-visible {
+  outline: 3px solid rgba(0, 181, 34, 0.35);
+  outline-offset: 2px;
+}
+.pk-btn:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+.pk-btn svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+.pk-btn.pk-btn-light {
+  background: #FFFFFF;
+  color: var(--ink);
+  border-color: var(--line);
+}
+.pk-btn.pk-btn-light:hover {
+  background: var(--soft);
+  border-color: #C9D3CC;
+}
+.pk-btn.pk-btn-compact {
+  width: auto;
+  min-height: 38px;
+  font-size: 12px;
+  padding: 0 14px;
+}
+.pk-btn.pk-btn-danger {
+  background: #FFFFFF;
+  color: #C0392B;
+  border-color: #E8C4BF;
+}
+.pk-btn.pk-btn-danger:hover {
+  background: #FDF3F2;
+  border-color: #D9A49D;
+}
+
+.pk-hint {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  text-align: center;
+}
+.pk-hint-left {
+  text-align: left;
+}
+.pk-status {
+  min-height: 18px;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--muted);
+}
+.pk-status-left {
+  text-align: left;
+}
+.pk-security-note[hidden] {
+  display: none !important;
+}
+.pk-status.pk-error {
+  color: #C0392B;
+}
+.pk-status.pk-success {
+  color: var(--green-dark);
+}
+
+.pk-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(10, 20, 13, 0.58);
+  backdrop-filter: blur(3px);
+}
+.pk-modal-backdrop.open {
+  display: flex;
+}
+.pk-modal {
+  width: 100%;
+  max-width: 440px;
+  max-height: min(88vh, 720px);
+  overflow-y: auto;
+  background: #FFFFFF;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 26px 24px 22px;
+  box-shadow: 0 24px 60px rgba(9, 25, 14, 0.28);
+}
+.pk-modal h2 {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.pk-modal p {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.pk-modal-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 16px;
+  border-radius: 16px;
+  background: var(--green-light);
+  color: var(--green-dark);
+}
+.pk-modal-icon svg {
+  width: 28px;
+  height: 28px;
+}
+.pk-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0;
+}
+.pk-field label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--charcoal);
+}
+.pk-field input {
+  width: 100%;
+  height: 44px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #FFFFFF;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--ink);
+}
+.pk-field input:focus {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(0, 181, 34, 0.12);
+}
+.pk-field-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+.pk-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 18px;
+}
+.pk-actions-row {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+.pk-actions-row > * {
+  flex: 1 1 130px;
+}
+.pk-warning {
+  padding: 11px 13px;
+  border: 1px solid #F1D39A;
+  border-radius: 9px;
+  background: #FFF9EC;
+  color: #7A4A00;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.pk-device-list {
+  display: grid;
+  gap: 12px;
+}
+.pk-device {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 17px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #FFFFFF;
+}
+.pk-device-main {
+  min-width: 0;
+  flex: 1;
+}
+.pk-device-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.pk-device-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.pk-device-actions {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.pk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.pk-badge-green {
+  background: var(--green-light);
+  color: var(--green-dark);
+}
+.pk-badge-blue {
+  background: #EAF2FB;
+  color: #245C96;
+}
+.pk-badge-amber {
+  background: #FFF6E5;
+  color: #8A5A00;
+}
+.pk-empty {
+  padding: 30px 20px;
+  text-align: center;
+  border: 1px dashed #CFD8D1;
+  border-radius: 12px;
+  background: #FAFCFA;
+}
+.pk-empty svg {
+  width: 38px;
+  height: 38px;
+  color: #8FA596;
+  margin-bottom: 10px;
+}
+.pk-empty h4 {
+  margin: 0 0 5px;
+  font-size: 15px;
+  color: var(--ink);
+}
+.pk-empty p {
+  max-width: 430px;
+  margin: 0 auto;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.pk-security-note {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 15px;
+  border: 1px solid #DCE8DF;
+  border-radius: 10px;
+  background: #F7FBF8;
+  color: var(--charcoal);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.pk-security-note svg {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+  color: var(--green-dark);
+  margin-top: 1px;
+}
+
+@media (max-width: 640px) {
+  .pk-device {
+    flex-direction: column;
+  }
+  .pk-device-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .pk-modal {
+    padding: 22px 18px 18px;
+  }
+}

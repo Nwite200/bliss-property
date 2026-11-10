@@ -8,13 +8,16 @@ Use this checklist before staging and again before production. Do not tick an it
 
 - [x] Phase 1–7 functionality preserved.
 - [x] Phase 8 integration and security suite added.
-- [x] Full local regression suite passes: **252 passed, 0 failed, 0 skipped** (including 45 digital-human / multi-property tests).
+- [x] Full local regression suite passes: **260 passed, 0 failed, 0 skipped** (including 45 digital-human / multi-property tests).
 - [x] JavaScript syntax checks pass.
+- [x] Passkey migration, WebAuthn endpoints and password-recovery tests pass.
+- [x] Chrome virtual-authenticator registration/login/device-management tests pass.
+- [ ] Physical Touch ID, Face ID, Windows Hello and Android fingerprint acceptance recorded.
 - [x] Inline HTML scripts syntax-checked.
 - [x] `git diff --check` clean.
 - [x] No secrets, local databases, logs or temporary audit files in the working tree.
 - [x] `.dev.vars` ignored and untracked.
-- [x] All thirty-two local migrations reproduce on a clean SQLite database.
+- [x] All thirty-three local migrations reproduce on a clean SQLite database.
 - [x] Clean migration database passes integrity and foreign-key checks.
 - [ ] Phase 8 changes committed and reviewed.
 - [ ] Phase 8 pushed to GitHub after explicit authorization.
@@ -51,6 +54,7 @@ Production secrets must be set through Wrangler secrets or the Cloudflare dashbo
 - [ ] Email provider API key/credentials.
 - [ ] WhatsApp Business provider token/credentials.
 - [ ] ALAT/Wema credentials and webhook signing secret — only from official documentation.
+- [x] `WEBAUTHN_RP_ID=blisspayment.com.ng` and `WEBAUTHN_ORIGIN` configured for production.
 - [ ] Confirm no provider secret is stored in frontend assets or source control.
 
 ---
@@ -58,8 +62,9 @@ Production secrets must be set through Wrangler secrets or the Cloudflare dashbo
 ## D. Database and migrations
 
 - [ ] Back up production D1 before migration (export or snapshot).
-- [ ] Review migrations `0001`–`0032` against the production schema, including `0030_digital_humans.sql`, `0031_headtts_voice_profiles.sql` and `0032_performance_indexes.sql`.
-- [ ] Apply migrations in order with `wrangler d1 migrations apply ... --remote`.
+- [ ] Review migrations `0001`–`0033` against the production schema, including `0030_digital_humans.sql`, `0031_headtts_voice_profiles.sql`, `0032_performance_indexes.sql` and `0033_passkeys.sql`.
+- [x] Migration `0033_passkeys.sql` applied to staging and production D1 (additive passkey tables).
+- [ ] Apply remaining migrations in order with `wrangler d1 migrations apply ... --remote`.
 - [ ] Verify `PRAGMA foreign_key_check` / integrity through the approved operational process.
 - [ ] Seed roles, branches and property categories using an approved operational script.
 - [ ] Create the first MD through `/api/setup` using a temporary bootstrap secret.

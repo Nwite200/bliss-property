@@ -157,6 +157,7 @@
       { href: "staff-notifications.html", label: "🔔 Notifications", page: "notifications", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "staff-chat.html", label: "💬 Staff Chat", page: "chat", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Account" },
+      { href: "security.html", label: "🔐 Security & Devices", page: "security", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "index.html", label: "🌐 Public Website", page: "public", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "#", label: "🚪 Logout", page: "logout", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"], id: "logoutBtn" }
     ];
@@ -171,7 +172,7 @@
       items += `<div class="section-label">System</div><a href="super-admin.html" class="${activePage === "super-admin" ? "active" : ""}">🛡️ System Administration</a><a href="permissions.html" class="${activePage === "permissions" ? "active" : ""}">🔐 Permissions</a>`;
     }
     if (role === "Customer Care") {
-      items += `<div class="section-label">Account</div><a href="index.html">🌐 Public Website</a><a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Logout</a>`;
+      items += `<div class="section-label">Account</div><a href="security.html" class="${activePage === "security" ? "active" : ""}">🔐 Security & Devices</a><a href="index.html">🌐 Public Website</a><a href="#" id="logoutBtn" style="color:#E74C3C">🚪 Logout</a>`;
     }
     const scopeLabel = role === "Customer Care"
       ? (me.care_scope === "national" ? "National" : (me.branch_name || "Branch"))

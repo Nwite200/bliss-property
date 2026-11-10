@@ -1,6 +1,7 @@
 name = "bliss-property"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 preview_urls = false
 
@@ -73,6 +74,8 @@ simple = { limit = 60, period = 60 }
 # =============================================================================
 [env.production]
 name = "bliss-legacy-limited"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
 account_id = "1473f1b95ef866edf0b286046e9e81f3"
 workers_dev = true
 preview_urls = false
@@ -120,6 +123,8 @@ crons = ["0 6 * * *"]
 
 [env.production.vars]
 ENVIRONMENT = "production"
+WEBAUTHN_RP_ID = "blisspayment.com.ng"
+WEBAUTHN_ORIGIN = "https://blisspayment.com.ng,https://www.blisspayment.com.ng"
 DEMO_MODE_ENABLED = "0"
 DEFAULT_GRACE_DAYS = "0"
 PAYMENT_MODE = "live"

@@ -109,6 +109,7 @@ This is an honest list of what the current implementation does **not** provide. 
 8. Some older frontend views still interpolate API data without a shared escaping helper.
 9. `CACHE` KV is provisioned but currently unused.
 10. Cron does not clean expired sessions/reset tokens or retry failed notifications.
+11. Passkeys are implemented for supported platform authenticators and require HTTPS/a stable domain. Real Touch ID, Face ID, Windows Hello and Android fingerprint acceptance is still a manual real-device checklist; Chrome virtual-authenticator tests cannot validate biometric hardware. See `PASSKEY_AUTHENTICATION.md`.
 
 ---
 
