@@ -76,7 +76,16 @@
           init = Object.assign({}, init || {}, { headers: headers });
         }
       } catch (error) { /* fall through to the original fetch */ }
-      return originalFetch(input, init);
+      var result = originalFetch(input, init);
+      try {
+        var requestURL = new URL(typeof input === "string" ? input : (input && input.url) || "", window.location.href);
+        if (requestURL.pathname === "/api/logout") {
+          result.then(function (response) {
+            if (response && response.ok) window.dispatchEvent(new Event("bliss:logout"));
+          }).catch(function () {});
+        }
+      } catch (error) { /* ignore */ }
+      return result;
     };
   }
 })();

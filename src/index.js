@@ -5758,6 +5758,43 @@ function assistantPageContext(pathValue) {
   return map[clean] || { key: "app.page", label: clean.replace(/\.html$/, "").replace(/[-_]/g, " "), area: "app" };
 }
 
+const ASSISTANT_PAGE_INTENTS = {
+  "leads.review": ["staff.dashboard", "staff.leads", "staff.clients", "staff.client_detail", "staff.performance", "staff.customer_care"],
+  "finance.overview": ["staff.dashboard", "staff.finance", "staff.commissions", "staff.reports", "staff.revenue", "staff.accountant", "staff.admin"],
+  "finance.commission": ["staff.dashboard", "staff.finance", "staff.commissions", "staff.reports", "staff.revenue", "staff.accountant", "staff.admin"],
+  "reports.help": ["staff.dashboard", "staff.finance", "staff.commissions", "staff.reports", "staff.revenue", "staff.accountant", "staff.admin"],
+  "team.overview": ["staff.dashboard", "staff.performance", "staff.management", "staff.revenue"],
+  "branch.overview": ["staff.dashboard", "staff.performance", "staff.revenue", "staff.management"],
+  "management.overview": ["staff.dashboard", "staff.admin", "staff.performance"],
+  "notifications.review": ["staff.notifications", "staff.dashboard", "client.notifications", "client.dashboard"],
+  "onboarding.status": ["client.dashboard", "client.profile"]
+};
+
+function assistantPagePolicy(page, intent, actor) {
+  const role = digitalHumanRole(actor);
+  const area = page.area || "app";
+  const privateIntent = /^(client\.|leads\.|finance\.|reports\.|team\.|branch\.|management\.|notifications\.|onboarding\.status)/.test(intent);
+  if (area === "public" && privateIntent) {
+    return { allowed: false, message: actor
+      ? "I can only discuss what is on this page. Please open your dashboard to review that information."
+      : "Please sign in to review that information. On this page I can help with property discovery, registration and general questions." };
+  }
+  if (area === "client" && /^(leads\.|finance\.|reports\.|team\.|branch\.|management\.)/.test(intent)) {
+    return { allowed: false, message: "That information is not available on this page. Please use your client dashboard for account help." };
+  }
+  if (area === "staff" && intent.startsWith("client.")) {
+    return { allowed: false, message: "Client portfolio questions are handled in the client portal, not from this staff page." };
+  }
+  const pages = ASSISTANT_PAGE_INTENTS[intent];
+  if (pages && !pages.includes(page.key)) {
+    return { allowed: false, message: "I can only help with that on its dedicated page. Please open the relevant dashboard section." };
+  }
+  if (intent === "form.help" && !page.form && !page.key.startsWith("onboarding.")) {
+    return { allowed: false, message: "There is no form on this page for me to check." };
+  }
+  return { allowed: true };
+}
+
 function assistantGreetingFor(actor, page, personaKey) {
   const role = digitalHumanRole(actor);
   if (role === "Visitor") {
@@ -5976,6 +6013,9 @@ function assistantClassifyIntent(rawText, actor) {
   }
   if (/(commission)/.test(text)) {
     return { intent: "finance.commission" };
+  }
+  if (role !== "Client" && /((my|our)\s+(propert|portfolio|payment|receipt|balance|account)|my next payment|payment history|outstanding balance|how much do i owe|i owe)/.test(text)) {
+    return { intent: "client.private" };
   }
   if (role === "Client" && /(i have paid|i don pay|payment has not reflected|payment never reflect|my payment|how much do i owe|i owe)/.test(text)) {
     return { intent: "client.payments" };
@@ -6487,8 +6527,12 @@ async function handleAssistantMessage(env, request, actor, client, body) {
     speech += speechValue !== undefined ? speechValue : textValue;
   };
 
+  const pagePolicy = assistantPagePolicy(page, classification.intent, actor);
   try {
-    if (classification.intent === "persona.transfer") {
+    if (!pagePolicy.allowed) {
+      finish(pagePolicy.message);
+      suggestions = assistantQuickPrompts(actor, page);
+    } else if (classification.intent === "persona.transfer") {
       setPersona(classification.personaKey);
       const p = digitalHumanPersona(personaKey);
       finish(`I am ${p.name}, ${p.title}. ${p.greeting}`);

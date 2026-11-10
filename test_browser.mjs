@@ -291,6 +291,17 @@ try {
     }, 'Browser Marketer', { timeout: 20000 });
   });
 
+  await test('logging out removes dashboard power from the assistant', async () => {
+    await pageA.evaluate(async () => {
+      await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+    });
+    await pageA.waitForFunction(() => /signed out/i.test(document.getElementById('dhThread')?.textContent || ''), { timeout: 10000 });
+    const name = await pageA.evaluate(() => document.getElementById('dhName')?.textContent.trim() || '');
+    assert(name === 'Adaora', `assistant should return to Adaora after logout, got ${name}`);
+    const text = await pageA.evaluate(() => document.getElementById('dhThread')?.textContent || '');
+    assert(/dashboard access/i.test(text), 'assistant logout notice missing');
+  });
+
 } catch (error) {
   failed++;
   console.error('  ❌ browser harness\n     ' + error.message);

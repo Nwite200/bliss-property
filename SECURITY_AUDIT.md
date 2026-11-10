@@ -231,7 +231,7 @@ Outstanding production hardening:
 ## 9. Post-launch security hardening (2026-11-10)
 
 The following controls were added after the initial Phase 8 audit and are covered by
-the current 250-test suite:
+the current 252-test suite:
 
 | Control | Implementation |
 |---|---|

@@ -40,11 +40,11 @@ Tests
 - npm run test:phase6  (21 tests)
 - npm run test:phase7  (26 tests)
 - npm run test:phase8  (75 tests)
-- npm run test:assistant (44 digital human / multi-property tests)
+- npm run test:assistant (45 digital human / multi-property tests)
 - npm run test:seed    (5 tests)
 - npm run test:voice   (11 HeadTTS and pronunciation tests)
-- npm run test:browser (6 browser tests; needs Google Chrome)
-- npm test              (all suites, 250 tests)
+- npm run test:browser (7 browser tests; needs Google Chrome)
+- npm test              (all suites, 252 tests)
 
 Documentation
 -------------

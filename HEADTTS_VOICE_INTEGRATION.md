@@ -189,11 +189,11 @@ Pidgin STT complete until those tests are done.
 | Phase 6 | 21 passed |
 | Phase 7 | 26 passed |
 | Phase 8 | 75 passed |
-| Assistant / multi-property / Pidgin | 44 passed |
+| Assistant / multi-property / Pidgin | 45 passed |
 | Voice adapters / pronunciation / fallback | 11 passed |
 | Seed/wipe security | 5 passed |
-| Browser (Chrome) | 6 passed |
-| **Total** | **250 passed, 0 failed** |
+| Browser (Chrome) | 7 passed |
+| **Total** | **252 passed, 0 failed** |
 
 Voice tests cover normalisation, currency/kobo, nine unique persona voices,
 route selection, browser→server fallback, server→native fallback, text mode,

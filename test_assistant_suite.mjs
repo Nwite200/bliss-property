@@ -651,6 +651,23 @@ await test('voice synthesis endpoint rejects anonymous, invalid persona and over
   assert(valid.status === 502, `unreachable server expected 502, got ${valid.status}`);
 });
 
+await test('the assistant is page-scoped and never exposes dashboard data on the landing page', async () => {
+  const publicPrivate = await assistant(clientUser.cookie, 'Show my properties', { page: '/index.html' });
+  assert(/dashboard|sign in|this page/i.test(publicPrivate.reply), 'public page should redirect private request to dashboard');
+  assert(!/portfolio|verified payment|outstanding balance/i.test(publicPrivate.reply), 'public page leaked client portfolio data');
+  const anonPrivate = await assistant(null, 'Show my properties', { page: '/index.html', visitor_id: 'page-scope-anon' });
+  assert(/sign in|dashboard|this page/i.test(anonPrivate.reply), 'anonymous private request should be denied');
+  assert(!/portfolio|verified payment|outstanding balance/i.test(anonPrivate.reply), 'anonymous request leaked private data');
+  const dashboard = await assistant(clientUser.cookie, 'Show my properties', { page: '/client-dashboard.html' });
+  assert(/portfolio|property/i.test(dashboard.reply), 'client dashboard should allow portfolio questions');
+  const financeOnLeads = await assistant(fin.cookie, 'Show today verified payments', { page: '/leads.html' });
+  assert(/dedicated page|relevant dashboard|this page/i.test(financeOnLeads.reply), 'finance question should be denied on leads page');
+  const financeOnFinance = await assistant(fin.cookie, 'Show today verified payments', { page: '/finance-dashboard.html' });
+  assert(/verified payments today/i.test(financeOnFinance.reply), 'finance page should allow finance questions');
+  const leadsOnLeads = await assistant(mkt1.cookie, 'Show my assigned leads', { page: '/leads.html' });
+  assert(/authorised|lead/i.test(leadsOnLeads.reply), 'leads page should allow lead questions');
+});
+
 await test('unknown requests fall back honestly instead of inventing data', async () => {
   const data = await assistant(md.cookie, 'What is the exact profit for next Tuesday?', { page: '/dashboard.html' });
   assert(/will not guess|not invent|cannot|authorised/i.test(data.reply), 'fallback should not fabricate an answer');

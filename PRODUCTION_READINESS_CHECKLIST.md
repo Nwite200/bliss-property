@@ -8,7 +8,7 @@ Use this checklist before staging and again before production. Do not tick an it
 
 - [x] Phase 1–7 functionality preserved.
 - [x] Phase 8 integration and security suite added.
-- [x] Full local regression suite passes: **250 passed, 0 failed, 0 skipped** (including 44 digital-human / multi-property tests).
+- [x] Full local regression suite passes: **252 passed, 0 failed, 0 skipped** (including 45 digital-human / multi-property tests).
 - [x] JavaScript syntax checks pass.
 - [x] Inline HTML scripts syntax-checked.
 - [x] `git diff --check` clean.

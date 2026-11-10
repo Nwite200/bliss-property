@@ -55,6 +55,7 @@
     audio: null,
     speechToken: 0,
     ttsConfig: null,
+    personas: [],
     languageMode: "auto",
     visemeController: null,
     startedAt: Date.now()
@@ -143,6 +144,9 @@
     }, options)).then(function (response) {
       return response.json().catch(function () { return {}; }).then(function (data) {
         if (!response.ok) {
+          if (response.status === 401 && state.boot && state.boot.authenticated) {
+            window.dispatchEvent(new Event("bliss:logout"));
+          }
           var error = new Error(data.error || "The request could not be completed.");
           error.status = response.status;
           error.data = data;
@@ -1320,6 +1324,7 @@
     var page = location.pathname + (location.pathname === "/" ? "" : "");
     api("/bootstrap?page=" + encodeURIComponent(page) + "&visitor=" + encodeURIComponent(visitorId())).then(function (data) {
       state.boot = data;
+      state.personas = data.personas || [];
       state.conversationRef = data.conversation_ref || null;
       state.rate = data.preferences.rate || 1;
       state.pitch = data.preferences.pitch || 1;
@@ -1438,11 +1443,46 @@
   /* -------------------------------------------------------------------------
      Start
      ---------------------------------------------------------------------- */
+  function resetForLogout() {
+    stopSpeaking();
+    if (state.recognition) { try { state.recognition.stop(); } catch (error) {} }
+    state.listening = false;
+    state.messages = [];
+    state.conversationRef = null;
+    state.pendingHandovers = [];
+    state.handoverStatus = {};
+    state.persona = null;
+    state.languageMode = "auto";
+    state.boot = {
+      authenticated: false,
+      role: "Visitor",
+      greeting: "You have signed out. I am back to the public Bliss Legacy concierge. I can help with published properties, registration and general questions.",
+      quick_prompts: ["Find a property", "How do I register?", "Tell me about Bliss Legacy"]
+    };
+    const visitor = (state.personas || []).find(function (item) { return item.key === "adaora"; });
+    clearThread();
+    updateBadge(0);
+    if (visitor) applyPersona(visitor, false);
+    addMessage("assistant", "You have signed out. I no longer have dashboard access. I can help with published properties, registration and general questions.", {
+      persona: state.persona,
+      time: nowTime()
+    });
+    state.lastSpeech = "You have signed out. I no longer have dashboard access.";
+    renderChips(state.boot.quick_prompts);
+    el.caption.textContent = "Signed out — dashboard access has been removed from the assistant.";
+    el.voiceNote.textContent = "Public concierge mode";
+    setStatus("Signed out", "muted");
+  }
+
   function init() {
     if (!document.body) return;
     injectCss();
     buildRoot();
     bindEvents();
+    window.addEventListener("bliss:logout", resetForLogout);
+    window.addEventListener("pageshow", function (event) {
+      if (event.persisted) resetForLogout();
+    });
     boot();
     window.BlissDigitalHuman = {
       open: openPanel,
@@ -1450,6 +1490,7 @@
       ask: function (text) { openPanel(); sendMessage(text); },
       speak: function (text) { speak(text); },
       persona: function () { return state.persona; },
+      reset: resetForLogout,
       refresh: pollEvents
     };
   }

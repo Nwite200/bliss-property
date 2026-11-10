@@ -289,8 +289,8 @@ is not implemented because staff records store phone numbers in
 | Digital human / multi-property | 44 passed |
 | Voice adapters / pronunciation / fallback | 11 passed |
 | Seed/wipe security | 5 passed |
-| Browser (Chrome) | 6 passed |
-| **Total** | **250 passed, 0 failed** |
+| Browser (Chrome) | 7 passed |
+| **Total** | **252 passed, 0 failed** |
 
 The assistant suite covers anonymous access, published-listing filtering,
 client isolation, phone reset guidance, registration/email-optional guidance,
@@ -384,7 +384,7 @@ No new Cloudflare bindings are required. The assistant uses the existing `DB`,
 | 33 | Mute works without breaking the app | ✅ |
 | 34 | Mobile/tablet/desktop layouts | ✅ |
 | 35 | Existing financial/commission/lead/property workflows | ✅ |
-| 36 | Existing regression tests continue to pass | ✅ 250/250 |
+| 36 | Existing regression tests continue to pass | ✅ 252/252 |
 
 Items that remain operational/limitation rather than “done”:
 
