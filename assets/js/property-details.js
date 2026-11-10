@@ -57,7 +57,7 @@ async function load() {
   document.getElementById("detailParking").textContent = p.parking_spaces || "-";
   const feats = p.features ? JSON.parse(p.features) : [];
   const featEl = document.getElementById("detailFeatures");
-  featEl.innerHTML = feats.map(f => `<span style="background:#f3f8f4;padding:5px 9px;border-radius:5px;font-size:11px">${f}</span>`).join("");
+  featEl.innerHTML = feats.map(f => `<span style="background:#f3f8f4;padding:5px 9px;border-radius:5px;font-size:11px">${esc(f)}</span>`).join("");
 
   // gallery
   const mainImg = document.getElementById("mainImg");
@@ -236,7 +236,7 @@ async function load() {
   const histEl = document.getElementById("statusHistory");
   const { data: histData } = await fetchJson("/properties/" + id + "/status-history");
   if (histData.history && histData.history.length) {
-    histEl.innerHTML = histData.history.map(h => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="font-size:11px;color:var(--muted)">${h.changed_at}</div><div>${h.old_status ? h.old_status + " → " : ""}<strong>${h.new_status}</strong> <span style="color:var(--muted);font-size:11px">by ${h.changed_by || "system"}</span></div>`).join("");
+    histEl.innerHTML = histData.history.map(h => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="font-size:11px;color:var(--muted)">${esc(h.changed_at)}</div><div>${h.old_status ? esc(h.old_status) + " → " : ""}<strong>${esc(h.new_status)}</strong> <span style="color:var(--muted);font-size:11px">by ${esc(h.changed_by || "system")}</span></div>`).join("");
   } else {
     histEl.innerHTML = "<p style='color:var(--muted)'>No status history yet.</p>";
   }

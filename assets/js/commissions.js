@@ -32,14 +32,14 @@
   async function loadOptions() {
     if (!canManage()) {
       const statuses = ['Draft', 'Calculated', 'Pending Approval', 'Approved', 'Partially Paid', 'Paid', 'Rejected', 'Reversed', 'Cancelled'];
-      el('entryStatusFilter').innerHTML = '<option value="">All statuses</option>' + statuses.map(s => `<option>${s}</option>`).join('');
+      el('entryStatusFilter').innerHTML = '<option value="">All statuses</option>' + statuses.map(s => `<option>${S.escape(s)}</option>`).join('');
       el('entryBranchFilter').style.display = 'none';
       el('entryMarketerFilter').style.display = 'none';
       el('entryPlanFilter').style.display = 'none';
       return;
     }
     options = await S.fetchJson('/api/commission-options');
-    el('entryStatusFilter').innerHTML = '<option value="">All statuses</option>' + options.statuses.map(s => `<option>${s}</option>`).join('');
+    el('entryStatusFilter').innerHTML = '<option value="">All statuses</option>' + options.statuses.map(s => `<option>${S.escape(s)}</option>`).join('');
     el('entryBranchFilter').innerHTML = optionHtml(options.branches, 'id', 'name', '', 'All branches');
     el('planBasis').innerHTML = options.bases.map(b => `<option value="${b}">${
       b === 'contract_value' ? 'Contract value'

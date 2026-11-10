@@ -32,9 +32,48 @@ function parseCookies(request) {
   const raw = request.headers.get("Cookie") || "";
   raw.split(";").forEach((part) => {
     const [k, ...v] = part.trim().split("=");
-    if (k) out[k] = decodeURIComponent(v.join("="));
+    if (!k) return;
+    const value = v.join("=");
+    try { out[k] = decodeURIComponent(value); }
+    catch { out[k] = value; }
   });
   return out;
+}
+
+function applySecurityHeaders(headers, env, pathname) {
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  headers.set("X-Permitted-Cross-Domain-Policies", "none");
+  headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  headers.set("Cross-Origin-Resource-Policy", "same-origin");
+  headers.set("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=(self), usb=()");
+  const isProduction = String(env.ENVIRONMENT || "").toLowerCase() === "production";
+  if (isProduction) {
+    headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  const csp = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "frame-src 'none'",
+    "form-action 'self'",
+    "manifest-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https://images.unsplash.com",
+    "connect-src 'self' https://cloudflareinsights.com https://*.cloudflareinsights.com",
+    "media-src 'self' blob:",
+    "worker-src 'self' blob:",
+    isProduction ? "upgrade-insecure-requests" : ""
+  ].filter(Boolean).join("; ");
+  headers.set("Content-Security-Policy", csp);
+  if (pathname.startsWith("/api/") && !headers.has("Cache-Control")) {
+    headers.set("Cache-Control", "no-store");
+  }
+  return headers;
 }
 
 async function hashPassword(password) {
@@ -6296,11 +6335,18 @@ async function handleAssistantMessage(env, request, actor, client, body) {
   const text = assistantSafeMessage(body.message);
   if (!text) return { error: "Enter a message for the assistant." };
   const rateKey = actor ? `user:${actor.id}` : `visitor:${String(body.visitor_id || "").slice(0, 60)}`;
+  const ipKey = `ip:${clientIp(request)}`;
   const recent = await recentAuditCount(env, "assistant.message", rateKey, 5);
   if (recent >= 60) return { error: "The assistant is receiving too many messages. Please wait a moment." };
+  if (await recentAuditCount(env, "assistant.message_ip", ipKey, 5) >= 120) {
+    return { error: "The assistant is receiving too many messages from this network. Please wait a moment." };
+  }
 
   await audit(env, actor ? actor.id : null, "assistant.message", "assistant_rate", rateKey, {
     role: digitalHumanRole(actor), page: page.key, conversation_id: conversation.id
+  }, client ? client.assigned_branch_id : (actor ? actor.branch_id : null));
+  await audit(env, actor ? actor.id : null, "assistant.message_ip", "assistant_ip", ipKey, {
+    page: page.key, conversation_id: conversation.id
   }, client ? client.assigned_branch_id : (actor ? actor.branch_id : null));
   await assistantStoreMessage(env, conversation.id, "user", null, assistantRedactSecrets(text), null, null);
 
@@ -17505,16 +17551,15 @@ async function handleFetch(request, env) {
 export default {
   async fetch(request, env) {
     const response = await handleFetch(request, env);
-    if (env.ENVIRONMENT !== "production" && response.status !== 101) {
-      const headers = new Headers(response.headers);
-      headers.set("X-Robots-Tag", "noindex, nofollow");
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers
-      });
-    }
-    return response;
+    if (response.status === 101) return response;
+    const headers = new Headers(response.headers);
+    applySecurityHeaders(headers, env, new URL(request.url).pathname);
+    if (env.ENVIRONMENT !== "production") headers.set("X-Robots-Tag", "noindex, nofollow");
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    });
   },
 
   // Cloudflare Queues consumer: notification delivery and SMS retries.

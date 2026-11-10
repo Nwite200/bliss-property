@@ -249,7 +249,7 @@
       }
       try {
         const branches = await fetch('/api/branches').then(r => r.json());
-        branchSelect.innerHTML = '<option value="">Select the branch you are onboarding with</option>' + (branches.branches || []).map(b => `<option value="${b.id}">${b.name}</option>`).join('');
+        branchSelect.innerHTML = '<option value="">Select the branch you are onboarding with</option>' + (branches.branches || []).map(b => `<option value="${Number(b.id)}">${escHtml(b.name)}</option>`).join('');
       } catch { /* optional */ }
       if (referralInput.value) {
         try {
@@ -264,7 +264,7 @@
       }
       try {
         const properties = await fetch('/api/properties?limit=50').then(r => r.json());
-        propertySelect.innerHTML = '<option value="">No property selected</option>' + (properties.properties || []).map(p => `<option value="${p.id}">${p.reference} — ${p.title}</option>`).join('');
+        propertySelect.innerHTML = '<option value="">No property selected</option>' + (properties.properties || []).map(p => `<option value="${Number(p.id)}">${escHtml(p.reference)} — ${escHtml(p.title)}</option>`).join('');
       } catch { /* optional */ }
       function planLabel(type) {
         return ({ outright: 'Outright', part_payment: 'Part payment', daily: 'Daily', weekly: 'Weekly', bi_monthly: 'Bi-monthly', monthly: 'Monthly' })[type] || type;
@@ -325,7 +325,7 @@
           }
           planSelect.required = true;
           planSelect.innerHTML = '<option value="">Select a payment plan</option>' + plans.map(plan => `
-            <option value="${plan.id}">${planLabel(plan.plan_type)} — ${naira(plan.total_price_kobo)}</option>
+            <option value="${Number(plan.id)}">${escHtml(planLabel(plan.plan_type))} — ${naira(plan.total_price_kobo)}</option>
           `).join('');
           if (plans.length === 1) {
             planSelect.value = String(plans[0].id);

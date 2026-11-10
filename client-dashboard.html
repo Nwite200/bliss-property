@@ -680,7 +680,7 @@
             const progressValue = Number(item.progress || 0);
             return `
               <div class="mini-prop-card" style="${index ? 'margin-top:16px' : ''}">
-                <img src="${imgUrl}" alt="${item.title}" class="mini-prop-img">
+                <img src="${esc(imgUrl)}" alt="${esc(item.title)}" class="mini-prop-img">
                 <div class="mini-prop-info">
                   <h3>${esc(item.title)}</h3>
                   <p>📍 Location: ${esc(item.location || 'Prime Estate')}${item.category_name ? ` · ${esc(item.category_name)}` : ''}</p>

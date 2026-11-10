@@ -224,3 +224,36 @@ Outstanding production hardening:
 - Edge/WAF rate limiting for anonymous visitors (visitor ids are client-generated).
 - The rule-based intent router is not an LLM and will not answer arbitrary natural-language questions outside its supported intents.
 - Browser voice availability and voice quality depend on the operating system.
+
+
+---
+
+## 9. Post-launch security hardening (2026-11-10)
+
+The following controls were added after the initial Phase 8 audit and are covered by
+the current 235-test suite:
+
+| Control | Implementation |
+|---|---|
+| Stored XSS in staff client list | `assets/js/clients.js` now escapes every client-controlled field before `innerHTML` |
+| Stored XSS in finance schedule/history views | `finance-dashboard.html` escapes client name, reference, property title, status, receipt reference, history action/author/reason |
+| XSS in property selector and feature chips | `signup.html`, `client-register.js` and `property-details.js` escape property/staff text |
+| XSS in client dashboard image attributes | Image URL and alt text are escaped before insertion |
+| XSS in password-reset phone display | Customer-care phone is escaped before inline markup |
+| Clickjacking | `X-Frame-Options: DENY` and CSP `frame-ancestors 'none'` |
+| MIME sniffing | `X-Content-Type-Options: nosniff` on every response |
+| Script injection surface | CSP restricts scripts, styles, fonts, images, frames, objects, workers and connections; no `unsafe-eval` |
+| HTTPS downgrade | Production `Strict-Transport-Security` and `upgrade-insecure-requests` |
+| Privacy/referrer leakage | `Referrer-Policy: strict-origin-when-cross-origin` |
+| Browser feature abuse | `Permissions-Policy` limits camera/geolocation/payment/USB and allows microphone only for self |
+| Private API caching | API responses without an explicit cache policy receive `Cache-Control: no-store` |
+| Malformed cookie denial | Cookie parsing is exception-safe; a malformed cookie returns 401, not 500 |
+| Assistant abuse | Per-user/visitor 60 messages / 5 min and per-IP 120 messages / 5 min; speech 40 requests / 5 min |
+| Production header coverage | `run_worker_first = true` for production static assets so HTML/assets pass through the security wrapper |
+
+Remaining hardening work:
+
+- A strict CSP with nonces/hashes would allow removing `'unsafe-inline'` from script/style directives. The current platform has many inline handlers and scripts.
+- Cloudflare WAF/rate limiting should be enabled in front of `/api/assistant/*`, `/api/login`, `/api/signup` and webhooks for edge-level abuse protection.
+- A per-session CSRF synchroniser token would add another layer beyond SameSite=Lax, Origin/Host and Fetch-Metadata checks.
+- Add a real RUM/analytics pipeline for security anomaly detection; current observability is Worker logs/audit rows.

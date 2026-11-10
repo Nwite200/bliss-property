@@ -1,4 +1,9 @@
 const API = "/api";
+function esc(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
 async function fetchJson(path, opts = {}) {
   const res = await fetch(API + path, { credentials: "include", ...opts });
   return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
@@ -36,7 +41,7 @@ async function loadBranches() {
 async function loadProperties() {
   const { data } = await fetchJson("/properties?limit=50");
   const sel = document.getElementById("interested_property_id");
-  sel.innerHTML = '<option value="">No property selected</option>' + (data.properties || []).map(p => `<option value="${p.id}">${p.reference} — ${p.title}</option>`).join("");
+  sel.innerHTML = '<option value="">No property selected</option>' + (data.properties || []).map(p => `<option value="${Number(p.id)}">${esc(p.reference)} — ${esc(p.title)}</option>`).join("");
 }
 
 function planLabel(type) {

@@ -8,7 +8,7 @@ Use this checklist before staging and again before production. Do not tick an it
 
 - [x] Phase 1–7 functionality preserved.
 - [x] Phase 8 integration and security suite added.
-- [x] Full local regression suite passes: **232 passed, 0 failed, 0 skipped** (including 37 digital-human / multi-property tests).
+- [x] Full local regression suite passes: **235 passed, 0 failed, 0 skipped** (including 40 digital-human / multi-property tests).
 - [x] JavaScript syntax checks pass.
 - [x] Inline HTML scripts syntax-checked.
 - [x] `git diff --check` clean.
@@ -99,7 +99,7 @@ Production secrets must be set through Wrangler secrets or the Cloudflare dashbo
 
 - [ ] Run a staging penetration test covering authentication, RBAC, IDOR, file access and financial mutation.
 - [ ] Enable Cloudflare WAF and rate limiting.
-- [ ] Add CSP, `Referrer-Policy`, `Permissions-Policy` and `X-Content-Type-Options` headers.
+- [x] Add CSP, `Referrer-Policy`, `Permissions-Policy`, `X-Content-Type-Options`, `X-Frame-Options` and production HSTS headers.
 - [ ] Review cookie flags on the production domain.
 - [ ] Confirm password-reset email delivery or disable the self-service reset until delivery exists.
 - [ ] Confirm public signup email verification / CAPTCHA decision.

@@ -775,11 +775,11 @@
           <td style="font-family:var(--font-display);font-weight:700;font-size:14px;color:${t.status === 'verified' ? '#008F1B' : 'var(--charcoal)'}">
             ${formatNGN(t.amount)}
           </td>
-          <td style="font-size:12px">${t.method || "Transfer"}</td>
-          <td><span class="status-badge ${statusClass}">${t.status}</span></td>
+          <td style="font-size:12px">${esc(t.method || "Transfer")}</td>
+          <td><span class="status-badge ${statusClass}">${esc(t.status)}</span></td>
           <td style="font-size:12px">${t.created_at ? new Date(t.created_at).toLocaleDateString("en-NG", { dateStyle: "short" }) : "--"}</td>
           <td style="font-size:12px">
-            ${t.receipt_ref ? `<span style="font-family:'Space Mono', monospace;color:#008F1B;font-size:11px;font-weight:700">${t.receipt_ref}</span>` : '<span style="color:#9CA3AF">-</span>'}
+            ${t.receipt_ref ? `<span style="font-family:'Space Mono', monospace;color:#008F1B;font-size:11px;font-weight:700">${esc(t.receipt_ref)}</span>` : '<span style="color:#9CA3AF">-</span>'}
           </td>
           <td style="text-align:right">
             <div style="display:inline-flex;gap:6px">
@@ -1049,19 +1049,19 @@
         const planBadge = s.is_easy_buy ? `<span class="status-badge status-pending">easy buy</span>` : "";
         return `
           <tr>
-            <td><strong>${s.client_name}</strong><div style="font-size:11px;color:var(--muted);font-family:'Space Mono', monospace">${s.client_reference}</div></td>
-            <td style="font-size:12px">${s.property_title || "-"}</td>
+            <td><strong>${esc(s.client_name)}</strong><div style="font-size:11px;color:var(--muted);font-family:'Space Mono', monospace">${esc(s.client_reference)}</div></td>
+            <td style="font-size:12px">${esc(s.property_title || "-")}</td>
             <td style="font-weight:700">${formatNGN(s.total_agreed_price)}</td>
             <td style="font-weight:700;color:#008F1B">${formatNGN(s.installment_amount)}</td>
             <td style="font-size:12px">${planTypeLabel(s.plan_type)}<div>${planBadge}</div></td>
             <td style="font-size:12px">${formatNGN((s.expected_to_date_kobo || 0) / 100)}<div style="color:#DC2626">Behind ${formatNGN((s.amount_behind_kobo || 0) / 100)}</div></td>
             <td style="font-size:12px">${(s.next_due_date || "").slice(0, 10)}</td>
-            <td><span class="status-badge ${badge}">${s.status}${s.status === "defaulting" || s.is_overdue ? " / overdue" : ""}</span></td>
+            <td><span class="status-badge ${badge}">${esc(s.status)}${s.status === "defaulting" || s.is_overdue ? " / overdue" : ""}</span></td>
             <td style="text-align:right">
               <div style="display:inline-flex;gap:5px">
-                ${s.status !== "cancelled" ? `<button type="button" class="btn btn-outline btn-sm" onclick="editSchedule(${s.id})" style="padding:3px 7px;font-size:11px">Edit</button>` : ""}
-                <button type="button" class="btn btn-outline btn-sm" onclick="scheduleHistory(${s.id})" style="padding:3px 7px;font-size:11px">History</button>
-                ${s.status === "active" ? `<button type="button" class="btn btn-outline btn-sm" onclick="cancelSchedule(${s.id})" style="padding:3px 7px;font-size:11px;color:#DC2626">Cancel</button>` : ""}
+                ${s.status !== "cancelled" ? `<button type="button" class="btn btn-outline btn-sm" onclick="editSchedule(${Number(s.id)})" style="padding:3px 7px;font-size:11px">Edit</button>` : ""}
+                <button type="button" class="btn btn-outline btn-sm" onclick="scheduleHistory(${Number(s.id)})" style="padding:3px 7px;font-size:11px">History</button>
+                ${s.status === "active" ? `<button type="button" class="btn btn-outline btn-sm" onclick="cancelSchedule(${Number(s.id)})" style="padding:3px 7px;font-size:11px;color:#DC2626">Cancel</button>` : ""}
               </div>
             </td>
           </tr>`;
@@ -1122,10 +1122,10 @@
       body.innerHTML = (data.history || []).map(h => `
         <div style="border-bottom:1px solid var(--line);padding:10px 0">
           <div style="display:flex;justify-content:space-between">
-            <strong style="text-transform:uppercase;font-size:11px">${h.action}</strong>
+            <strong style="text-transform:uppercase;font-size:11px">${esc(h.action)}</strong>
             <span style="color:var(--muted)">${(h.created_at || "").slice(0, 16)}</span>
           </div>
-          <div style="color:var(--muted);margin-top:3px">By ${h.changed_by_name || "System"}${h.reason ? ` — ${h.reason}` : ""}</div>
+          <div style="color:var(--muted);margin-top:3px">By ${esc(h.changed_by_name || "System")}${h.reason ? ` — ${esc(h.reason)}` : ""}</div>
         </div>`).join("") || `<p style="color:var(--muted)">No history recorded.</p>`;
       openModal("scheduleHistoryModal");
     };

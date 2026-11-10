@@ -74,6 +74,8 @@ preview_urls = false
 [env.production.assets]
 directory = "./"
 binding = "ASSETS"
+# Required so production HTML/assets receive the Worker security headers.
+run_worker_first = true
 
 [[env.production.d1_databases]]
 binding = "DB"

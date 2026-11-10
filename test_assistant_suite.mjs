@@ -564,6 +564,36 @@ await test('premium voice is optional and falls back to the browser cleanly', as
   assert(speech.data.fallback === 'browser', 'missing browser fallback signal');
 });
 
+await test('security headers block framing, sniffing and unsafe cross-origin loading', async () => {
+  const res = await request('/api/health');
+  const csp = res.headers.get('content-security-policy') || '';
+  assert(/frame-ancestors 'none'/.test(csp), 'CSP frame-ancestors missing');
+  assert(/object-src 'none'/.test(csp), 'CSP object-src missing');
+  assert(!/unsafe-eval/.test(csp), 'CSP must not allow unsafe-eval');
+  assert(res.headers.get('x-frame-options') === 'DENY', 'X-Frame-Options missing');
+  assert(res.headers.get('x-content-type-options') === 'nosniff', 'nosniff missing');
+  assert(res.headers.get('referrer-policy') === 'strict-origin-when-cross-origin', 'referrer policy missing');
+  assert(/microphone=\(self\)/.test(res.headers.get('permissions-policy') || ''), 'microphone permission policy missing');
+  assert(res.headers.get('cache-control') === 'no-store', 'API cache-control should be no-store');
+});
+
+await test('malformed cookies do not cause a 500', async () => {
+  const res = await request('/api/me', { headers: { Cookie: 'bliss_session=%E0%A4%A' } });
+  assert(res.status === 401, `expected 401, got ${res.status}`);
+});
+
+await test('public-signup XSS sinks are escaped and production assets run through the security wrapper', async () => {
+  const fs = await import('node:fs');
+  const clients = fs.readFileSync('assets/js/clients.js', 'utf8');
+  assert(/function esc\(/.test(clients), 'clients.js escaping helper missing');
+  assert(!/<td>\$\{c\.full_name\}<\/td>/.test(clients), 'clients.js still renders full_name unescaped');
+  const finance = fs.readFileSync('finance-dashboard.html', 'utf8');
+  assert(/\$\{esc\(s\.client_name\)\}/.test(finance), 'finance dashboard client name is not escaped');
+  const wrangler = fs.readFileSync('wrangler.toml', 'utf8');
+  const prodAssets = wrangler.slice(wrangler.indexOf('[env.production.assets]'));
+  assert(/run_worker_first\s*=\s*true/.test(prodAssets), 'production assets must run through the Worker for security headers');
+});
+
 await test('unknown requests fall back honestly instead of inventing data', async () => {
   const data = await assistant(md.cookie, 'What is the exact profit for next Tuesday?', { page: '/dashboard.html' });
   assert(/will not guess|not invent|cannot|authorised/i.test(data.reply), 'fallback should not fabricate an answer');

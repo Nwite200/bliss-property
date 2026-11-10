@@ -290,10 +290,10 @@ is not implemented because staff records store phone numbers in
 | Phase 6 | 21 passed |
 | Phase 7 | 26 passed |
 | Phase 8 | 75 passed |
-| Digital human / multi-property | 37 passed |
+| Digital human / multi-property | 40 passed |
 | Seed/wipe security | 5 passed |
 | Browser (Chrome) | 6 passed |
-| **Total** | **232 passed, 0 failed** |
+| **Total** | **235 passed, 0 failed** |
 
 The assistant suite covers anonymous access, published-listing filtering,
 client isolation, phone reset guidance, registration/email-optional guidance,
@@ -387,7 +387,7 @@ No new Cloudflare bindings are required. The assistant uses the existing `DB`,
 | 33 | Mute works without breaking the app | ✅ |
 | 34 | Mobile/tablet/desktop layouts | ✅ |
 | 35 | Existing financial/commission/lead/property workflows | ✅ |
-| 36 | Existing regression tests continue to pass | ✅ 232/232 |
+| 36 | Existing regression tests continue to pass | ✅ 235/235 |
 
 Items that remain operational/limitation rather than “done”:
 
