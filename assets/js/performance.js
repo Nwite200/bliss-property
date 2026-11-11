@@ -60,7 +60,7 @@
 
   function renderHeader() {
     el("heroMeta").innerHTML = [
-      `<span class="scope-badge">${S.escape(me.role)}</span>`,
+      `<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span>`,
       `<span class="scope-badge">${S.escape(roleScopeLabel())}</span>`,
       `<span class="scope-badge">${S.formatDate(analytics.range.from)} – ${S.formatDate(analytics.range.to)}</span>`
     ].join("");

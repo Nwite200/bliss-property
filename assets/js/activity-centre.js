@@ -69,7 +69,7 @@
       ? "Company-wide"
       : (me.branch_name || "Branch");
     el("heroMeta").innerHTML = [
-      `<span class="scope-badge">${S.escape(me.role)}</span>`,
+      `<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span>`,
       `<span class="scope-badge">${S.escape(scopeLabel)}</span>`,
       `<span class="scope-badge">In-app only</span>`
     ].join("");

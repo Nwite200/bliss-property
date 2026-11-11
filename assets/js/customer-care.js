@@ -22,7 +22,7 @@
   async function loadOverview() {
     const data = await S.fetchJson("/api/customer-care/overview");
     el("careMeta").innerHTML = [
-      `<span class="scope-badge">${S.escape(me.role)}</span>`,
+      `<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span>`,
       `<span class="scope-badge">${data.scope === "national" ? "National" : (me.branch_name || "Branch")}</span>`
     ].join("");
     el("careKpis").innerHTML = [

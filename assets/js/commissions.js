@@ -540,7 +540,7 @@
       return;
     }
     const scopeLabel = ["Managing Director", "Finance Officer", "Sub Admin"].includes(me.role) || me.actual_role === "Sub Admin" ? 'Company-wide' : (me.branch_name || me.team_names || 'Assigned scope');
-    el('heroMeta').innerHTML = [`<span class="scope-badge">${S.escape(me.role)}</span>`, `<span class="scope-badge">${S.escape(scopeLabel)}</span>`].join('');
+    el('heroMeta').innerHTML = [`<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span>`, `<span class="scope-badge">${S.escape(scopeLabel)}</span>`].join('');
     if (!canManage()) {
       el('newPlanBtn').style.display = 'none';
       el('generateBtn').style.display = 'none';

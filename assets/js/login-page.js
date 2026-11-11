@@ -13,7 +13,9 @@
           ? "/gsm-dashboard.html"
           : role === "Accountant"
             ? "/accountant-dashboard.html"
-            : "/dashboard.html?role=" + encodeURIComponent(role || "");
+            : role === "Head Accountant"
+              ? "/finance-dashboard.html"
+              : "/dashboard.html?role=" + encodeURIComponent(role || "");
   }
 
   async function finishStaffLogin() {

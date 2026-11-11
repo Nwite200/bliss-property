@@ -117,6 +117,8 @@ function upsert(email, name, role, branch) {
   return db.prepare('SELECT id FROM users WHERE email=?').get(email).id;
 }
 const mdId = upsert('browser.md@bliss.test', 'Browser MD', mdRole, ikeja);
+const subAdminRole = roleId('Sub Admin');
+upsert('browser.subadmin@bliss.test', 'Browser Sub Admin', subAdminRole, ikeja);
 const marketerId = upsert('browser.marketer@bliss.test', 'Browser Marketer', marketerRole, ikeja);
 const passkeyUserId = upsert('browser.passkey@bliss.test', 'Browser Passkey', marketerRole, ikeja);
 upsert('browser.passkey.other@bliss.test', 'Browser Passkey Other', marketerRole, ikeja);
@@ -162,10 +164,12 @@ try {
   const contextB = await browser.newContext();
   const contextC = await browser.newContext();
   const contextD = await browser.newContext();
+  const contextE = await browser.newContext();
   const pageA = await contextA.newPage();
   const pageB = await contextB.newPage();
   const pageC = await contextC.newPage();
   const pageD = await contextD.newPage();
+  const pageE = await contextE.newPage();
   let passkeyContext;
   let passkeyPage;
   let passkeyCdp;
@@ -551,6 +555,30 @@ try {
     await passkeyPage.waitForURL(url => url.pathname === '/dashboard', { timeout: 25000 });
     const me = await passkeyPage.evaluate(() => fetch('/api/me').then(response => response.json()));
     assert(me.role === 'Marketer', 'password recovery login must preserve the user role');
+  });
+
+  await test('Sub Admin sees a clean operations page with no internal matrix', async () => {
+    await login(pageE, 'browser.subadmin@bliss.test');
+    await goto(pageE, BASE + '/sub-admin-dashboard.html');
+    await pageE.waitForFunction(() => document.querySelectorAll('#opsKpis .kpi').length > 0, { timeout: 20000 });
+    const body = await pageE.locator('body').innerText();
+    assert(!/endpoint/i.test(body), 'Sub Admin page exposed API endpoints');
+    assert(!/\bpermission\b/i.test(body), 'Sub Admin page exposed permission keys');
+    assert(!/read-only/i.test(body), 'Sub Admin page exposed read-only badges');
+    assert(/Operations &\s*Approvals/i.test(body), 'Operations & Approvals title missing');
+    const nav = await pageE.locator('#sidebar').innerText();
+    assert(/Overview/i.test(nav), 'sidebar Overview group missing');
+    assert(/Approvals/i.test(nav), 'sidebar Approvals group missing');
+    assert(/Clients &\s*Properties/i.test(nav), 'sidebar Clients & Properties group missing');
+    assert(/Finance/i.test(nav) && /Reports/i.test(nav), 'sidebar Finance/Reports groups missing');
+    assert(!/Referral Commissions/i.test(nav), 'duplicate referral commission nav item still present');
+    assert((await pageE.locator('a[href="property-create.html"]').count()) > 0, 'Sub Admin cannot see Add property');
+    assert((await pageE.locator('a[href="properties.html"]').count()) > 0, 'Sub Admin cannot see Manage properties');
+    const matrixStatus = await pageE.evaluate(async () => {
+      const response = await fetch('/api/financial-approvals', { credentials: 'include' });
+      return response.status;
+    });
+    assert(matrixStatus === 403, `Sub Admin approval matrix API returned ${matrixStatus}`);
   });
 
   await test('logging out removes dashboard power from the assistant', async () => {

@@ -54,6 +54,16 @@
       </div>
 
       <div class="card" style="margin-top:16px">
+        <div class="card-head"><h3>Financial &amp; operational approval matrix</h3><span class="small muted">Internal reference · owners only</span></div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead><tr><th>Action</th><th>Endpoint</th><th>Required permission</th><th>Owner access</th></tr></thead>
+            <tbody id="approvalMatrixBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
         <div class="card-head"><h3>Change history</h3><span class="small muted">Who changed what and why</span></div>
         <div class="table-responsive"><table class="table"><thead><tr><th>When</th><th>Actor</th><th>Target</th><th>Permission</th><th>Action</th><th>Scope</th><th>Reason</th></tr></thead><tbody id="permHistory"></tbody></table></div>
       </div>
@@ -66,6 +76,12 @@
     (async () => {
       const me = await BlissStaff.initShell('permissions');
       if (!me) return;
+      const actualRole = me.actual_role || me.role;
+      const isOwner = ["Managing Director", "Super Admin"].includes(actualRole) || Boolean(me.capabilities && me.capabilities.admin);
+      if (!isOwner) {
+        document.querySelector("main").innerHTML = '<div class="card"><h2>Access restricted</h2><p>The permission matrix is available only to the Managing Director and Super Admin.</p><a class="btn btn-green" href="dashboard.html">Back to dashboard</a></div>';
+        return;
+      }
       const el = id => document.getElementById(id);
       const esc = BlissStaff.escape;
       let catalog = null;
@@ -87,6 +103,14 @@
           }).join('') || '<tr><td colspan="4">No extra user grants.</td></tr>';
           const history = await BlissStaff.fetchJson('/api/permissions/history');
           el('permHistory').innerHTML = (history.history || []).map(h => `<tr><td>${esc(h.created_at)}</td><td>${esc(h.actor_name || '-')}</td><td>${esc(h.target_type)} #${esc(h.target_id)}</td><td>${esc(h.permission_name)}</td><td>${esc(h.action)}</td><td>${esc(h.scope || '-')}</td><td>${esc(h.reason || '-')}</td></tr>`).join('') || '<tr><td colspan="7">No permission changes yet.</td></tr>';
+          const matrix = await BlissStaff.fetchJson('/api/financial-approvals');
+          el('approvalMatrixBody').innerHTML = (matrix.catalog || []).map(row => `
+            <tr>
+              <td>${esc(row.label)}</td>
+              <td><code>${esc(row.method)} ${esc(row.endpoint)}</code></td>
+              <td><code>${esc(row.permission)}</code></td>
+              <td>${row.can_perform ? '<span class="badge badge-green">Allowed</span>' : '<span class="badge badge-gray">View only</span>'}</td>
+            </tr>`).join('') || '<tr><td colspan="4">No approval actions configured.</td></tr>';
         } catch (error) { el('permMsg').textContent = error.message; }
       }
       async function change(action) {

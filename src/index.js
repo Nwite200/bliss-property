@@ -1730,6 +1730,54 @@ async function hasPermission(env, actor, permission) {
   return Boolean(permissions[permission]);
 }
 
+// Friendly, non-technical capability flags returned to the browser. These are
+// derived from effective permissions so the shell and pages can hide what the
+// user cannot do without ever exposing internal permission keys or routes.
+async function getActorCapabilities(env, actor) {
+  if (!actor) return {};
+  const owner = isOwnerAuthority(actor);
+  const actualRole = actor.actual_role_name || actor.role_name;
+  let permissions = {};
+  if (!owner) permissions = await getEffectivePermissions(env, actor);
+  const commissionFlagBypass = actualRole !== "Sub Admin" && Number(actor.commission_access || 0) === 1;
+  const can = permission => {
+    if (owner) return true;
+    if (commissionFlagBypass &&
+        (permission === "commission.totals.view" || permission === "commission.rules.view" ||
+         permission === "commission.rules.manage" || String(permission).startsWith("commission.entries.") ||
+         permission === "referral.commission.manage")) {
+      return true;
+    }
+    return Boolean(permissions[permission]);
+  };
+  return {
+    owner,
+    approvals_view: can("finance.approvals.view"),
+    payments_record: can("finance.payments.record"),
+    payments_verify: can("finance.payments.verify"),
+    payments_adjust: can("finance.payments.adjust"),
+    commissions_view: canAccessCommissions(actor) || can("commission.totals.view") || canViewReferralCommissions(actor),
+    commissions_approve: can("commission.entries.approve"),
+    commissions_pay: can("commission.entries.pay"),
+    clients_view: can("clients.view"),
+    clients_edit: can("clients.edit.details"),
+    clients_assign: can("clients.assign"),
+    clients_financial_edit: can("clients.financial.edit"),
+    client_finance_approve: can("finance.approvals.perform"),
+    properties_manage: can("properties.manage"),
+    properties_approve: can("properties.listing.approve"),
+    staff_manage: can("staff.manage") || ["Managing Director", "Branch Manager"].includes(actor.role_name),
+    finance_view: can("finance.records.view") || can("finance.read"),
+    reports_view: can("reports.read"),
+    sms_access: canManageSms(actor),
+    admin: owner,
+    leads_manage: canManageLeads(actor.role_name),
+    operations: can("finance.approvals.view") || can("properties.listing.approve") ||
+      can("clients.assign") || can("staff.manage") ||
+      can("finance.payments.verify") || can("finance.payments.record")
+  };
+}
+
 function permissionScopeAllows(actor, permissionScope, targetBranchId) {
   if (!permissionScope) return false;
   if (isOwnerAuthority(actor)) return true;
@@ -7952,6 +8000,7 @@ async function handleFetch(request, env) {
         can_access_commissions: canAccessCommissions(user),
         property_plans_access: Number(user.property_plans_access || 0) === 1,
         sms_access: Number(user.sms_access || 0) === 1,
+        capabilities: await getActorCapabilities(env, user),
         care_scope: user.care_scope || null,
         payment_mode: getPaymentMode(env),
         referral_link: user.role_name !== "Client" && user.referral_code
@@ -8219,6 +8268,11 @@ async function handleFetch(request, env) {
     if (path === "/api/financial-approvals" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
+      // This is the internal approval matrix (routes + permission keys). It is
+      // owner-only and must never be reachable by a Sub Admin or other staff.
+      if (!isOwnerAuthority(actor)) {
+        return json({ error: "Only the MD or Super Admin can view the approval matrix" }, 403);
+      }
       if (!await hasPermission(env, actor, "finance.approvals.view")) {
         return json({ error: "Financial approval visibility is not permitted" }, 403);
       }
@@ -8274,6 +8328,304 @@ async function handleFetch(request, env) {
           client_change_requests: pendingRequests,
           property_listings: pendingListings
         }
+      });
+    }
+
+    // Plain-language operations summary for the Sub Admin / approvals page.
+    // Returns counts and work queues only — never endpoints, permission keys,
+    // role internals or provider configuration names.
+    if (path === "/api/operations/summary" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      const caps = await getActorCapabilities(env, actor);
+      if (!caps.operations) return json({ error: "Forbidden" }, 403);
+
+      const scope = await resolvePhase6Scope(env, actor);
+      const branchId = actor.role_name === "Branch Manager" ? Number(actor.branch_id) : null;
+      const branchClause = branchId ? " AND c.assigned_branch_id=?" : "";
+      const branchBinds = branchId ? [branchId] : [];
+      const humanize = value => String(value || "")
+        .replace(/[._-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/\b\w/g, ch => ch.toUpperCase());
+
+      const kpis = {
+        pending_payments: null,
+        pending_commissions: null,
+        defaulting_clients: null,
+        new_leads: null
+      };
+
+      let pendingPaymentRows = [];
+      let failedPaymentCount = 0;
+      let refundCount = 0;
+      if (caps.approvals_view || caps.payments_verify || caps.finance_view) {
+        const pending = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM payments p JOIN clients c ON c.id=p.client_id
+          WHERE p.status='pending' AND p.is_demo=0 AND COALESCE(p.is_archived,0)=0 AND c.is_deleted=0${branchClause}
+        `).bind(...branchBinds).first();
+        kpis.pending_payments = Number(pending ? pending.c : 0);
+        const failed = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM payments p JOIN clients c ON c.id=p.client_id
+          WHERE p.status='failed' AND p.is_demo=0 AND c.is_deleted=0${branchClause}
+        `).bind(...branchBinds).first();
+        failedPaymentCount = Number(failed ? failed.c : 0);
+        const refunds = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM payments p JOIN clients c ON c.id=p.client_id
+          WHERE p.status IN ('reversed','refunded') AND p.is_demo=0 AND c.is_deleted=0${branchClause}
+        `).bind(...branchBinds).first();
+        refundCount = Number(refunds ? refunds.c : 0);
+        const list = await env.DB.prepare(`
+          SELECT p.transaction_ref, p.amount_kobo, p.created_at, c.full_name AS client_name, c.client_reference
+          FROM payments p JOIN clients c ON c.id=p.client_id
+          WHERE p.status='pending' AND p.is_demo=0 AND COALESCE(p.is_archived,0)=0 AND c.is_deleted=0${branchClause}
+          ORDER BY p.id DESC LIMIT 5
+        `).bind(...branchBinds).all();
+        pendingPaymentRows = list.results || [];
+      }
+
+      let pendingCommissionCount = 0;
+      let readyCommissionCount = 0;
+      if (caps.commissions_view || caps.commissions_approve || caps.commissions_pay) {
+        const pending = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM commission_entries ce JOIN clients c ON c.id=ce.client_id
+          WHERE ce.status='Pending Approval'${branchClause}
+        `).bind(...branchBinds).first();
+        pendingCommissionCount = Number(pending ? pending.c : 0);
+        const ready = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM commission_entries ce JOIN clients c ON c.id=ce.client_id
+          WHERE ce.status='Approved'${branchClause}
+        `).bind(...branchBinds).first();
+        readyCommissionCount = Number(ready ? ready.c : 0);
+        if (caps.commissions_view) kpis.pending_commissions = pendingCommissionCount;
+      }
+
+      let defaultingCount = 0;
+      let defaultingRows = [];
+      if (caps.finance_view || caps.clients_view) {
+        const row = await env.DB.prepare(`
+          SELECT COUNT(DISTINCT s.client_id) AS c
+          FROM payment_schedules s
+          JOIN payment_schedule_items i ON i.schedule_id=s.id
+          JOIN clients c ON c.id=s.client_id
+          WHERE s.status='active' AND c.is_deleted=0 AND date(i.due_date) < date('now')
+            AND i.status NOT IN ('paid','cancelled')${branchClause}
+        `).bind(...branchBinds).first();
+        defaultingCount = Number(row ? row.c : 0);
+        kpis.defaulting_clients = defaultingCount;
+        const list = await env.DB.prepare(`
+          SELECT c.full_name AS client_name, c.client_reference, MIN(i.due_date) AS oldest_due
+          FROM payment_schedules s
+          JOIN payment_schedule_items i ON i.schedule_id=s.id
+          JOIN clients c ON c.id=s.client_id
+          WHERE s.status='active' AND c.is_deleted=0 AND date(i.due_date) < date('now')
+            AND i.status NOT IN ('paid','cancelled')${branchClause}
+          GROUP BY c.id ORDER BY oldest_due LIMIT 4
+        `).bind(...branchBinds).all();
+        defaultingRows = list.results || [];
+      }
+
+      let newLeadCount = 0;
+      if (caps.leads_manage) {
+        const leadScope = leadScopeSql(scope, "l");
+        const row = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM leads l
+          WHERE l.is_demo=0 AND l.status='New Lead' AND ${leadScope.clause}
+        `).bind(...leadScope.binds).first();
+        newLeadCount = Number(row ? row.c : 0);
+        kpis.new_leads = newLeadCount;
+      }
+
+      let unassignedCount = 0;
+      let unassignedRows = [];
+      if (caps.clients_assign) {
+        const row = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM clients c
+          WHERE c.is_deleted=0${branchClause}
+            AND NOT EXISTS (
+              SELECT 1 FROM client_assignments ca
+              WHERE ca.client_id=c.id AND ca.is_primary=1 AND ca.relationship_manager_id IS NOT NULL
+            )
+        `).bind(...branchBinds).first();
+        unassignedCount = Number(row ? row.c : 0);
+        const list = await env.DB.prepare(`
+          SELECT c.full_name, c.client_reference, b.name AS branch_name
+          FROM clients c LEFT JOIN branches b ON b.id=c.assigned_branch_id
+          WHERE c.is_deleted=0${branchClause}
+            AND NOT EXISTS (
+              SELECT 1 FROM client_assignments ca
+              WHERE ca.client_id=c.id AND ca.is_primary=1 AND ca.relationship_manager_id IS NOT NULL
+            )
+          ORDER BY c.id DESC LIMIT 4
+        `).bind(...branchBinds).all();
+        unassignedRows = list.results || [];
+      }
+
+      let listingCount = 0;
+      let listingRows = [];
+      if (caps.properties_approve) {
+        const listingClause = branchId ? " AND branch_id=?" : "";
+        const listingBinds = branchId ? [branchId] : [];
+        const row = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM properties
+          WHERE workflow_status='pending_approval' AND is_archived=0${listingClause}
+        `).bind(...listingBinds).first();
+        listingCount = Number(row ? row.c : 0);
+        const list = await env.DB.prepare(`
+          SELECT id, reference, title, created_at FROM properties
+          WHERE workflow_status='pending_approval' AND is_archived=0${listingClause}
+          ORDER BY id DESC LIMIT 4
+        `).bind(...listingBinds).all();
+        listingRows = list.results || [];
+      }
+
+      let changeRequestCount = 0;
+      if (caps.client_finance_approve) {
+        const row = await env.DB.prepare(`
+          SELECT COUNT(*) AS c FROM client_financial_change_requests r JOIN clients c ON c.id=r.client_id
+          WHERE r.status='pending'${branchClause}
+        `).bind(...branchBinds).first();
+        changeRequestCount = Number(row ? row.c : 0);
+      }
+
+      const sections = [];
+      if (caps.payments_verify || caps.payments_adjust) {
+        const cards = [];
+        if (caps.payments_verify) {
+          cards.push({
+            key: "payments_verify", title: "Payments awaiting verification",
+            description: "Confirm transfers and release client credit.",
+            count: kpis.pending_payments || 0, action_label: "Review payments",
+            href: "finance-dashboard.html"
+          });
+          cards.push({
+            key: "payments_failed", title: "Failed payments",
+            description: "Bank rejections and abandoned transfers.",
+            count: failedPaymentCount, action_label: "Review failed payments",
+            href: "finance-dashboard.html"
+          });
+        }
+        if (caps.payments_adjust) {
+          cards.push({
+            key: "payments_refund", title: "Refunds and reversals",
+            description: "Reverse or refund verified payments.",
+            count: refundCount, action_label: "Review adjustments",
+            href: "finance-dashboard.html"
+          });
+        }
+        if (cards.length) sections.push({ key: "payments", title: "Payments", icon: "card", cards });
+      }
+      if (caps.commissions_approve || caps.commissions_pay) {
+        const cards = [];
+        if (caps.commissions_approve) {
+          cards.push({
+            key: "commissions_approve", title: "Commissions awaiting approval",
+            description: "Review and approve pending commission entries.",
+            count: pendingCommissionCount, action_label: "Review commissions",
+            href: "commissions.html"
+          });
+        }
+        if (caps.commissions_pay) {
+          cards.push({
+            key: "commissions_pay", title: "Commissions ready to pay out",
+            description: "Approved commissions waiting for payment.",
+            count: readyCommissionCount, action_label: "Pay commissions",
+            href: "commissions.html"
+          });
+        }
+        if (cards.length) sections.push({ key: "commissions", title: "Commissions", icon: "coins", cards });
+      }
+      if (caps.client_finance_approve || caps.clients_assign) {
+        const cards = [];
+        if (caps.client_finance_approve) {
+          cards.push({
+            key: "client_changes", title: "Client price or plan change requests",
+            description: "Review requested price, plan or schedule changes.",
+            count: changeRequestCount, action_label: "Review requests",
+            href: "clients.html"
+          });
+        }
+        if (caps.clients_assign) {
+          cards.push({
+            key: "clients_unassigned", title: "Clients without an assignee",
+            description: "Assign a relationship manager or branch.",
+            count: unassignedCount, action_label: "Open client tools",
+            href: "sub-admin-dashboard.html#client-tools"
+          });
+        }
+        if (cards.length) sections.push({ key: "clients", title: "Clients", icon: "users", cards });
+      }
+      if (caps.properties_approve) {
+        sections.push({
+          key: "properties", title: "Properties", icon: "home",
+          cards: [{
+            key: "listings", title: "Listings awaiting approval",
+            description: "Review drafts and publish approved listings.",
+            count: listingCount, action_label: "Review listings",
+            href: "properties.html"
+          }]
+        });
+      }
+
+      const attention = [];
+      if (caps.payments_verify) {
+        pendingPaymentRows.slice(0, 3).forEach(row => attention.push({
+          title: `Payment to verify — ${formatNGN(row.amount_kobo)}`,
+          meta: `${row.client_name} · ${row.client_reference}`,
+          href: "finance-dashboard.html"
+        }));
+      }
+      if (caps.properties_approve) {
+        listingRows.slice(0, 3).forEach(row => attention.push({
+          title: `Listing approval — ${row.title}`,
+          meta: row.reference,
+          href: `property-details.html?id=${row.id}`
+        }));
+      }
+      if (caps.clients_assign) {
+        unassignedRows.slice(0, 2).forEach(row => attention.push({
+          title: `Unassigned client — ${row.full_name}`,
+          meta: row.client_reference,
+          href: "sub-admin-dashboard.html#client-tools"
+        }));
+      }
+      if (caps.finance_view || caps.clients_view) {
+        defaultingRows.slice(0, 2).forEach(row => attention.push({
+          title: `Overdue plan — ${row.client_name}`,
+          meta: `Oldest due ${row.oldest_due}`,
+          href: "defaulting.html"
+        }));
+      }
+
+      let activity = [];
+      try {
+        const activityScope = activityScopeSql(scope, "al");
+        // Non-owners never see security/administration internals in the
+        // activity feed, even as humanised labels.
+        const hiddenActions = isOwnerAuthority(actor) ? "" :
+          " AND al.action NOT LIKE 'permission.%' AND al.action NOT LIKE 'admin.%'" +
+          " AND al.action NOT LIKE 'role.%' AND al.action NOT LIKE 'backup.%'" +
+          " AND al.action NOT LIKE 'user.unlock%' AND al.action NOT LIKE 'system_alert.%'";
+        const { results } = await env.DB.prepare(`
+          SELECT al.action, al.target_type, al.target_id, al.created_at, u.full_name AS actor_name
+          FROM audit_logs al LEFT JOIN users u ON u.id=al.actor_user_id
+          WHERE ${activityScope.clause}${hiddenActions}
+          ORDER BY al.id DESC LIMIT 8
+        `).bind(...activityScope.binds).all();
+        activity = (results || []).map(row => ({
+          title: humanize(row.action),
+          meta: row.actor_name || "System",
+          created_at: row.created_at
+        }));
+      } catch { activity = []; }
+
+      return json({
+        kpis,
+        sections,
+        attention,
+        activity,
+        empty: sections.every(section => section.cards.every(card => Number(card.count || 0) === 0)) && attention.length === 0
       });
     }
 
@@ -9269,8 +9621,8 @@ async function handleFetch(request, env) {
       const allowedForBM = ["Team Lead", "Marketer", "Finance Officer", "Client"];
       if (actor.role_name === "Branch Manager" && !allowedForBM.includes(role_name)) return json({ error: "Forbidden role" }, 403);
       if (role_name === "Managing Director") return json({ error: "Cannot create MD" }, 403);
-      if (role_name === "Super Admin" && actorActualRole !== "Super Admin") {
-        return json({ error: "Only a Super Admin can create another Super Admin" }, 403);
+      if (role_name === "Super Admin" && !["Super Admin", "Managing Director"].includes(actorActualRole)) {
+        return json({ error: "Only the MD or Super Admin can create another Super Admin" }, 403);
       }
       if (role_name === "Customer Care" && !["Managing Director", "Super Admin", "Sub Admin"].includes(actorActualRole)) {
         return json({ error: "Only the MD, Super Admin or Sub Admin can create customer care accounts" }, 403);
@@ -9307,6 +9659,24 @@ async function handleFetch(request, env) {
       }
       await audit(env, actor.id, "user.create", "user", String(newId), { email, role: role_name, branch_id: branchId }, branchId);
       return json({ ok: true, id: newId });
+    }
+
+    if (path === "/api/roles" && request.method === "GET") {
+      const actor = await getSessionUser(env, request);
+      if (!actor) return json({ error: "Unauthenticated" }, 401);
+      if (!canManageStaff(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      const actorActualRole = actor.actual_role_name || actor.role_name;
+      const { results } = await env.DB.prepare(
+        "SELECT id, name FROM roles WHERE name <> 'Client' ORDER BY id"
+      ).all();
+      let roles = results || [];
+      if (actorActualRole === "Sub Admin") {
+        roles = roles.filter(role => !["Super Admin", "Managing Director"].includes(role.name));
+      } else if (actor.role_name === "Branch Manager") {
+        const branchRoles = new Set(["Team Lead", "Marketer", "Finance Officer"]);
+        roles = roles.filter(role => branchRoles.has(role.name));
+      }
+      return json({ roles });
     }
 
     if (path === "/api/branches" && request.method === "GET") {
@@ -14254,7 +14624,7 @@ async function handleFetch(request, env) {
     if (path === "/api/defaulting-clients" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
       const actualRole = actor.actual_role_name || actor.role_name;
       const scope = await resolvePhase6Scope(env, actor);
       const clientScope = clientScopeSql(scope, "c");
@@ -14888,7 +15258,7 @@ async function handleFetch(request, env) {
     if (path === "/api/dashboard" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
       const analytics = await buildAnalytics(env, actor, scope, url);
 
@@ -15050,7 +15420,7 @@ async function handleFetch(request, env) {
     if (path === "/api/analytics/performance" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
       const analytics = await buildAnalytics(env, actor, scope, url);
       return json({ me: { id: actor.id, role: actor.role_name, branch_id: actor.branch_id }, ...analytics });
@@ -15059,7 +15429,7 @@ async function handleFetch(request, env) {
     if (path === "/api/activity" && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
       const scope = await resolvePhase6Scope(env, actor);
       const data = await queryActivities(env, scope, url);
       return json(data);
@@ -15123,11 +15493,18 @@ async function handleFetch(request, env) {
       if (!email || !password || !full_name || !role_name) return json({ error: "Email, password, full name and role are required" }, 400);
       if (!validPassword(password)) return json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }, 400);
       const actorActualRole = actor.actual_role_name || actor.role_name;
-      const allowed = actorActualRole === "Super Admin"
-        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "Super Admin", "Sub Admin", "GSM", "Accountant"]
-        : actor.role_name === "Managing Director"
-          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "Sub Admin", "GSM", "Accountant"]
-          : ["Team Lead", "Marketer", "Finance Officer"];
+      // Build the assignable roles from the live role catalogue so newly added
+      // roles are available to the MD / Super Admin without a code change.
+      let allowed;
+      if (["Super Admin", "Managing Director", "Sub Admin"].includes(actorActualRole)) {
+        const { results: roleRows } = await env.DB.prepare(
+          "SELECT name FROM roles WHERE name <> 'Client' ORDER BY id"
+        ).all();
+        allowed = (roleRows || []).map(row => row.name).filter(name => name !== "Managing Director");
+        if (actorActualRole === "Sub Admin") allowed = allowed.filter(name => name !== "Super Admin");
+      } else {
+        allowed = ["Team Lead", "Marketer", "Finance Officer"];
+      }
       if (!allowed.includes(role_name)) return json({ error: "Forbidden role" }, 403);
       let resolvedBranch = branch_id || null;
       if (!resolvedBranch && branch_name) {
@@ -15257,21 +15634,23 @@ async function handleFetch(request, env) {
         }
       }
       const actorActualRole = actor.actual_role_name || actor.role_name;
-      // Only a Super Admin may touch a Super Admin account, and a Sub Admin
-      // must never be able to modify an owner account.
-      if (actorActualRole !== "Super Admin" && target.role_name === "Super Admin") {
-        return json({ error: "Only a Super Admin can modify a Super Admin account" }, 403);
-      }
-      if (actorActualRole === "Sub Admin" && target.role_name === "Managing Director") {
-        return json({ error: "Sub Admin cannot modify a Managing Director account" }, 403);
+      // The MD has the same owner-level power as the Super Admin. Only a Sub
+      // Admin is blocked from touching owner accounts.
+      if (actorActualRole === "Sub Admin" && ["Managing Director", "Super Admin"].includes(target.role_name)) {
+        return json({ error: "Sub Admin cannot modify an owner account" }, 403);
       }
       const body = await request.json();
-      const operationalStaffRoles = ["GSM", "Accountant", "Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"];
-      const allowedRoles = actorActualRole === "Super Admin"
-        ? [...operationalStaffRoles, "Sub Admin", "Super Admin"]
-        : ["Managing Director", "Sub Admin"].includes(actorActualRole)
-          ? [...operationalStaffRoles, "Sub Admin"]
-          : ["Team Lead", "Marketer", "Finance Officer"];
+      // Live role catalogue: any role added in future can be assigned by the
+      // MD / Super Admin without shipping new code.
+      const { results: roleRows } = await env.DB.prepare(
+        "SELECT name FROM roles WHERE name <> 'Client' ORDER BY id"
+      ).all();
+      let allowedRoles = (roleRows || []).map(row => row.name).filter(name => name !== "Managing Director");
+      if (actorActualRole === "Sub Admin") {
+        allowedRoles = allowedRoles.filter(name => name !== "Super Admin");
+      } else if (!["Super Admin", "Managing Director"].includes(actorActualRole)) {
+        allowedRoles = ["Team Lead", "Marketer", "Finance Officer"];
+      }
       const nextRoleName = body.role_name || target.role_name;
       const editingOwnMdProfile = actor.role_name === "Managing Director" && target.role_name === "Managing Director";
       if (!allowedRoles.includes(nextRoleName) && !(editingOwnMdProfile && nextRoleName === "Managing Director")) {
@@ -15448,11 +15827,8 @@ async function handleFetch(request, env) {
       if (!target) return json({ error: "Staff member not found" }, 404);
       if (Number(target.id) === Number(actor.id)) return json({ error: "You cannot deactivate your own account" }, 400);
       const actorActualRole = actor.actual_role_name || actor.role_name;
-      if (actorActualRole !== "Super Admin" && target.role_name === "Super Admin") {
-        return json({ error: "Only a Super Admin can change a Super Admin account" }, 403);
-      }
-      if (actorActualRole === "Sub Admin" && target.role_name === "Managing Director") {
-        return json({ error: "Sub Admin cannot deactivate a Managing Director account" }, 403);
+      if (actorActualRole === "Sub Admin" && ["Managing Director", "Super Admin"].includes(target.role_name)) {
+        return json({ error: "Sub Admin cannot change an owner account" }, 403);
       }
       if (actor.role_name === "Branch Manager" &&
           (Number(target.branch_id) !== Number(actor.branch_id) || ["Managing Director", "Branch Manager"].includes(target.role_name))) {
@@ -17328,7 +17704,7 @@ async function handleFetch(request, env) {
     if (commissionReceiptMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
       const fullAccess = canAccessCommissions(actor);
       const ownView = !fullAccess && canViewOwnCommission(actor);
       if (!fullAccess && !ownView) return json({ error: "Commission access is required" }, 403);
@@ -17658,7 +18034,7 @@ async function handleFetch(request, env) {
     if (reportDownloadMatch && request.method === "GET") {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
-      if (!STAFF_ROLES.includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
+      if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
       const job = await env.DB.prepare("SELECT * FROM financial_report_jobs WHERE id=?").bind(reportDownloadMatch[1]).first();
       if (!job) return json({ error: "Report not found" }, 404);
       const admin = ["Managing Director", "Finance Officer"].includes(actor.role_name);

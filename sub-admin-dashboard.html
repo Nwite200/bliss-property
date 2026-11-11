@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <script src="assets/js/security-ui.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sub Admin Dashboard | Bliss Legacy Limited</title>
+  <title>Operations &amp; Approvals | Bliss Legacy Limited</title>
   <link rel="stylesheet" href="assets/css/styles.css">
   <link rel="stylesheet" href="assets/css/motion.css">
   <link rel="manifest" href="manifest.json">
@@ -16,48 +16,83 @@
   <div class="dash">
     <aside class="sidebar" id="sidebar"></aside>
     <main class="dash-main">
-      <div class="dash-top"><h1>Sub Admin Dashboard</h1><span class="small muted">Read-only financial oversight · non-financial client edits</span></div>
-
-      <div class="card">
-        <div class="card-head"><h3>Financial approvals</h3><span class="small muted" id="approvalMode">Read-only</span></div>
-        <div class="table-responsive"><table class="table"><thead><tr><th>Action</th><th>Endpoint</th><th>Permission</th><th>Can perform</th></tr></thead><tbody id="approvalCatalog"></tbody></table></div>
-        <div id="pendingApprovals" class="small" style="margin-top:12px"></div>
-      </div>
-
-      <div class="card" style="margin-top:16px">
-        <div class="card-head"><h3>Edit client (non-financial only)</h3><span class="small muted">Reason required · audited</span></div>
-        <div class="form-grid">
-          <div class="field-group"><label class="field-label" for="editClientId">Client ID</label><input class="field-input" id="editClientId" type="number" min="1"></div>
-          <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-outline" id="loadClientBtn">Load client</button></div>
-          <div class="field-group"><label class="field-label" for="editName">Full name</label><input class="field-input" id="editName"></div>
-          <div class="field-group"><label class="field-label" for="editPhone">Phone (login)</label><input class="field-input" id="editPhone" type="tel"></div>
-          <div class="field-group"><label class="field-label" for="editEmail">Email (optional)</label><input class="field-input" id="editEmail" type="email"></div>
-          <div class="field-group"><label class="field-label" for="editAddress">Residential address</label><input class="field-input" id="editAddress"></div>
-          <div class="field-group"><label class="field-label" for="editState">State</label><input class="field-input" id="editState"></div>
-          <div class="field-group"><label class="field-label" for="editCity">City</label><input class="field-input" id="editCity"></div>
-          <div class="field-group full"><label class="field-label" for="editReason">Reason for edit</label><input class="field-input" id="editReason" placeholder="Required"></div>
+      <div class="dash-top">
+        <div>
+          <h1>Operations &amp; Approvals</h1>
+          <p class="small muted" style="margin-top:4px">Review what needs you, keep clients moving and manage listings.</p>
         </div>
-        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-green" id="saveClientBtn">Save non-financial edits</button><span class="small" id="editMsg"></span></div>
-      </div>
-
-      <div class="card" style="margin-top:16px">
-        <div class="card-head"><h3>Branch / assignment change</h3><span class="small muted">Past payments keep their snapshots</span></div>
-        <div class="form-grid">
-          <div class="field-group"><label class="field-label" for="changeBranch">New branch</label><select class="field-input" id="changeBranch"></select></div>
-          <div class="field-group"><label class="field-label" for="changeManager">New assignee (optional)</label><select class="field-input" id="changeManager"><option value="">Leave Unassigned</option></select></div>
-          <div class="field-group full"><label class="field-label" for="changeReason">Reason</label><input class="field-input" id="changeReason" placeholder="Required for branch/assignment change"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a class="btn btn-green" href="property-create.html" id="quickAddProperty">Add property</a>
+          <a class="btn btn-outline-white" href="properties.html" id="quickManageProperties">Manage properties</a>
         </div>
-        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-outline" id="changeBranchBtn">Move branch / assignment</button><span class="small" id="branchMsg"></span></div>
       </div>
 
-      <div class="card" style="margin-top:16px">
-        <div class="card-head"><h3>Unassigned queue</h3><span class="small muted">Clients without a primary assignee</span></div>
-        <div class="table-responsive"><table class="table"><thead><tr><th>Client</th><th>Reference</th><th>Branch</th><th>Phone</th></tr></thead><tbody id="unassignedBody"></tbody></table></div>
+      <div class="kpi-grid" id="opsKpis" style="margin-bottom:20px"></div>
+
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-head"><h3>Needs your attention</h3><span class="small muted" id="attentionCount">Loading…</span></div>
+        <div id="attentionList"></div>
       </div>
 
-      <div class="card" style="margin-top:16px">
-        <div class="card-head"><h3>Client edit history</h3><span class="small muted">From the client record</span></div>
-        <div id="editHistory" class="small muted">Load a client to see history.</div>
+      <div id="operationsSections"></div>
+
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-head"><h3>Recent activity</h3><span class="small muted">Latest changes across your scope</span></div>
+        <div id="recentActivity"></div>
+      </div>
+
+      <div class="card" id="propertyToolsCard" style="margin-bottom:20px">
+        <div class="card-head"><h3>Property tools</h3><span class="small muted">Add or maintain listings</span></div>
+        <div class="ops-grid">
+          <div class="ops-card">
+            <div>
+              <strong>Add a new property</strong>
+              <div class="small muted">Create a draft, add payment plans, then submit for approval.</div>
+            </div>
+            <a class="btn btn-green btn-sm" href="property-create.html">Add property →</a>
+          </div>
+          <div class="ops-card">
+            <div>
+              <strong>Edit a listed property</strong>
+              <div class="small muted">Update pricing, payment plans, photos and listing details.</div>
+            </div>
+            <a class="btn btn-outline btn-sm" href="properties.html">Open properties →</a>
+          </div>
+        </div>
+      </div>
+
+      <div id="client-tools">
+        <div class="card" style="margin-bottom:20px" id="clientEditCard">
+          <div class="card-head"><h3>Update client details</h3><span class="small muted">A reason is required · the change is audited</span></div>
+          <div class="form-grid">
+            <div class="field-group"><label class="field-label" for="editClientId">Client ID</label><input class="field-input" id="editClientId" type="number" min="1"></div>
+            <div class="field-group" style="display:flex;align-items:flex-end"><button class="btn btn-outline" id="loadClientBtn" type="button">Load client</button></div>
+            <div class="field-group"><label class="field-label" for="editName">Full name</label><input class="field-input" id="editName"></div>
+            <div class="field-group"><label class="field-label" for="editPhone">Phone (login)</label><input class="field-input" id="editPhone" type="tel"></div>
+            <div class="field-group"><label class="field-label" for="editEmail">Email (optional)</label><input class="field-input" id="editEmail" type="email"></div>
+            <div class="field-group"><label class="field-label" for="editAddress">Residential address</label><input class="field-input" id="editAddress"></div>
+            <div class="field-group"><label class="field-label" for="editState">State</label><input class="field-input" id="editState"></div>
+            <div class="field-group"><label class="field-label" for="editCity">City</label><input class="field-input" id="editCity"></div>
+            <div class="field-group full"><label class="field-label" for="editReason">Reason for edit</label><input class="field-input" id="editReason" placeholder="Required"></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn btn-green" id="saveClientBtn" type="button">Save client details</button><span class="small" id="editMsg"></span></div>
+          <div id="editHistory" class="small muted" style="margin-top:14px">Load a client to see their recent history.</div>
+        </div>
+
+        <div class="card" style="margin-bottom:20px" id="clientAssignCard">
+          <div class="card-head"><h3>Branch &amp; assignee</h3><span class="small muted">Past payments keep their original branch</span></div>
+          <div class="form-grid">
+            <div class="field-group"><label class="field-label" for="changeBranch">New branch</label><select class="field-input" id="changeBranch"></select></div>
+            <div class="field-group"><label class="field-label" for="changeManager">New assignee (optional)</label><select class="field-input" id="changeManager"><option value="">Leave unassigned</option></select></div>
+            <div class="field-group full"><label class="field-label" for="changeReason">Reason</label><input class="field-input" id="changeReason" placeholder="Required for a branch or assignee change"></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn btn-outline" id="changeBranchBtn" type="button">Move client</button><span class="small" id="branchMsg"></span></div>
+        </div>
+
+        <div class="card" style="margin-bottom:20px" id="unassignedCard">
+          <div class="card-head"><h3>Clients without an assignee</h3><span class="small muted">Assign a relationship manager or branch</span></div>
+          <div class="table-responsive"><table class="table"><thead><tr><th>Client</th><th>Reference</th><th>Branch</th><th>Phone</th></tr></thead><tbody id="unassignedBody"></tbody></table></div>
+        </div>
       </div>
     </main>
   </div>
@@ -70,84 +105,229 @@
       if (!me) return;
       const el = id => document.getElementById(id);
       const esc = BlissStaff.escape;
+      const caps = me.capabilities || {};
+      const actualRole = me.actual_role || me.role;
+      const isOwner = ["Managing Director", "Super Admin"].includes(actualRole);
+      const canOperations = isOwner || actualRole === "Sub Admin" || Boolean(caps.operations);
+      if (!canOperations) {
+        document.querySelector("main").innerHTML = '<div class="card"><h2>Access restricted</h2><p>This operations workspace is not available for your role.</p><a class="btn btn-green" href="dashboard.html">Back to dashboard</a></div>';
+        return;
+      }
+
+      const canManageProperties = Boolean(caps.properties_manage) || isOwner || actualRole === "Sub Admin";
+      const canEditClients = Boolean(caps.clients_edit);
+      const canAssignClients = Boolean(caps.clients_assign);
+      if (!canManageProperties) {
+        el("quickAddProperty").style.display = "none";
+        el("quickManageProperties").style.display = "none";
+        el("propertyToolsCard").style.display = "none";
+      }
+      if (!canEditClients) el("clientEditCard").style.display = "none";
+      if (!canAssignClients) {
+        el("clientAssignCard").style.display = "none";
+        el("unassignedCard").style.display = "none";
+      }
+
       let branches = [];
       let staff = [];
       let currentClientId = null;
-      async function loadApprovals() {
-        const data = await BlissStaff.fetchJson('/api/financial-approvals');
-        el('approvalMode').textContent = data.read_only ? 'Read-only' : 'Can perform';
-        el('approvalCatalog').innerHTML = (data.catalog || []).map(row => `<tr><td>${esc(row.label)}</td><td><code>${esc(row.method)} ${esc(row.endpoint)}</code></td><td>${esc(row.permission)}</td><td>${row.can_perform ? 'Yes' : '<span class="badge badge-gray">Read-only</span>'}</td></tr>`).join('');
-        const p = data.pending || {};
-        el('pendingApprovals').innerHTML = `
-          <div><strong>Pending payments:</strong> ${(p.payments || []).length}</div>
-          <div><strong>Pending commissions:</strong> ${(p.commissions || []).length}</div>
-          <div><strong>Pending client change requests:</strong> ${(p.client_change_requests || []).length}</div>
-          <div><strong>Pending listings:</strong> ${(p.property_listings || []).length}</div>`;
+
+      function renderKpis(kpis) {
+        const definitions = [
+          { key: "pending_payments", label: "Pending payments", href: "finance-dashboard.html", delta: "Awaiting verification" },
+          { key: "pending_commissions", label: "Pending commissions", href: "commissions.html", delta: "Awaiting approval" },
+          { key: "defaulting_clients", label: "Defaulting clients", href: "defaulting.html", delta: "Overdue installments" },
+          { key: "new_leads", label: "New leads", href: "leads.html", delta: "Ready to contact" }
+        ];
+        const visible = definitions.filter(item => kpis[item.key] !== null && kpis[item.key] !== undefined);
+        el("opsKpis").innerHTML = visible.map(item => `
+          <a class="kpi" href="${item.href}" style="text-decoration:none;color:inherit">
+            <div class="label">${esc(item.label)}</div>
+            <div class="value">${Number(kpis[item.key] || 0).toLocaleString("en-NG")}</div>
+            <div class="delta">${esc(item.delta)}</div>
+          </a>`).join("") || '<div class="empty-state">No operational counts available.</div>';
       }
+
+      function renderAttention(items) {
+        if (!items.length) {
+          el("attentionCount").textContent = "All clear";
+          el("attentionList").innerHTML = '<div class="empty-state">Nothing needs your attention right now.</div>';
+          return;
+        }
+        el("attentionCount").textContent = `${items.length} item${items.length === 1 ? "" : "s"}`;
+        el("attentionList").innerHTML = items.map(item => `
+          <a class="attention-item" href="${esc(item.href)}">
+            <div class="attention-main">
+              <strong>${esc(item.title)}</strong>
+              <div class="small muted">${esc(item.meta || "")}</div>
+            </div>
+            <span class="attention-arrow" aria-hidden="true">→</span>
+          </a>`).join("");
+      }
+
+      function renderSections(sections, empty) {
+        if (!sections.length || empty) {
+          el("operationsSections").innerHTML = '<div class="card" style="margin-bottom:20px"><div class="empty-state">Nothing needs your approval right now.</div></div>';
+          return;
+        }
+        el("operationsSections").innerHTML = sections.map(section => {
+          const pending = section.cards.reduce((total, card) => total + Number(card.count || 0), 0);
+          return `
+            <div class="card" style="margin-bottom:20px">
+              <div class="card-head">
+                <h3 style="display:flex;align-items:center;gap:8px">${BlissStaff.icon(section.icon, 18)} ${esc(section.title)}</h3>
+                <span class="small muted">${pending} pending</span>
+              </div>
+              <div class="ops-grid">
+                ${section.cards.map(card => `
+                  <div class="ops-card">
+                    <div class="ops-card-top">
+                      <div>
+                        <strong>${esc(card.title)}</strong>
+                        <div class="small muted">${esc(card.description || "")}</div>
+                      </div>
+                      <span class="ops-count">${Number(card.count || 0).toLocaleString("en-NG")}</span>
+                    </div>
+                    <a class="btn btn-outline btn-sm" href="${esc(card.href)}">${esc(card.action_label || "Open")} →</a>
+                  </div>`).join("")}
+              </div>
+            </div>`;
+        }).join("");
+      }
+
+      function renderActivity(items) {
+        if (!items.length) {
+          el("recentActivity").innerHTML = '<div class="empty-state">No activity yet.</div>';
+          return;
+        }
+        el("recentActivity").innerHTML = items.map(item => `
+          <div class="activity-item">
+            <div class="activity-dot">•</div>
+            <div class="activity-main">
+              <strong>${esc(item.title)}</strong>
+              <div class="activity-meta"><span>${esc(item.meta || "System")}</span><span>${esc(BlissStaff.formatDateTime(item.created_at))}</span></div>
+            </div>
+          </div>`).join("");
+      }
+
+      async function loadSummary() {
+        try {
+          const data = await BlissStaff.fetchJson("/api/operations/summary");
+          renderKpis(data.kpis || {});
+          renderAttention(data.attention || []);
+          renderSections(data.sections || [], Boolean(data.empty));
+          renderActivity(data.activity || []);
+        } catch (error) {
+          el("attentionCount").textContent = "Unavailable";
+          el("attentionList").innerHTML = `<div class="empty-state">${esc(error.message || "Unable to load operations.")}</div>`;
+          el("operationsSections").innerHTML = '<div class="card"><div class="empty-state">Unable to load operations right now.</div></div>';
+        }
+      }
+
       async function loadOptions() {
-        const [b, u] = await Promise.all([BlissStaff.fetchJson('/api/branches'), BlissStaff.fetchJson('/api/users')]);
-        branches = b.branches || [];
-        staff = (u.users || []).filter(x => x.is_active !== 0);
-        el('changeBranch').innerHTML = branches.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
-        el('changeManager').innerHTML = '<option value="">Leave Unassigned</option>' + staff.map(x => `<option value="${x.id}">${esc(x.full_name)} — ${esc(x.role_name || x.role || '')}</option>`).join('');
+        try {
+          const requests = [BlissStaff.fetchJson("/api/branches")];
+          if (canAssignClients) requests.push(BlissStaff.fetchJson("/api/users"));
+          const results = await Promise.all(requests);
+          branches = results[0].branches || [];
+          staff = canAssignClients ? (results[1].users || []).filter(person => person.is_active !== 0) : [];
+          if (canAssignClients) {
+            el("changeBranch").innerHTML = branches.map(branch => `<option value="${branch.id}">${esc(branch.name)}</option>`).join("");
+            el("changeManager").innerHTML = '<option value="">Leave unassigned</option>' + staff.map(person => `<option value="${person.id}">${esc(person.full_name)}</option>`).join("");
+          }
+        } catch {
+          /* Client tools are optional; the summary still renders. */
+        }
       }
+
       async function loadUnassigned() {
-        const data = await BlissStaff.fetchJson('/api/clients/unassigned');
-        el('unassignedBody').innerHTML = (data.clients || []).map(c => `<tr><td>${esc(c.full_name)}</td><td>${esc(c.client_reference)}</td><td>${esc(c.branch_name || '')}</td><td>${esc(c.phone_number || '')}</td></tr>`).join('') || '<tr><td colspan="4">No unassigned clients.</td></tr>';
+        if (!canAssignClients) return;
+        try {
+          const data = await BlissStaff.fetchJson("/api/clients/unassigned");
+          el("unassignedBody").innerHTML = (data.clients || []).map(client => `
+            <tr>
+              <td>${esc(client.full_name)}</td>
+              <td>${esc(client.client_reference)}</td>
+              <td>${esc(client.branch_name || "Unassigned")}</td>
+              <td>${esc(client.phone_number || "—")}</td>
+            </tr>`).join("") || '<tr><td colspan="4"><div class="empty-state">Every client has an assignee.</div></td></tr>';
+        } catch {
+          el("unassignedBody").innerHTML = '<tr><td colspan="4"><div class="empty-state">Unable to load the unassigned queue.</div></td></tr>';
+        }
       }
+
       async function loadClient() {
-        const id = Number(el('editClientId').value);
+        if (!canEditClients) return;
+        const id = Number(el("editClientId").value);
         if (!id) return;
         currentClientId = id;
         try {
-          const data = await BlissStaff.fetchJson('/api/clients/' + id);
-          const c = data.client || {};
-          el('editName').value = c.full_name || '';
-          el('editPhone').value = c.phone_number || '';
-          el('editEmail').value = c.email_address || '';
-          el('editAddress').value = c.residential_address || '';
-          el('editState').value = c.state || '';
-          el('editCity').value = c.city || '';
-          el('changeBranch').value = String(c.assigned_branch_id || '');
-          el('editHistory').innerHTML = (data.edit_history || []).length
-            ? data.edit_history.map(h => `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><strong>${esc(h.action)}</strong> · ${esc(h.created_at)} · ${esc(h.actor_name || 'System')}<div style="font-size:11px">${esc(JSON.stringify(h.metadata || {}))}</div></div>`).join('')
-            : 'No edits recorded.';
-        } catch (error) { el('editMsg').textContent = error.message; }
+          const data = await BlissStaff.fetchJson(`/api/clients/${id}`);
+          const client = data.client || {};
+          el("editName").value = client.full_name || "";
+          el("editPhone").value = client.phone_number || "";
+          el("editEmail").value = client.email_address || "";
+          el("editAddress").value = client.residential_address || "";
+          el("editState").value = client.state || "";
+          el("editCity").value = client.city || "";
+          if (canAssignClients) el("changeBranch").value = String(client.assigned_branch_id || "");
+          el("editHistory").innerHTML = (data.edit_history || []).length
+            ? data.edit_history.slice(0, 6).map(entry => `
+                <div style="padding:7px 0;border-bottom:1px solid var(--line)">
+                  <strong>${esc(entry.action)}</strong> · ${esc(BlissStaff.formatDateTime(entry.created_at))} · ${esc(entry.actor_name || "System")}
+                </div>`).join("")
+            : "No edits recorded yet.";
+        } catch (error) {
+          el("editMsg").textContent = error.message;
+        }
       }
-      el('loadClientBtn').addEventListener('click', loadClient);
-      el('saveClientBtn').addEventListener('click', async () => {
-        const msg = el('editMsg'); msg.textContent = '';
-        if (!currentClientId) { msg.textContent = 'Load a client first.'; return; }
-        const body = {
-          full_name: el('editName').value.trim(),
-          phone_number: el('editPhone').value.trim(),
-          email_address: el('editEmail').value.trim(),
-          residential_address: el('editAddress').value.trim(),
-          state: el('editState').value.trim(),
-          city: el('editCity').value.trim(),
-          reason: el('editReason').value.trim()
-        };
-        try {
-          await BlissStaff.fetchJson('/api/clients/' + currentClientId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-          msg.textContent = 'Client details updated and audited.';
-          await loadClient();
-        } catch (error) { msg.textContent = error.message; }
-      });
-      el('changeBranchBtn').addEventListener('click', async () => {
-        const msg = el('branchMsg'); msg.textContent = '';
-        if (!currentClientId) { msg.textContent = 'Load a client first.'; return; }
-        const body = {
-          branch_id: Number(el('changeBranch').value),
-          relationship_manager_id: el('changeManager').value ? Number(el('changeManager').value) : null,
-          reason: el('changeReason').value.trim()
-        };
-        try {
-          await BlissStaff.fetchJson('/api/clients/' + currentClientId + '/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-          msg.textContent = 'Branch/assignment updated and audited. Past payments kept their snapshots.';
-          await Promise.all([loadClient(), loadUnassigned()]);
-        } catch (error) { msg.textContent = error.message; }
-      });
-      await Promise.all([loadApprovals(), loadOptions(), loadUnassigned()]);
+
+      if (canEditClients) {
+        el("loadClientBtn").addEventListener("click", loadClient);
+        el("saveClientBtn").addEventListener("click", async () => {
+          const message = el("editMsg");
+          message.textContent = "";
+          if (!currentClientId) { message.textContent = "Load a client first."; return; }
+          const body = {
+            full_name: el("editName").value.trim(),
+            phone_number: el("editPhone").value.trim(),
+            email_address: el("editEmail").value.trim(),
+            residential_address: el("editAddress").value.trim(),
+            state: el("editState").value.trim(),
+            city: el("editCity").value.trim(),
+            reason: el("editReason").value.trim()
+          };
+          try {
+            await BlissStaff.fetchJson(`/api/clients/${currentClientId}`, {
+              method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+            });
+            message.textContent = "Client details updated and audited.";
+            await Promise.all([loadClient(), loadSummary()]);
+          } catch (error) { message.textContent = error.message; }
+        });
+      }
+
+      if (canAssignClients) {
+        el("changeBranchBtn").addEventListener("click", async () => {
+          const message = el("branchMsg");
+          message.textContent = "";
+          if (!currentClientId) { message.textContent = "Load a client first."; return; }
+          const body = {
+            branch_id: Number(el("changeBranch").value),
+            relationship_manager_id: el("changeManager").value ? Number(el("changeManager").value) : null,
+            reason: el("changeReason").value.trim()
+          };
+          try {
+            await BlissStaff.fetchJson(`/api/clients/${currentClientId}/assign`, {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+            });
+            message.textContent = "Branch and assignee updated. Past payments kept their snapshots.";
+            await Promise.all([loadClient(), loadUnassigned(), loadSummary()]);
+          } catch (error) { message.textContent = error.message; }
+        });
+      }
+
+      await Promise.all([loadSummary(), loadOptions(), loadUnassigned()]);
     })();
   </script>
   <script src="assets/js/digital-human.js" defer></script>

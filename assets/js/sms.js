@@ -25,7 +25,7 @@
   async function loadOverview() {
     const data = await S.fetchJson("/api/sms/overview");
     el("smsMeta").innerHTML = [
-      `<span class="scope-badge">${S.escape(me.role)}</span>`,
+      `<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span>`,
       `<span class="scope-badge">${data.enabled ? "SMS on" : "SMS off"}</span>`,
       `<span class="scope-badge">${S.escape(data.provider)}${data.provider_ready ? "" : " · credentials missing"}</span>`
     ].join("");

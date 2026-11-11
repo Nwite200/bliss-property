@@ -5,13 +5,13 @@
   const el = id => document.getElementById(id);
 
   function reasonLabel(reason) {
-    return ({ missing_phone: "Missing", invalid_number: "Invalid", normalise_to_+234: "Not +234" })[reason] || reason;
+    return ({ missing_phone: "Missing", invalid_number: "Invalid", "normalise_to_+234": "Not +234" })[reason] || reason;
   }
 
   async function load() {
     const data = await S.fetchJson("/api/phone-cleanup");
     rows = data.clients || [];
-    el("phoneMeta").innerHTML = `<span class="scope-badge">${S.escape(me.role)}</span><span class="scope-badge">${S.escape(me.branch_name || "Assigned scope")}</span>`;
+    el("phoneMeta").innerHTML = `<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span><span class="scope-badge">${S.escape(me.branch_name || "Assigned scope")}</span>`;
     const counts = {};
     rows.forEach(row => { counts[row.reason] = (counts[row.reason] || 0) + 1; });
     el("phoneKpis").innerHTML = [

@@ -946,6 +946,13 @@ await test('frontend integration has no /api/api paths and public enquiries are 
   for (const file of htmlFiles) {
     assert(readFileSync(file, 'utf8').includes('mobile-nav.js'), `${file} is missing shared mobile navigation`);
   }
+  const subAdminPage = readFileSync('sub-admin-dashboard.html', 'utf8');
+  assert(!/Endpoint|Permission|READ-ONLY|Can perform/i.test(subAdminPage), 'Sub Admin page must not expose the internal approval matrix');
+  assert(subAdminPage.includes('/api/operations/summary'), 'Sub Admin page must use the safe operations summary');
+  assert(subAdminPage.includes('property-create.html'), 'Sub Admin page must offer adding a property');
+  const permissionsPage = readFileSync('permissions.html', 'utf8');
+  assert(permissionsPage.includes('approvalMatrixBody'), 'owner approval matrix is missing');
+  assert(permissionsPage.includes('Access restricted'), 'owner-only gate is missing from the permissions page');
 });
 
 await test('single global logo intro supports hype/classic, full/short replay and Back/Forward', async () => {
@@ -3065,20 +3072,29 @@ await test('GSM has no commission totals by default; grant adds totals only; rev
   assert(subEffective.status === 403, 'Sub Admin must not inspect another user effective permissions');
 });
 
-await test('Sub Admin sees financial approvals read-only and can edit only non-financial client details', async () => {
-  const approvals = await request('/api/financial-approvals', { headers: { Cookie: subAdminCookie } });
-  assert(approvals.status === 200 && approvals.data.read_only === true, 'Sub Admin financial approvals must be read-only');
-  const catalogByKey = Object.fromEntries((approvals.data.catalog || []).map(row => [row.key, row]));
-  assert(catalogByKey.manual_payment && catalogByKey.client_price, 'financial approval catalogue missing required entries');
-  assert(catalogByKey.manual_payment.can_perform === false, 'Sub Admin must not perform manual payments');
-  assert(catalogByKey.client_price.can_perform === false, 'Sub Admin must not change client money fields');
-  assert(catalogByKey.property_price.can_perform === true, 'Sub Admin should manage property pricing');
-  assert(catalogByKey.property_plans.can_perform === true, 'Sub Admin should manage property payment plans');
-  assert(catalogByKey.listing_approval.can_perform === true, 'Sub Admin should approve property listings');
-  const financeApprovals = await request('/api/financial-approvals', { headers: { Cookie: finCookie } });
-  assert(financeApprovals.status === 200 && financeApprovals.data.read_only === false, 'Finance must be able to perform financial approvals');
-  const gsmApprovals = await request('/api/financial-approvals', { headers: { Cookie: gsmCookie } });
-  assert(gsmApprovals.status === 403, 'GSM must not see financial approvals by default');
+await test('Sub Admin gets a safe operations summary and can edit only non-financial client details', async () => {
+  // The internal approval matrix (routes + permission keys) is owner-only.
+  const subMatrix = await request('/api/financial-approvals', { headers: { Cookie: subAdminCookie } });
+  assert(subMatrix.status === 403, 'Sub Admin must not fetch the internal approval matrix');
+  const financeMatrix = await request('/api/financial-approvals', { headers: { Cookie: finCookie } });
+  assert(financeMatrix.status === 403, 'Finance must not fetch the internal approval matrix');
+  const gsmMatrix = await request('/api/financial-approvals', { headers: { Cookie: gsmCookie } });
+  assert(gsmMatrix.status === 403, 'GSM must not fetch the internal approval matrix');
+  const ownerMatrix = await request('/api/financial-approvals', { headers: { Cookie: mdCookie } });
+  assert(ownerMatrix.status === 200 && (ownerMatrix.data.catalog || []).length, 'Owner must see the approval matrix');
+  assert(ownerMatrix.data.catalog.every(row => row.endpoint && row.permission), 'Owner matrix must include technical reference data');
+
+  const summary = await request('/api/operations/summary', { headers: { Cookie: subAdminCookie } });
+  assert(summary.status === 200, `Sub Admin operations summary failed: ${summary.status} ${JSON.stringify(summary.data)}`);
+  assert(summary.data.kpis && Number.isFinite(summary.data.kpis.pending_payments), 'Sub Admin summary missing pending payment count');
+  assert(Number.isFinite(summary.data.kpis.pending_commissions), 'Sub Admin summary missing commission count');
+  assert(Array.isArray(summary.data.sections) && summary.data.sections.length > 0, 'Sub Admin summary missing work queues');
+  assert(summary.data.sections.some(section => section.key === 'properties'), 'Sub Admin should see the property approval queue');
+  assert(!summary.data.sections.some(section => section.key === 'payments'), 'Sub Admin must not receive a payment approval queue');
+  assert(!summary.data.sections.some(section => section.key === 'commissions'), 'Sub Admin must not receive a commission approval queue');
+  const summaryText = JSON.stringify(summary.data);
+  assert(!/endpoint|permission|finance\.payments|commission\.entries|clients\.financial|read-only|read_only/i.test(summaryText), 'Sub Admin operations summary leaked technical details');
+  assert(summary.data.sections.every(section => section.cards.every(card => !('endpoint' in card) && !('permission' in card))), 'Operations cards leaked technical fields');
 
   const client = createLoginClient({
     ref: 'BLC-P28-SUBADMIN', name: 'Phase 28 Sub Admin Client', phone: nextTestPhone(),
@@ -3172,6 +3188,26 @@ await test('Sub Admin has MD-level operations access but cannot approve financia
     method: 'POST', headers: { Cookie: subAdminCookie }, body: {}
   });
   assert(verify.status === 403, 'Sub Admin must not verify a payment');
+});
+
+await test('MD can assign any role from the live catalogue, including future roles', async () => {
+  db.prepare("INSERT OR IGNORE INTO roles (name) VALUES ('Future Operations')").run();
+  const mdRoles = await request('/api/roles', { headers: { Cookie: mdCookie } });
+  assert(mdRoles.status === 200 && mdRoles.data.roles.some(role => role.name === 'Future Operations'), 'MD role catalogue missing the future role');
+  const subRoles = await request('/api/roles', { headers: { Cookie: subAdminCookie } });
+  assert(subRoles.status === 200, 'Sub Admin should read the staff role catalogue');
+  assert(!subRoles.data.roles.some(role => role.name === 'Super Admin'), 'Sub Admin must not be offered the Super Admin role');
+
+  const email = `phase28.future.role.${Date.now()}@bliss.com`;
+  const created = await request('/api/staff', {
+    method: 'POST', headers: { Cookie: mdCookie }, body: {
+      email, password: 'FutureRole123!', full_name: 'Future Role Staff',
+      role_name: 'Future Operations', branch_id: ikeja
+    }
+  });
+  assert(created.status === 200, `MD could not assign the future role: ${created.status} ${JSON.stringify(created.data)}`);
+  const row = db.prepare('SELECT r.name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.email=?').get(email);
+  assert(row && row.name === 'Future Operations', 'Future role was not applied to the staff account');
 });
 
 await test('Branch Manager money changes require an approved request; Finance approval applies them', async () => {

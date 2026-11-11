@@ -12,10 +12,14 @@
 
   function roleCopy(role) {
     if (["Managing Director", "Super Admin", "Sub Admin"].includes(role)) return ["Company-wide command centre", "Company-wide property, client, sales, collection and team performance."];
-    if (role === "Branch Manager") return ["Branch command centre", "Authorised branch inventory, clients, marketers, teams and collections."];
+    if (role === "Head Accountant") return ["Finance command centre", "Company-wide contract value, verified collections, payouts and outstanding balances."];
+    if (role === "Finance Officer" || role === "Accountant") return ["Finance overview", "Company-wide contract value, verified collections and outstanding balances."];
+    if (role === "Branch Manager" || role === "Project Manager") return ["Branch command centre", "Authorised branch inventory, clients, marketers, teams and collections."];
     if (role === "Team Lead") return ["Team performance centre", "Your team's clients, property assignments, leads and conversion performance."];
     if (role === "Marketer") return ["Personal sales centre", "Your clients, leads, follow-ups, conversions and verified payment performance."];
-    return ["Finance overview", "Company-wide contract value, verified collections and outstanding balances."];
+    if (role === "GSM") return ["Growth & sales centre", "Company-wide sales activity, lead flow and team performance."];
+    if (role === "Customer Care") return ["Client care centre", "Client enquiries, care follow-ups and service activity."];
+    return ["Your workspace", "Your assigned clients, properties and activity."];
   }
 
   async function loadBranches() {
@@ -106,18 +110,21 @@
   }
 
   function renderHeader() {
-    const [title, subtitle] = roleCopy(me.role);
+    const displayRole = me.actual_role || me.role;
+    const [title, subtitle] = roleCopy(displayRole);
     el("roleTitle").textContent = title;
     el("roleSubtitle").textContent = subtitle;
     const meta = [];
-    meta.push(`<span class="scope-badge">${S.escape(me.role)}</span>`);
-    if (["Managing Director", "Super Admin", "Sub Admin", "Finance Officer"].includes(me.role)) {
-      meta.push(`<span class="scope-badge">🏢 Company-wide</span>`);
+    meta.push(`<span class="scope-badge">${S.escape(displayRole)}</span>`);
+    const companyWide = ["Managing Director", "Super Admin", "Sub Admin", "Finance Officer", "Head Accountant"].includes(displayRole) ||
+      ["Managing Director", "Super Admin", "Sub Admin", "Finance Officer", "Head Accountant"].includes(me.role);
+    if (companyWide) {
+      meta.push(`<span class="scope-badge">Company-wide</span>`);
     } else if (me.branch_name) {
-      meta.push(`<span class="scope-badge">🏢 ${S.escape(me.branch_name)}</span>`);
+      meta.push(`<span class="scope-badge">${S.escape(me.branch_name)}</span>`);
     }
-    if (me.team_names) meta.push(`<span class="scope-badge">👥 ${S.escape(me.team_names)}</span>`);
-    meta.push(`<span class="scope-badge">📅 ${S.formatDate(dashboard.range.from)} – ${S.formatDate(dashboard.range.to)}</span>`);
+    if (me.team_names) meta.push(`<span class="scope-badge">${S.escape(me.team_names)}</span>`);
+    meta.push(`<span class="scope-badge">${S.formatDate(dashboard.range.from)} – ${S.formatDate(dashboard.range.to)}</span>`);
     el("heroMeta").innerHTML = meta.join("");
     const actions = [
       `<a class="btn btn-outline-white" href="performance.html">Performance analytics</a>`
@@ -488,7 +495,7 @@
     el("profileBody").innerHTML = `
       <div class="role-profile-card mb-16">
         <span class="staff-avatar">${S.initials(me.full_name)}</span>
-        <div><strong>${S.escape(me.full_name)}</strong><div class="small muted">${S.escape(me.role)}${me.branch_name ? " · " + S.escape(me.branch_name) : ""}</div></div>
+        <div><strong>${S.escape(me.full_name)}</strong><div class="small muted">${S.escape(me.actual_role || me.role)}${me.branch_name ? " · " + S.escape(me.branch_name) : ""}</div></div>
       </div>
       <table class="table">${rows.slice(1).map(([label, value]) => `<tr><td class="muted">${label}</td><td>${S.escape(value || "-")}</td></tr>`).join("")}</table>`;
   }

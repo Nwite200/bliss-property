@@ -94,7 +94,7 @@
     me = await S.initShell('reports');
     if (!me) return;
     const scopeLabel = ['Managing Director', 'Finance Officer'].includes(me.role) ? 'Company-wide' : (me.branch_name || me.team_names || 'Assigned scope');
-    el('heroMeta').innerHTML = [`<span class="scope-badge">${S.escape(me.role)}</span>`, `<span class="scope-badge">${S.escape(scopeLabel)}</span>`].join('');
+    el('heroMeta').innerHTML = [`<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span>`, `<span class="scope-badge">${S.escape(scopeLabel)}</span>`].join('');
     el('reportFrom').value = S.daysAgo(29);
     el('reportTo').value = S.today();
     await loadOptions();

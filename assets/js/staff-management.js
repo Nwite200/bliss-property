@@ -4,6 +4,7 @@
   let branches = [];
   let teams = [];
   let staff = [];
+  let roleCatalog = [];
 
   const el = id => document.getElementById(id);
   const isMD = () => me && ["Managing Director", "Super Admin", "Sub Admin"].includes(me.actual_role || me.role);
@@ -11,12 +12,28 @@
   function roleOptions(rowRole) {
     if (!isMD()) return ["Team Lead", "Marketer", "Finance Officer"];
     const actual = me.actual_role || me.role;
-    const operational = ["GSM", "Accountant", "Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"];
-    // Super Admin is the only role that can create another Super Admin.
-    // Nobody can create a Managing Director from this screen.
-    const options = actual === "Super Admin" ? ["Sub Admin", ...operational, "Super Admin"] : ["Sub Admin", ...operational];
+    const operational = ["Sub Admin", "GSM", "Accountant", "Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"];
+    // Prefer the live role catalogue so roles added in future are immediately
+    // assignable by the MD / Super Admin without a code change.
+    let options = roleCatalog.length ? roleCatalog.slice() : operational;
+    options = options.filter(name => !["Client", "Managing Director"].includes(name));
+    if (actual === "Sub Admin") options = options.filter(name => name !== "Super Admin");
     if (rowRole === "Managing Director") options.push("Managing Director");
-    return options;
+    return [...new Set(options)];
+  }
+
+  async function loadRoles() {
+    try {
+      const data = await S.fetchJson("/api/roles");
+      roleCatalog = (data.roles || []).map(role => role.name);
+      const filter = el("staffRoleFilter");
+      if (filter && roleCatalog.length) {
+        filter.innerHTML = '<option value="">All roles</option>' +
+          roleCatalog.map(name => `<option>${S.escape(name)}</option>`).join("");
+      }
+    } catch {
+      roleCatalog = [];
+    }
   }
 
   function fillSelect(select, items, valueKey, labelKey, includeEmpty) {
@@ -380,7 +397,7 @@
       `<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span>`,
       isMD() ? `<span class="scope-badge">🏢 National directory</span>` : `<span class="scope-badge">🏢 ${S.escape(branchName(me.branch_id))}</span>`
     ].join("");
-    await loadBranches();
+    await Promise.all([loadBranches(), loadRoles()]);
     await loadTeams();
     await loadStaff();
     await loadReactivation();
