@@ -8223,6 +8223,22 @@ async function handleFetch(request, env) {
         return json({ error: "Financial approval visibility is not permitted" }, 403);
       }
       const canPerform = await hasPermission(env, actor, "finance.approvals.perform");
+      // Per-action capability. The catalogue mixes strict financial approvals
+      // with operational property actions, so one global flag would wrongly
+      // mark property pricing/plans/listing approval read-only for Sub Admin.
+      const effectivePermissions = await getEffectivePermissions(env, actor);
+      const actorActualRole = actor.actual_role_name || actor.role_name;
+      const commissionFlagBypass = actorActualRole !== "Sub Admin" && Number(actor.commission_access || 0) === 1;
+      const canPerformAction = permission => {
+        if (isOwnerAuthority(actor)) return true;
+        if (commissionFlagBypass &&
+            (permission === "commission.totals.view" || permission === "commission.rules.view" ||
+             permission === "commission.rules.manage" || String(permission).startsWith("commission.entries.") ||
+             permission === "referral.commission.manage")) {
+          return true;
+        }
+        return Boolean(effectivePermissions[permission]);
+      };
       const { results: pendingPayments } = await env.DB.prepare(`
         SELECT p.id, p.transaction_ref, p.amount_kobo, p.provider, p.created_at, c.full_name AS client_name,
                c.client_reference, b.name AS branch_name
@@ -8247,7 +8263,10 @@ async function handleFetch(request, env) {
         FROM properties WHERE workflow_status='pending_approval' AND is_archived=0 ORDER BY id DESC LIMIT 50
       `).all();
       return json({
-        catalog: FINANCIAL_APPROVAL_CATALOG.map(item => ({ ...item, can_perform: canPerform })),
+        catalog: FINANCIAL_APPROVAL_CATALOG.map(item => ({
+          ...item,
+          can_perform: canPerformAction(item.permission)
+        })),
         read_only: !canPerform,
         pending: {
           payments: pendingPayments,

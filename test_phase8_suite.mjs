@@ -3068,8 +3068,13 @@ await test('GSM has no commission totals by default; grant adds totals only; rev
 await test('Sub Admin sees financial approvals read-only and can edit only non-financial client details', async () => {
   const approvals = await request('/api/financial-approvals', { headers: { Cookie: subAdminCookie } });
   assert(approvals.status === 200 && approvals.data.read_only === true, 'Sub Admin financial approvals must be read-only');
-  assert((approvals.data.catalog || []).some(row => row.key === 'manual_payment'), 'financial approval catalogue missing manual payment');
-  assert((approvals.data.catalog || []).some(row => row.key === 'client_price'), 'financial approval catalogue missing client price');
+  const catalogByKey = Object.fromEntries((approvals.data.catalog || []).map(row => [row.key, row]));
+  assert(catalogByKey.manual_payment && catalogByKey.client_price, 'financial approval catalogue missing required entries');
+  assert(catalogByKey.manual_payment.can_perform === false, 'Sub Admin must not perform manual payments');
+  assert(catalogByKey.client_price.can_perform === false, 'Sub Admin must not change client money fields');
+  assert(catalogByKey.property_price.can_perform === true, 'Sub Admin should manage property pricing');
+  assert(catalogByKey.property_plans.can_perform === true, 'Sub Admin should manage property payment plans');
+  assert(catalogByKey.listing_approval.can_perform === true, 'Sub Admin should approve property listings');
   const financeApprovals = await request('/api/financial-approvals', { headers: { Cookie: finCookie } });
   assert(financeApprovals.status === 200 && financeApprovals.data.read_only === false, 'Finance must be able to perform financial approvals');
   const gsmApprovals = await request('/api/financial-approvals', { headers: { Cookie: gsmCookie } });
