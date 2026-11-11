@@ -18,7 +18,7 @@
 
   async function finishStaffLogin() {
     var me = await fetch("/api/me").then(function (response) { return response.json(); });
-    window.location.href = staffLanding(me.role_name || me.role || "");
+    window.location.href = staffLanding(me.actual_role || me.role_name || me.role || "");
   }
 
   function init() {

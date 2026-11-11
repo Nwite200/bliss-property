@@ -1034,7 +1034,11 @@ await test('Super Admin is a real role with permission-guarded admin routes and 
   const mdAttempt = await request(`/api/admin/roles/${teamLeadRole.id}/permissions`, {
     method: 'PUT', headers: { Cookie: mdCookie }, body: { permission_names: ['clients.read'] }
   });
-  assert(mdAttempt.status === 403, 'MD must not change role permissions');
+  assert(mdAttempt.status === 200, 'MD must have the same role-permission access as Super Admin');
+  const subAttempt = await request(`/api/admin/roles/${teamLeadRole.id}/permissions`, {
+    method: 'PUT', headers: { Cookie: subAdminCookie }, body: { permission_names: ['clients.read'] }
+  });
+  assert(subAttempt.status === 403, 'Sub Admin must not change role permissions');
   const saAttempt = await request(`/api/admin/roles/${teamLeadRole.id}/permissions`, {
     method: 'PUT', headers: { Cookie: saCookie }, body: { permission_names: ['clients.read', 'reports.read'] }
   });
@@ -3129,6 +3133,42 @@ await test('Sub Admin sees financial approvals read-only and can edit only non-f
   assert(unassigned.status === 200 && unassigned.data.clients.some(row => row.id === client.cid), 'client missing from Unassigned queue');
 });
 
+await test('Sub Admin has MD-level operations access but cannot approve financial transactions', async () => {
+  const staffEmail = `phase28.subadmin.staff.${Date.now()}@bliss.com`;
+  const create = await request('/api/staff', {
+    method: 'POST', headers: { Cookie: subAdminCookie }, body: {
+      email: staffEmail, password: 'SubAdminPass123!', full_name: 'Phase 28 Sub Admin Created Staff',
+      role_name: 'Team Lead', branch_id: ikeja, job_title: 'Team Lead'
+    }
+  });
+  assert(create.status === 200, `Sub Admin staff creation failed: ${create.status} ${JSON.stringify(create.data)}`);
+  const created = db.prepare('SELECT id, role_id, branch_id FROM users WHERE email=?').get(staffEmail);
+  assert(created && created.role_id === roleId('Team Lead') && created.branch_id === ikeja, 'Sub Admin created staff record is incorrect');
+
+  const financeOverview = await request('/api/finance/overview', { headers: { Cookie: subAdminCookie } });
+  assert(financeOverview.status === 200, 'Sub Admin must keep read-only finance oversight');
+
+  const recordPayment = await request('/api/finance/payments', {
+    method: 'POST', headers: { Cookie: subAdminCookie },
+    body: { client_id: 1, amount: 1000, method: 'Bank Transfer' }
+  });
+  assert(recordPayment.status === 403, 'Sub Admin must not record a payment');
+
+  const schedule = await request('/api/installments', {
+    method: 'POST', headers: { Cookie: subAdminCookie },
+    body: {
+      client_id: 1, total_amount: 1000, installment_amount: 100, frequency_days: 30,
+      next_due_date: new Date().toISOString().slice(0, 10), plan_type: 'part_payment'
+    }
+  });
+  assert(schedule.status === 403, 'Sub Admin must not create a payment schedule');
+
+  const verify = await request('/api/finance/payments/1/verify', {
+    method: 'POST', headers: { Cookie: subAdminCookie }, body: {}
+  });
+  assert(verify.status === 403, 'Sub Admin must not verify a payment');
+});
+
 await test('Branch Manager money changes require an approved request; Finance approval applies them', async () => {
   const client = createLoginClient({
     ref: 'BLC-P28-BM-REQUEST', name: 'Phase 28 BM Request Client', phone: nextTestPhone(),
@@ -3211,7 +3251,7 @@ await test('all local migrations apply cleanly to a fresh SQLite database', asyn
   const clean = new DatabaseSync(cleanPath);
   clean.exec('PRAGMA foreign_keys = ON;');
   const files = readdirSync('migrations').filter(f => /^\d+_.*\.sql$/.test(f)).sort();
-  assert(files.length === 33, `expected 33 migrations, found ${files.length}`);
+  assert(files.length === 34, `expected 34 migrations, found ${files.length}`);
   for (const file of files) {
     clean.exec(readFileSync(join('migrations', file), 'utf8'));
   }

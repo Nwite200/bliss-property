@@ -9,7 +9,7 @@
   let currentEntry = null;
   const canManage = () => me && (me.can_access_commissions === true || ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role));
   const hasCommissionAccess = () => me && me.can_access_commissions === true;
-  const canViewCommission = () => hasCommissionAccess() || ["Marketer", "Team Lead", "Project Manager", "Branch Manager"].includes(me && (me.actual_role || me.role));
+  const canViewCommission = () => hasCommissionAccess() || (me && me.actual_role === "Sub Admin") || ["Marketer", "Team Lead", "Project Manager", "Branch Manager"].includes(me && (me.actual_role || me.role));
 
   function commissionableLabel(plan) {
     if (plan.commissionable_mode === 'first_months') return `First ${Number(plan.commissionable_first_months || 2)} month(s) only`;
@@ -535,11 +535,11 @@
       window.location.href = 'dashboard.html';
       return;
     }
-    if (!["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer", "Head Accountant", "Super Admin"].includes(me.role)) {
+    if (!["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer", "Head Accountant", "Super Admin", "Sub Admin"].includes(me.role) && me.actual_role !== "Sub Admin") {
       window.location.href = 'dashboard.html';
       return;
     }
-    const scopeLabel = ["Managing Director", "Finance Officer"].includes(me.role) ? 'Company-wide' : (me.branch_name || me.team_names || 'Assigned scope');
+    const scopeLabel = ["Managing Director", "Finance Officer", "Sub Admin"].includes(me.role) || me.actual_role === "Sub Admin" ? 'Company-wide' : (me.branch_name || me.team_names || 'Assigned scope');
     el('heroMeta').innerHTML = [`<span class="scope-badge">${S.escape(me.role)}</span>`, `<span class="scope-badge">${S.escape(scopeLabel)}</span>`].join('');
     if (!canManage()) {
       el('newPlanBtn').style.display = 'none';

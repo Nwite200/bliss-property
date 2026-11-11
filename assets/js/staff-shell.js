@@ -131,40 +131,40 @@
     const role = me.role;
     const links = [
       { section: "Management" },
-      { href: "dashboard.html", label: "📊 Overview", page: "dashboard", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "sub-admin-dashboard.html", label: "🧭 Sub Admin", page: "sub-admin", roles: ["Sub Admin"] },
+      { href: "dashboard.html", label: "📊 Overview", page: "dashboard", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "sub-admin-dashboard.html", label: "🧭 Sub Admin Operations", page: "sub-admin", roles: ["Sub Admin", "Managing Director", "Super Admin"] },
       { href: "gsm-dashboard.html", label: "🎯 GSM Dashboard", page: "gsm", roles: ["GSM"] },
       { href: "accountant-dashboard.html", label: "🧮 Accountant", page: "accountant", roles: ["Accountant"] },
-      { href: "performance.html", label: "📈 Performance", page: "performance", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "revenue.html", label: "💰 Revenue Drill-down", page: "revenue", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "defaulting.html", label: "⚠️ Defaulting Clients", page: "defaulting", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "performance.html", label: "📈 Performance", page: "performance", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "revenue.html", label: "💰 Revenue Drill-down", page: "revenue", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "defaulting.html", label: "⚠️ Defaulting Clients", page: "defaulting", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { href: "customer-care.html", label: "☎️ Customer Care", page: "care", roles: ["Customer Care"] },
-      { href: "sms-center.html", label: "✉️ SMS Centre", page: "sms", roles: ["Managing Director", "Head Accountant", "Branch Manager", "Finance Officer"], requiresSmsAccess: true },
-      { href: "properties.html", label: "🏡 Properties", page: "properties", roles: ["Managing Director", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "clients.html", label: "👥 Clients", page: "clients", roles: ["Managing Director", "Sub Admin", "Accountant", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "phone-cleanup.html", label: "📞 Phone Cleanup", page: "phone-cleanup", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer"] },
+      { href: "sms-center.html", label: "✉️ SMS Centre", page: "sms", roles: ["Managing Director", "Super Admin", "Sub Admin", "Head Accountant", "Branch Manager", "Finance Officer"], requiresSmsAccess: true },
+      { href: "properties.html", label: "🏡 Properties", page: "properties", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "clients.html", label: "👥 Clients", page: "clients", roles: ["Managing Director", "Super Admin", "Sub Admin", "Accountant", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "phone-cleanup.html", label: "📞 Phone Cleanup", page: "phone-cleanup", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer"] },
       { section: "Sales & Teams" },
-      { href: "leads.html", label: "🎯 Lead Pipeline", page: "leads", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer"] },
-      { href: "staff-management.html", label: "👔 Staff & Teams", page: "staff", roles: ["Managing Director", "Sub Admin", "Branch Manager"] },
-      { href: "activity-centre.html", label: "🕘 Activity Centre", page: "activity", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "leads.html", label: "🎯 Lead Pipeline", page: "leads", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer"] },
+      { href: "staff-management.html", label: "👔 Staff & Teams", page: "staff", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager"] },
+      { href: "activity-centre.html", label: "🕘 Activity Centre", page: "activity", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Finance" },
-      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Sub Admin", "Accountant", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
-      { href: "referral-commissions.html", label: "🧾 Referral Commissions", page: "referral-commissions", roles: ["Managing Director", "Sub Admin", "Accountant", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
-      { href: "reports.html", label: "📄 Financial Reports", page: "reports", roles: ["Managing Director", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
-      { href: "finance-dashboard.html", label: "💳 Finance & Ledger", page: "finance", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
-      { href: "provider-config.html", label: "🏦 Payment Provider", page: "provider", roles: ["Managing Director", "Branch Manager", "Finance Officer"] },
+      { href: "commissions.html", label: "💰 Commissions", page: "commissions", roles: ["Managing Director", "Super Admin", "Sub Admin", "Accountant", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
+      { href: "referral-commissions.html", label: "🧾 Referral Commissions", page: "referral-commissions", roles: ["Managing Director", "Super Admin", "Sub Admin", "Accountant", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"], commissionNav: true },
+      { href: "reports.html", label: "📄 Financial Reports", page: "reports", roles: ["Managing Director", "Super Admin", "Sub Admin", "Finance Officer", "Branch Manager", "Team Lead", "Marketer"] },
+      { href: "finance-dashboard.html", label: "💳 Finance & Ledger", page: "finance", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Finance Officer"] },
+      { href: "provider-config.html", label: "🏦 Payment Provider", page: "provider", roles: ["Managing Director", "Super Admin", "Branch Manager", "Finance Officer"] },
       { section: "Communication" },
-      { href: "staff-notifications.html", label: "🔔 Notifications", page: "notifications", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "staff-chat.html", label: "💬 Staff Chat", page: "chat", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "staff-notifications.html", label: "🔔 Notifications", page: "notifications", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "staff-chat.html", label: "💬 Staff Chat", page: "chat", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
       { section: "Account" },
-      { href: "security.html", label: "🔐 Security & Devices", page: "security", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "index.html", label: "🌐 Public Website", page: "public", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
-      { href: "#", label: "🚪 Logout", page: "logout", roles: ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"], id: "logoutBtn" }
+      { href: "security.html", label: "🔐 Security & Devices", page: "security", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "index.html", label: "🌐 Public Website", page: "public", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"] },
+      { href: "#", label: "🚪 Logout", page: "logout", roles: ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"], id: "logoutBtn" }
     ];
     let items = links.filter(item => (!item.roles || item.roles.includes(role)) &&
       (!item.requiresCommissionAccess || me.can_access_commissions) &&
       (!item.requiresSmsAccess || me.sms_access) &&
-      (!item.commissionNav || me.can_access_commissions || ["Marketer", "Team Lead", "Branch Manager", "Sub Admin", "Accountant"].includes(role))).map(item => {
+      (!item.commissionNav || me.can_access_commissions || me.actual_role === "Sub Admin" || ["Marketer", "Team Lead", "Branch Manager", "Sub Admin", "Accountant"].includes(role))).map(item => {
       if (item.section) return `<div class="section-label">${item.section}</div>`;
       return `<a href="${item.href}" ${item.page === activePage ? 'class="active"' : ""} ${item.id ? `id="${item.id}"` : ""} ${item.page === "logout" ? 'style="color:#E74C3C"' : ""}>${item.label}</a>`;
     }).join("");
@@ -176,7 +176,7 @@
     }
     const scopeLabel = role === "Customer Care"
       ? (me.care_scope === "national" ? "National" : (me.branch_name || "Branch"))
-      : (["Managing Director", "Finance Officer", "Head Accountant", "Super Admin"].includes(me.actual_role || role)
+      : (["Managing Director", "Finance Officer", "Head Accountant", "Super Admin", "Sub Admin"].includes(me.actual_role || role)
         ? "Company-wide"
         : (me.branch_name || "Branch"));
     return `

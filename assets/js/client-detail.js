@@ -172,7 +172,7 @@ async function load() {
   }
 
   const resetBtn = document.getElementById("resetClientBtn");
-  const canReset = ["Super Admin", "Managing Director", "Branch Manager", "Customer Care"].includes(actualRole);
+  const canReset = ["Super Admin", "Managing Director", "Sub Admin", "Branch Manager", "Customer Care"].includes(actualRole);
   if (resetBtn) {
     resetBtn.style.display = canReset ? "" : "none";
     resetBtn.onclick = async () => {
@@ -219,7 +219,7 @@ async function load() {
   }
   const phoneCard = document.getElementById("phoneChangeCard");
   if (phoneCard) {
-    const canChangePhone = ["Super Admin", "Managing Director", "Customer Care"].includes(actualRole);
+    const canChangePhone = ["Super Admin", "Managing Director", "Sub Admin", "Customer Care"].includes(actualRole);
     phoneCard.style.display = canChangePhone ? "" : "none";
     const changeBtn = document.getElementById("changePhoneBtn");
     if (changeBtn) changeBtn.onclick = async () => {

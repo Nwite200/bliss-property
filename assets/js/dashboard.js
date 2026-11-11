@@ -11,7 +11,7 @@
   }
 
   function roleCopy(role) {
-    if (role === "Managing Director") return ["Company-wide command centre", "Company-wide property, client, sales, collection and team performance."];
+    if (["Managing Director", "Super Admin", "Sub Admin"].includes(role)) return ["Company-wide command centre", "Company-wide property, client, sales, collection and team performance."];
     if (role === "Branch Manager") return ["Branch command centre", "Authorised branch inventory, clients, marketers, teams and collections."];
     if (role === "Team Lead") return ["Team performance centre", "Your team's clients, property assignments, leads and conversion performance."];
     if (role === "Marketer") return ["Personal sales centre", "Your clients, leads, follow-ups, conversions and verified payment performance."];
@@ -111,7 +111,7 @@
     el("roleSubtitle").textContent = subtitle;
     const meta = [];
     meta.push(`<span class="scope-badge">${S.escape(me.role)}</span>`);
-    if (["Managing Director", "Finance Officer"].includes(me.role)) {
+    if (["Managing Director", "Super Admin", "Sub Admin", "Finance Officer"].includes(me.role)) {
       meta.push(`<span class="scope-badge">🏢 Company-wide</span>`);
     } else if (me.branch_name) {
       meta.push(`<span class="scope-badge">🏢 ${S.escape(me.branch_name)}</span>`);
@@ -122,24 +122,24 @@
     const actions = [
       `<a class="btn btn-outline-white" href="performance.html">Performance analytics</a>`
     ];
-    if (["Managing Director", "Branch Manager", "Team Lead", "Marketer"].includes(me.role)) {
+    if (["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer"].includes(me.role)) {
       actions.push(`<a class="btn btn-green" href="leads.html">Open lead pipeline</a>`);
     }
-    if (["Managing Director", "Branch Manager"].includes(me.role)) {
+    if (["Managing Director", "Super Admin", "Sub Admin", "Branch Manager"].includes(me.role)) {
       actions.push(`<a class="btn btn-outline-white" href="staff-management.html">Staff & teams</a>`);
     }
-    if (["Managing Director", "Finance Officer", "Branch Manager"].includes(me.role)) {
+    if (["Managing Director", "Super Admin", "Sub Admin", "Finance Officer", "Branch Manager"].includes(me.role)) {
       actions.push(`<a class="btn btn-outline-white" href="finance-dashboard.html">Finance ledger</a>`);
     }
     el("heroActions").innerHTML = actions.join("");
-    el("branchFilterGroup").style.display = ["Managing Director", "Finance Officer"].includes(me.role) ? "" : "none";
+    el("branchFilterGroup").style.display = ["Managing Director", "Super Admin", "Sub Admin", "Finance Officer"].includes(me.role) ? "" : "none";
   }
 
   function renderSummary() {
     const s = dashboard.summary;
     const f = s.financials;
     const cards = [];
-    if (["Managing Director", "Branch Manager"].includes(me.role)) {
+    if (["Managing Director", "Super Admin", "Sub Admin", "Branch Manager"].includes(me.role)) {
       cards.push(kpi("Total properties", s.properties.total, `${s.properties.published} published`));
       cards.push(kpi("Reserved", s.properties.reserved, `${s.properties.sold} sold · ${s.properties.unavailable} unavailable`));
       cards.push(kpi("Total clients", s.clients.total, `${s.clients.active} active buyers`));
@@ -533,7 +533,7 @@
       return;
     }
     setDefaults();
-    if (["Managing Director", "Finance Officer"].includes(me.role)) await loadBranches();
+    if (["Managing Director", "Super Admin", "Sub Admin", "Finance Officer"].includes(me.role)) await loadBranches();
     el("applyFilters").addEventListener("click", load);
     el("resetFilters").addEventListener("click", () => { setDefaults(); el("branchFilter").value = ""; load(); });
     if (el("addTeamMemberBtn")) el("addTeamMemberBtn").addEventListener("click", openAddTeamMemberModal);

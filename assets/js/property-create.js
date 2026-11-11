@@ -253,11 +253,11 @@ async function load() {
   const me = await fetchJson("/me");
   if (!me.ok) { window.location.href = "/login.html"; return; }
   const actual = me.data.actual_role || me.data.role;
-  if (!["Managing Director", "Super Admin", "Branch Manager"].includes(actual)) {
-    document.querySelector("main").innerHTML = "<div class='card'><h2>Read-only access</h2><p>Only the MD, Super Admin or a Branch Manager can create properties.</p></div>";
+  if (!["Managing Director", "Super Admin", "Sub Admin", "Branch Manager"].includes(actual)) {
+    document.querySelector("main").innerHTML = "<div class='card'><h2>Read-only access</h2><p>Only the MD, Super Admin, Sub Admin or a Branch Manager can create properties.</p></div>";
     return;
   }
-  if (["Managing Director", "Super Admin"].includes(actual)) {
+  if (["Managing Director", "Super Admin", "Sub Admin"].includes(actual)) {
     const flags = document.getElementById("adminFlags");
     if (flags) flags.style.display = "";
   }

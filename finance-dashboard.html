@@ -590,6 +590,10 @@
     let currentTransactions = [];
     let pendingVerifyId = null;
 
+    function subAdminReadOnly() {
+      return Boolean(currentUser && (currentUser.actual_role === "Sub Admin" || currentUser.role === "Sub Admin"));
+    }
+
     function formatNGN(amount) {
       const num = Number(amount) || 0;
       return "₦" + num.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -609,12 +613,26 @@
         if (!meRes.ok) { window.location.href = "login.html"; return; }
         currentUser = await meRes.json();
 
-        // RBAC Check: MD, Finance Officer, BM allowed
-        const allowed = ["Managing Director", "Finance Officer", "Branch Manager"];
+        // RBAC Check: MD, Super Admin, Finance Officer, BM, Sub Admin allowed
+        const allowed = ["Managing Director", "Super Admin", "Finance Officer", "Branch Manager", "Sub Admin"];
         if (!allowed.includes(currentUser.role)) {
           alert("Access restricted: Only Finance Officers and Directors may access this dashboard.");
           window.location.href = "dashboard.html";
           return;
+        }
+
+        if (subAdminReadOnly()) {
+          const recBtn = document.getElementById("openRecordPaymentBtn");
+          if (recBtn) recBtn.style.display = "none";
+          const wemaBtn = document.getElementById("openWemaConfigBtn");
+          if (wemaBtn) wemaBtn.style.display = "none";
+          const schedBtn = document.getElementById("openScheduleBtn");
+          if (schedBtn) schedBtn.style.display = "none";
+          const banner = document.createElement("div");
+          banner.style = "background:#FEF3C7;color:#92400E;padding:12px 18px;border-radius:8px;font-size:13px;font-weight:700;margin-bottom:20px;border:1px solid #FCD34D;display:flex;align-items:center;gap:10px";
+          banner.innerHTML = "<span>🔒</span><span>Sub Admin Financial Oversight (Read-Only) — Payment recording, verification, refunds, and financial transaction approvals are reserved for the Managing Director, Super Admin, and Finance Officers.</span>";
+          const topSec = document.querySelector(".dash-top");
+          if (topSec && topSec.parentNode) topSec.parentNode.insertBefore(banner, topSec.nextSibling);
         }
 
         // Branch filter load
@@ -759,8 +777,8 @@
         else if (t.status === "reversed" || t.status === "refunded") statusClass = "status-reversed";
 
         const isPending = t.status === "pending";
-        const canVerify = isPending && (currentUser.role === "Managing Director" || currentUser.role === "Finance Officer");
-        const canAdjust = (t.status === "verified" || t.status === "pending") && (currentUser.role === "Managing Director" || currentUser.role === "Finance Officer");
+        const canVerify = isPending && ["Managing Director", "Super Admin", "Finance Officer"].includes(currentUser.role) && !subAdminReadOnly();
+        const canAdjust = (t.status === "verified" || t.status === "pending") && ["Managing Director", "Super Admin", "Finance Officer"].includes(currentUser.role) && !subAdminReadOnly();
 
         tr.innerHTML = `
           <td style="font-family:'Space Mono', monospace;font-size:12px;font-weight:700">
@@ -827,12 +845,20 @@
 
     // Record Payment
     document.getElementById("openRecordPaymentBtn").addEventListener("click", () => {
+      if (subAdminReadOnly()) {
+        alert("Sub Admin accounts have read-only financial oversight. Payment recording is reserved for the MD, Super Admin and Finance Officers.");
+        return;
+      }
       document.getElementById("recordIsDemo").checked = isDemoMode;
       openModal("recordPaymentModal");
     });
 
     document.getElementById("recordPaymentForm").addEventListener("submit", async (e) => {
       e.preventDefault();
+      if (subAdminReadOnly()) {
+        alert("Sub Admin accounts cannot record financial transactions.");
+        return;
+      }
       const clientId = document.getElementById("recordClientId").value;
       const amount = parseFloat(document.getElementById("recordAmount").value);
       const method = document.getElementById("recordMethod").value;
@@ -1143,7 +1169,13 @@
       await loadInstallments();
     };
 
-    document.getElementById("openScheduleBtn").addEventListener("click", () => window.openScheduleModal());
+    document.getElementById("openScheduleBtn").addEventListener("click", () => {
+      if (subAdminReadOnly()) {
+        alert("Sub Admin accounts cannot create or change payment schedules.");
+        return;
+      }
+      window.openScheduleModal();
+    });
     function syncSchedulePlanFields() {
       const planType = document.getElementById("schedulePlanType").value;
       const isPartPayment = planType === "part_payment";

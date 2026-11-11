@@ -17,8 +17,8 @@ async function fetchJson(path, opts = {}) {
 }
 
 function actualRole() { return (me && (me.actual_role || me.role)) || ""; }
-function canManageProperties() { return ["Managing Director", "Super Admin", "Branch Manager"].includes(actualRole()); }
-function canApproveProperties() { return ["Managing Director", "Super Admin"].includes(actualRole()); }
+function canManageProperties() { return ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager"].includes(actualRole()); }
+function canApproveProperties() { return ["Managing Director", "Super Admin", "Sub Admin"].includes(actualRole()); }
 
 async function load() {
   const meRes = await fetchJson("/me");

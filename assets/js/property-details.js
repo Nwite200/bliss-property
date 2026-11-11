@@ -31,8 +31,8 @@ async function load() {
   const me = await fetchJson("/me");
   const actual = me.ok ? (me.data.actual_role || me.data.role) : "";
   const inBranch = actual !== "Branch Manager" || (me.ok && Number(p.branch_id) === Number(me.data.branch_id));
-  const canManageAssets = me.ok && ["Managing Director", "Super Admin", "Branch Manager"].includes(actual) && inBranch;
-  const canApprove = me.ok && ["Managing Director", "Super Admin"].includes(actual);
+  const canManageAssets = me.ok && ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager"].includes(actual) && inBranch;
+  const canApprove = me.ok && ["Managing Director", "Super Admin", "Sub Admin"].includes(actual);
   const canManagePlans = canManageAssets;
   const canManageFlags = canApprove;
   if (!canManageAssets) {

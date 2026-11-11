@@ -9,7 +9,7 @@
   const el = id => document.getElementById(id);
   const money = kobo => S.money(kobo);
   const canManage = () => me && (me.commission_access === true || ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role));
-  const canFilterPeople = () => me && ["Managing Director", "Super Admin", "Head Accountant", "Finance Officer", "Branch Manager", "Project Manager"].includes(me.actual_role || me.role);
+  const canFilterPeople = () => me && ["Managing Director", "Super Admin", "Sub Admin", "Head Accountant", "Finance Officer", "Branch Manager", "Project Manager"].includes(me.actual_role || me.role);
   const isMarketer = () => me && (me.actual_role || me.role) === "Marketer";
 
   function statusTone(status) {

@@ -6,12 +6,17 @@
   let staff = [];
 
   const el = id => document.getElementById(id);
-  const isMD = () => me && me.role === "Managing Director";
+  const isMD = () => me && ["Managing Director", "Super Admin", "Sub Admin"].includes(me.actual_role || me.role);
 
-  function roleOptions() {
-    return isMD()
-      ? ["Sub Admin", "GSM", "Accountant", "Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"]
-      : ["Team Lead", "Marketer", "Finance Officer"];
+  function roleOptions(rowRole) {
+    if (!isMD()) return ["Team Lead", "Marketer", "Finance Officer"];
+    const actual = me.actual_role || me.role;
+    const operational = ["GSM", "Accountant", "Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"];
+    // Super Admin is the only role that can create another Super Admin.
+    // Nobody can create a Managing Director from this screen.
+    const options = actual === "Super Admin" ? ["Sub Admin", ...operational, "Super Admin"] : ["Sub Admin", ...operational];
+    if (rowRole === "Managing Director") options.push("Managing Director");
+    return options;
   }
 
   function fillSelect(select, items, valueKey, labelKey, includeEmpty) {
@@ -55,7 +60,7 @@
   }
 
   async function loadReactivation() {
-    if (!["Managing Director", "Branch Manager", "Super Admin"].includes(me.role)) return;
+    if (!["Managing Director", "Branch Manager", "Super Admin", "Sub Admin"].includes(me.role)) return;
     el("reactivationCard").style.display = "";
     try {
       const [pending, settings] = await Promise.all([
@@ -84,7 +89,7 @@
         });
       });
 
-      const canSettings = ["Managing Director", "Super Admin"].includes(me.actual_role || me.role);
+      const canSettings = ["Managing Director", "Super Admin", "Sub Admin"].includes(me.actual_role || me.role);
       const roleSettings = (settings.settings || []).filter(row => row.role_name === "Marketer");
       el("accessSettingsWrap").innerHTML = roleSettings.length ? `
         <div class="card-head" style="padding:0"><h3 style="font-size:14px">Per-role access setting</h3><span class="small muted">${canSettings ? "Owners only" : "Read only"}</span></div>
@@ -182,7 +187,9 @@
     el("staffFullName").value = row ? row.full_name : "";
     el("staffEmail").value = row ? row.email : "";
     el("staffPhone").value = row ? (row.phone_number || "") : "";
-    el("staffRole").value = row ? row.role_name : roleOptions()[0];
+    const options = roleOptions(row && row.role_name);
+    fillSelect(el("staffRole"), options.map(role => ({ role })), "role", "role");
+    el("staffRole").value = row ? row.role_name : options[0];
     if (row && row.role_name === "Managing Director") {
       if (![...el("staffBranch").options].some(option => option.value === "")) {
         const companyOption = document.createElement("option");
@@ -202,7 +209,7 @@
     el("staffCommissionAccessGroup").style.display = canGrantCommission ? "" : "none";
     el("staffCommissionAccess").checked = Boolean(row && row.commission_access);
     el("staffCommissionAccess").disabled = !canGrantCommission;
-    const canGrantSpecial = ["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role);
+    const canGrantSpecial = ["Managing Director", "Super Admin", "Sub Admin", "Head Accountant"].includes(me.actual_role || me.role);
     el("staffPlanAccessGroup").style.display = canGrantSpecial ? "" : "none";
     el("staffSmsAccessGroup").style.display = canGrantSpecial ? "" : "none";
     el("staffPlanAccess").checked = Boolean(row && row.property_plans_access);
@@ -230,7 +237,7 @@
   function openStaffModal(id) {
     const row = id ? staff.find(item => Number(item.id) === Number(id)) : null;
     const roleSelect = el("staffRole");
-    const options = roleOptions().slice();
+    const options = roleOptions(row && row.role_name).slice();
     if (row && !options.includes(row.role_name)) options.unshift(row.role_name);
     fillSelect(roleSelect, options.map(role => ({ role })), "role", "role");
     fillStaffForm(row);
@@ -256,7 +263,7 @@
     if (["Managing Director", "Super Admin"].includes(me.actual_role || me.role)) {
       body.commission_access = el("staffCommissionAccess").checked;
     }
-    if (["Managing Director", "Super Admin", "Head Accountant"].includes(me.actual_role || me.role)) {
+    if (["Managing Director", "Super Admin", "Sub Admin", "Head Accountant"].includes(me.actual_role || me.role)) {
       body.property_plans_access = el("staffPlanAccess").checked;
       body.sms_access = el("staffSmsAccess").checked;
     }
@@ -365,13 +372,13 @@
   document.addEventListener("DOMContentLoaded", async () => {
     me = await S.initShell("staff");
     if (!me) return;
-    if (!["Managing Director", "Branch Manager"].includes(me.role)) {
+    if (!["Managing Director", "Branch Manager", "Super Admin", "Sub Admin"].includes(me.role)) {
       window.location.href = "dashboard.html";
       return;
     }
     el("heroMeta").innerHTML = [
-      `<span class="scope-badge">${S.escape(me.role)}</span>`,
-      `<span class="scope-badge">${S.escape(me.branch_name || "Company-wide")}</span>`
+      `<span class="scope-badge">${S.escape(me.actual_role || me.role)}</span>`,
+      isMD() ? `<span class="scope-badge">🏢 National directory</span>` : `<span class="scope-badge">🏢 ${S.escape(branchName(me.branch_id))}</span>`
     ].join("");
     await loadBranches();
     await loadTeams();

@@ -201,10 +201,12 @@ async function getSessionUser(env, request) {
     return null;
   }
   if (!row.is_active) return null;
-  // Super Admin inherits the MD business scope for existing routes, but keeps
-  // its actual role for the admin permissions API and UI.
+  // Super Admin and Sub Admin inherit the MD business scope for existing
+  // routes, but keep their actual role for admin controls and for the strict
+  // Sub Admin financial-transaction block.
   row.actual_role_name = row.role_name;
   if (row.role_name === "Super Admin") row.role_name = "Managing Director";
+  else if (row.role_name === "Sub Admin") row.role_name = "Managing Director";
   else if (row.role_name === "Project Manager") row.role_name = "Branch Manager";
   else if (row.role_name === "Head Accountant") row.role_name = "Finance Officer";
   return row;
@@ -1315,7 +1317,7 @@ function normalizeLeadImportRow(raw) {
     next_follow_up_date: pick("next_follow_up_date", "follow_up_date", "follow_up")
   };
 }
-const STAFF_ROLES = ["Managing Director", "Branch Manager", "Team Lead", "Marketer", "Finance Officer"];
+const STAFF_ROLES = ["Managing Director", "Super Admin", "Sub Admin", "Branch Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "GSM", "Accountant", "Project Manager"];
 const GRANULARITIES = ["day", "week", "month", "year"];
 const COMMISSION_BASES = ["contract_value", "verified_collections", "fixed", "referral_cumulative_tiered", "referral_percentage"];
 const COMMISSION_STATUSES = ["Draft", "Calculated", "Pending Approval", "Approved", "Partially Paid", "Paid", "Rejected", "Reversed", "Cancelled"];
@@ -1385,7 +1387,7 @@ function generateTemporaryPassword() {
 
 function canResetClientPassword(actor, client) {
   const actual = actor.actual_role_name || actor.role_name;
-  if (["Super Admin", "Managing Director"].includes(actual)) return true;
+  if (["Super Admin", "Managing Director", "Sub Admin"].includes(actual)) return true;
   if (actual === "Branch Manager") {
     return Number(actor.branch_id) === Number(client.assigned_branch_id);
   }
@@ -1665,27 +1667,30 @@ function normalizeTemperature(value, fallback = null) {
 function canManagePropertyPlans(actor) {
   if (!actor) return false;
   const actual = actor.actual_role_name || actor.role_name;
-  return ["Super Admin", "Managing Director", "Branch Manager"].includes(actual);
+  return ["Super Admin", "Managing Director", "Sub Admin", "Branch Manager"].includes(actual);
 }
 
 function isPropertyManager(actor) {
   if (!actor) return false;
   const actual = actor.actual_role_name || actor.role_name;
-  return ["Super Admin", "Managing Director", "Branch Manager"].includes(actual);
+  return ["Super Admin", "Managing Director", "Sub Admin", "Branch Manager"].includes(actual);
 }
 
 function canManagePropertyRecord(actor, property) {
   if (!actor || !property) return false;
   const actual = actor.actual_role_name || actor.role_name;
-  if (["Super Admin", "Managing Director"].includes(actual)) return true;
+  if (["Super Admin", "Managing Director", "Sub Admin"].includes(actual)) return true;
   if (actual === "Branch Manager") return Number(property.branch_id) === Number(actor.branch_id);
   return false;
 }
 
 function isOwnerAuthority(actor) {
   if (!actor) return false;
+  // Owner authority is decided by the real role, never the effective role.
+  // Sub Admin deliberately runs with MD-level operational access but must not
+  // inherit owner-only financial approval or system-administration powers.
   const actual = actor.actual_role_name || actor.role_name;
-  return actual === "Managing Director" || actual === "Super Admin" || actor.role_name === "Managing Director";
+  return actual === "Managing Director" || actual === "Super Admin";
 }
 
 async function getEffectivePermissions(env, actor) {
@@ -1711,7 +1716,11 @@ async function getEffectivePermissions(env, actor) {
 async function hasPermission(env, actor, permission) {
   if (!actor) return false;
   if (isOwnerAuthority(actor)) return true;
-  if (Number(actor.commission_access || 0) === 1 &&
+  const actualRole = actor.actual_role_name || actor.role_name;
+  // Sub Admin is an executive operations role. Even if a commission_access
+  // flag is stale or was granted earlier, it can never bypass the financial
+  // approval restriction through that flag.
+  if (actualRole !== "Sub Admin" && Number(actor.commission_access || 0) === 1 &&
       (permission === "commission.totals.view" || permission === "commission.rules.view" ||
        permission === "commission.rules.manage" || permission.startsWith("commission.entries.") ||
        permission === "referral.commission.manage")) {
@@ -2002,6 +2011,8 @@ function monthlyAccessLapsed(user, env) {
 function canAccessCommissions(actor) {
   if (!actor) return false;
   const actualRole = actor.actual_role_name || actor.role_name;
+  // Sub Admin may read commission totals but never manage or approve them.
+  if (actualRole === "Sub Admin") return false;
   if (["Managing Director", "Super Admin", "Head Accountant"].includes(actualRole)) return true;
   return Number(actor.commission_access || 0) === 1;
 }
@@ -6974,10 +6985,42 @@ async function handleAssistantMessage(env, request, actor, client, body) {
   };
 }
 
+// Financial actions that Sub Admin must never perform, even though it runs
+// with MD-level operational access. Reads (GET) stay available as financial
+// oversight, matching the Sub Admin read-only finance policy.
+const SUB_ADMIN_BLOCKED_FINANCE_MUTATION = [
+  /^\/api\/finance\//,
+  /^\/api\/installments(?:\/|$)/,
+  /^\/api\/commissions(?:\/|$)/,
+  /^\/api\/commission-plans(?:\/|$)/,
+  /^\/api\/referral-commissions(?:\/|$)/,
+  /^\/api\/financial-approvals(?:\/|$)/,
+  /^\/api\/financial-change-requests(?:\/|$)/,
+  /^\/api\/clients\/\d+\/financial-change-requests$/
+];
+
+function isSubAdminBlockedFinanceMutation(path, method) {
+  if (["GET", "HEAD", "OPTIONS"].includes(String(method || "").toUpperCase())) return false;
+  return SUB_ADMIN_BLOCKED_FINANCE_MUTATION.some(pattern => pattern.test(path));
+}
+
 async function handleFetch(request, env) {
   try {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // Hard financial guard for the Sub Admin role. This is intentionally
+    // enforced before routing so no financial endpoint can be reached by a
+    // Sub Admin session, regardless of menu visibility or stale permissions.
+    if (isSubAdminBlockedFinanceMutation(path, request.method)) {
+      const financeActor = await getSessionUser(env, request);
+      if (financeActor &&
+          (financeActor.actual_role_name || financeActor.role_name) === "Sub Admin") {
+        return json({
+          error: "Sub Admin accounts have read-only financial oversight and cannot approve, record, verify, refund or reconcile financial transactions"
+        }, 403);
+      }
+    }
 
     // Edge rate-limit binding (per-colo) for sensitive browser/webhook routes.
     // Application-level audit limits remain the stricter second layer.
@@ -8647,8 +8690,8 @@ async function handleFetch(request, env) {
       if (!csrfOk(request)) return json({ error: "CSRF check failed" }, 403);
       const auth = await adminActor("admin.permissions");
       if (auth.error) return auth.error;
-      if ((auth.actor.actual_role_name || auth.actor.role_name) !== "Super Admin") {
-        return json({ error: "Only a Super Admin can change role permissions" }, 403);
+      if (!["Super Admin", "Managing Director"].includes(auth.actor.actual_role_name || auth.actor.role_name)) {
+        return json({ error: "Only the Super Admin or Managing Director can change role permissions" }, 403);
       }
       const roleId = Number(adminRolePermissionsMatch[1]);
       const role = await env.DB.prepare("SELECT id, name FROM roles WHERE id=?").bind(roleId).first();
@@ -8789,7 +8832,7 @@ async function handleFetch(request, env) {
       const room = await env.DB.prepare("SELECT * FROM chat_rooms WHERE id=?").bind(roomId).first();
       if (!room) return { error: json({ error: "Room not found" }, 404) };
       const actualRole = actor.actual_role_name || actor.role_name;
-      if (["Managing Director", "Super Admin"].includes(actualRole)) return { room };
+      if (["Managing Director", "Super Admin", "Sub Admin"].includes(actualRole)) return { room };
       if (room.kind === "branch" && Number(room.branch_id) === Number(actor.branch_id)) return { room };
       if (room.kind === "direct") {
         const member = await env.DB.prepare("SELECT 1 AS ok FROM chat_room_members WHERE room_id=? AND user_id=?")
@@ -8804,7 +8847,7 @@ async function handleFetch(request, env) {
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (actor.role_name === "Client") return json({ error: "Forbidden" }, 403);
       const actualRole = actor.actual_role_name || actor.role_name;
-      const companyWide = ["Managing Director", "Super Admin"].includes(actualRole);
+      const companyWide = ["Managing Director", "Super Admin", "Sub Admin"].includes(actualRole);
       const branchClause = companyWide ? "1=1" : "r.kind='branch' AND r.branch_id=?";
       const branchBinds = companyWide ? [] : [actor.branch_id];
       const { results: rooms } = await env.DB.prepare(`
@@ -8843,7 +8886,7 @@ async function handleFetch(request, env) {
       `).bind(targetId).first();
       if (!target) return json({ error: "Staff member not found" }, 404);
       const actualRole = actor.actual_role_name || actor.role_name;
-      if (!["Managing Director", "Super Admin"].includes(actualRole) &&
+      if (!["Managing Director", "Super Admin", "Sub Admin"].includes(actualRole) &&
           Number(target.branch_id) !== Number(actor.branch_id)) {
         return json({ error: "Cross-branch chat is restricted" }, 403);
       }
@@ -9155,8 +9198,8 @@ async function handleFetch(request, env) {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       const actualRole = actor.actual_role_name || actor.role_name;
-      if (!["Super Admin", "Managing Director"].includes(actualRole)) {
-        return json({ error: "Only the MD or Super Admin can unlock an account" }, 403);
+      if (!["Super Admin", "Managing Director", "Sub Admin"].includes(actualRole)) {
+        return json({ error: "Only the MD, Super Admin or Sub Admin can unlock an account" }, 403);
       }
       const target = await env.DB.prepare(
         "SELECT u.id, u.email, u.full_name, r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?"
@@ -9203,11 +9246,15 @@ async function handleFetch(request, env) {
       const body = await request.json();
       const { email, password, full_name, role_name, branch_name, branch_id, team_id, care_scope } = body || {};
       if (!email || !password || !full_name || !role_name) return json({ error: "Missing fields" }, 400);
+      const actorActualRole = actor.actual_role_name || actor.role_name;
       const allowedForBM = ["Team Lead", "Marketer", "Finance Officer", "Client"];
       if (actor.role_name === "Branch Manager" && !allowedForBM.includes(role_name)) return json({ error: "Forbidden role" }, 403);
       if (role_name === "Managing Director") return json({ error: "Cannot create MD" }, 403);
-      if (role_name === "Customer Care" && !["Managing Director", "Super Admin"].includes(actor.actual_role_name || actor.role_name)) {
-        return json({ error: "Only the MD or Super Admin can create customer care accounts" }, 403);
+      if (role_name === "Super Admin" && actorActualRole !== "Super Admin") {
+        return json({ error: "Only a Super Admin can create another Super Admin" }, 403);
+      }
+      if (role_name === "Customer Care" && !["Managing Director", "Super Admin", "Sub Admin"].includes(actorActualRole)) {
+        return json({ error: "Only the MD, Super Admin or Sub Admin can create customer care accounts" }, 403);
       }
       const role = await env.DB.prepare("SELECT id FROM roles WHERE name=?").bind(role_name).first();
       if (!role) return json({ error: "Unknown role" }, 400);
@@ -9639,8 +9686,8 @@ async function handleFetch(request, env) {
       const price = Number(sale_price);
       if (!title || !Number.isFinite(price) || price <= 0) return json({ error: "Title and a positive sale price are required" }, 400);
       if (isTruthy(is_demo) || isTruthy(is_internal_test)) {
-        if (!["Super Admin", "Managing Director"].includes(actualRole)) {
-          return json({ error: "Only the MD or Super Admin can mark a property as demo or internal test" }, 403);
+        if (!["Super Admin", "Managing Director", "Sub Admin"].includes(actualRole)) {
+          return json({ error: "Only the MD, Super Admin or Sub Admin can mark a property as demo or internal test" }, 403);
         }
       }
       if (isTruthy(is_published)) {
@@ -9705,8 +9752,8 @@ async function handleFetch(request, env) {
         const price = Number(body.sale_price);
         if (!Number.isFinite(price) || price <= 0) return json({ error: "Sale price must be positive" }, 400);
       }
-      if ((body.is_demo !== undefined || body.is_internal_test !== undefined) && !["Super Admin", "Managing Director"].includes(actualRole)) {
-        return json({ error: "Only the MD or Super Admin can change demo or internal-test flags" }, 403);
+      if ((body.is_demo !== undefined || body.is_internal_test !== undefined) && !["Super Admin", "Managing Director", "Sub Admin"].includes(actualRole)) {
+        return json({ error: "Only the MD, Super Admin or Sub Admin can change demo or internal-test flags" }, 403);
       }
       const fields = ["title", "description", "property_type", "sale_price", "promotional_price", "state",
         "city", "address", "land_size", "bedrooms", "bathrooms", "toilets", "parking_spaces",
@@ -9800,7 +9847,7 @@ async function handleFetch(request, env) {
       if (!canManagePropertyRecord(actor, property)) return json({ error: "Cross-branch or unauthorised property" }, 403);
       const action = propWorkflowMatch[2];
       if (action === "approve") {
-        if (!["Super Admin", "Managing Director"].includes(actualRole)) return json({ error: "Only the MD or Super Admin can approve a listing" }, 403);
+        if (!["Super Admin", "Managing Director", "Sub Admin"].includes(actualRole)) return json({ error: "Only the MD, Super Admin or Sub Admin can approve a listing" }, 403);
         if (isPlaceholderPropertyTitle(property.title)) {
           return json({ error: "This listing still has a placeholder title. Replace the title and complete the listing before approval." }, 409);
         }
@@ -9844,7 +9891,7 @@ async function handleFetch(request, env) {
         return json({ ok: true, workflow_status: "archived" });
       }
       if (action === "convert-to-real") {
-        if (!["Super Admin", "Managing Director", "Branch Manager"].includes(actualRole)) return json({ error: "Forbidden" }, 403);
+        if (!["Super Admin", "Managing Director", "Sub Admin", "Branch Manager"].includes(actualRole)) return json({ error: "Forbidden" }, 403);
         await env.DB.prepare(`
           UPDATE properties SET is_demo=0, is_internal_test=0, is_archived=0, is_published=0,
             workflow_status='draft', archived_at=NULL, updated_by=?, updated_at=datetime('now') WHERE id=?
@@ -10751,7 +10798,7 @@ async function handleFetch(request, env) {
       if (!canManageClient(actor, client)) return json({ error: "Forbidden" }, 403);
       const body = await request.json();
       const editReason = String(body.reason || "").trim();
-      if (actor.role_name === "Sub Admin" && !editReason) {
+      if ((actor.actual_role_name || actor.role_name) === "Sub Admin" && !editReason) {
         return json({ error: "A reason is required for Sub Admin client edits" }, 400);
       }
       const financialFields = ["agreed_purchase_price", "interested_property_id", "sale_type"];
@@ -11074,7 +11121,7 @@ async function handleFetch(request, env) {
       if (actor.role_name === "Branch Manager" && Number(branch_id) !== actor.branch_id) {
         return json({ error: "Cross-branch forbidden" }, 403);
       }
-      if (actor.role_name === "Sub Admin" && !String(reason || "").trim()) {
+      if ((actor.actual_role_name || actor.role_name) === "Sub Admin" && !String(reason || "").trim()) {
         return json({ error: "A reason is required for a Sub Admin branch or assignment change" }, 400);
       }
       let manager = null;
@@ -15099,11 +15146,11 @@ async function handleFetch(request, env) {
         await env.DB.prepare("UPDATE users SET commission_access=? WHERE id=?")
           .bind(isTruthy(body.commission_access) ? 1 : 0, newId).run();
       }
-      if (body.property_plans_access !== undefined && ["Managing Director", "Super Admin", "Head Accountant"].includes(actorActualRole)) {
+      if (body.property_plans_access !== undefined && ["Managing Director", "Super Admin", "Sub Admin", "Head Accountant"].includes(actorActualRole)) {
         await env.DB.prepare("UPDATE users SET property_plans_access=? WHERE id=?")
           .bind(isTruthy(body.property_plans_access) ? 1 : 0, newId).run();
       }
-      if (body.sms_access !== undefined && ["Managing Director", "Super Admin", "Head Accountant"].includes(actorActualRole)) {
+      if (body.sms_access !== undefined && ["Managing Director", "Super Admin", "Sub Admin", "Head Accountant"].includes(actorActualRole)) {
         await env.DB.prepare("UPDATE users SET sms_access=? WHERE id=?")
           .bind(isTruthy(body.sms_access) ? 1 : 0, newId).run();
       }
@@ -15190,11 +15237,21 @@ async function handleFetch(request, env) {
           return json({ error: "Cross-branch forbidden" }, 403);
         }
       }
+      const actorActualRole = actor.actual_role_name || actor.role_name;
+      // Only a Super Admin may touch a Super Admin account, and a Sub Admin
+      // must never be able to modify an owner account.
+      if (actorActualRole !== "Super Admin" && target.role_name === "Super Admin") {
+        return json({ error: "Only a Super Admin can modify a Super Admin account" }, 403);
+      }
+      if (actorActualRole === "Sub Admin" && target.role_name === "Managing Director") {
+        return json({ error: "Sub Admin cannot modify a Managing Director account" }, 403);
+      }
       const body = await request.json();
-      const allowedRoles = (actor.actual_role_name || actor.role_name) === "Super Admin"
-        ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care", "Super Admin"]
-        : actor.role_name === "Managing Director"
-          ? ["Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"]
+      const operationalStaffRoles = ["GSM", "Accountant", "Branch Manager", "Project Manager", "Team Lead", "Marketer", "Finance Officer", "Head Accountant", "Customer Care"];
+      const allowedRoles = actorActualRole === "Super Admin"
+        ? [...operationalStaffRoles, "Sub Admin", "Super Admin"]
+        : ["Managing Director", "Sub Admin"].includes(actorActualRole)
+          ? [...operationalStaffRoles, "Sub Admin"]
           : ["Team Lead", "Marketer", "Finance Officer"];
       const nextRoleName = body.role_name || target.role_name;
       const editingOwnMdProfile = actor.role_name === "Managing Director" && target.role_name === "Managing Director";
@@ -15261,15 +15318,15 @@ async function handleFetch(request, env) {
           .bind(isTruthy(body.commission_access) ? 1 : 0, target.id).run();
       }
       if (body.property_plans_access !== undefined) {
-        if (!["Managing Director", "Super Admin", "Head Accountant"].includes(actor.actual_role_name || actor.role_name)) {
-          return json({ error: "Only the MD, Head Accountant or Super Admin can grant property plan access" }, 403);
+        if (!["Managing Director", "Super Admin", "Sub Admin", "Head Accountant"].includes(actor.actual_role_name || actor.role_name)) {
+          return json({ error: "Only the MD, Head Accountant, Sub Admin or Super Admin can grant property plan access" }, 403);
         }
         await env.DB.prepare("UPDATE users SET property_plans_access=? WHERE id=?")
           .bind(isTruthy(body.property_plans_access) ? 1 : 0, target.id).run();
       }
       if (body.sms_access !== undefined) {
-        if (!["Managing Director", "Super Admin", "Head Accountant"].includes(actor.actual_role_name || actor.role_name)) {
-          return json({ error: "Only the MD, Head Accountant or Super Admin can grant SMS access" }, 403);
+        if (!["Managing Director", "Super Admin", "Sub Admin", "Head Accountant"].includes(actor.actual_role_name || actor.role_name)) {
+          return json({ error: "Only the MD, Head Accountant, Sub Admin or Super Admin can grant SMS access" }, 403);
         }
         await env.DB.prepare("UPDATE users SET sms_access=? WHERE id=?")
           .bind(isTruthy(body.sms_access) ? 1 : 0, target.id).run();
@@ -15293,8 +15350,8 @@ async function handleFetch(request, env) {
       const actor = await getSessionUser(env, request);
       if (!actor) return json({ error: "Unauthenticated" }, 401);
       if (!["Managing Director", "Branch Manager", "Super Admin"].includes(actor.role_name)) return json({ error: "Forbidden" }, 403);
-      if (request.method === "PUT" && actor.actual_role_name !== "Super Admin" && actor.role_name !== "Managing Director") {
-        return json({ error: "Only the MD or Super Admin can change access settings" }, 403);
+      if (request.method === "PUT" && !["Super Admin", "Managing Director", "Sub Admin"].includes(actor.actual_role_name || actor.role_name)) {
+        return json({ error: "Only the MD, Super Admin or Sub Admin can change access settings" }, 403);
       }
       if (request.method === "GET") {
         const { results } = await env.DB.prepare("SELECT role_name, monthly_reactivation_enabled FROM role_access_settings ORDER BY role_name").all();
@@ -15371,6 +15428,13 @@ async function handleFetch(request, env) {
       `).bind(staffStatusMatch[1]).first();
       if (!target) return json({ error: "Staff member not found" }, 404);
       if (Number(target.id) === Number(actor.id)) return json({ error: "You cannot deactivate your own account" }, 400);
+      const actorActualRole = actor.actual_role_name || actor.role_name;
+      if (actorActualRole !== "Super Admin" && target.role_name === "Super Admin") {
+        return json({ error: "Only a Super Admin can change a Super Admin account" }, 403);
+      }
+      if (actorActualRole === "Sub Admin" && target.role_name === "Managing Director") {
+        return json({ error: "Sub Admin cannot deactivate a Managing Director account" }, 403);
+      }
       if (actor.role_name === "Branch Manager" &&
           (Number(target.branch_id) !== Number(actor.branch_id) || ["Managing Director", "Branch Manager"].includes(target.role_name))) {
         return json({ error: "Cross-branch forbidden" }, 403);

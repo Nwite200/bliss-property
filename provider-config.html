@@ -449,9 +449,12 @@
         const meRes = await fetch("/api/me");
         if (!meRes.ok) { window.location.href = "login.html"; return; }
         const me = await meRes.json();
-        canEdit = ["Managing Director", "Finance Officer"].includes(me.role);
-        if (!["Managing Director", "Finance Officer", "Branch Manager"].includes(me.role)) {
-          alert("Access restricted.");
+        const actualRole = me.actual_role || me.role;
+        // Sub Admin has read-only financial oversight and must not reach the
+        // payment-provider configuration at all.
+        canEdit = ["Managing Director", "Super Admin", "Finance Officer"].includes(actualRole);
+        if (!["Managing Director", "Super Admin", "Finance Officer", "Branch Manager"].includes(actualRole)) {
+          alert("Access restricted to the MD, Super Admin, Finance Officers and Branch Managers.");
           window.location.href = "dashboard.html";
           return;
         }
